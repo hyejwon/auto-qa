@@ -240,12 +240,12 @@ async def main():
         test_cases = [{"name": "CLI 테스트", "goal": args.goal}]
     else:
         # 기본 테스트 (하드코딩된 goal)
-        # test_cases = [{
-        #     "name": "기본 테스트",
-        #     "goal": "package_name: com.percent.aos.cooptd 실행 → 햄버거 메뉴 → 설정 → 진동 ON 버튼 클릭 → 앱 재실행 → 진동 OFF 표시 확인"
-        # }]
+        test_cases = [{
+            "name": "기본 테스트",
+            "goal": "package_name: com.percent.aos.cooptd 실행 → 햄버거 메뉴 → 설정 → 진동 ON 버튼 클릭 → 앱 재실행 → 진동 OFF 표시 확인"
+        }]
 
-        test_cases = load_test_cases("test_cases.yaml")
+        # test_cases = load_test_cases("test_cases.yaml")
     
     # 출력 디렉토리 생성
     output_dir = Path(args.output)

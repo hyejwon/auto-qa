@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field
 import asyncio
 import io
 from PIL import Image, ImageDraw
+import os
+from typing import Any
+import httpx
+
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:37772")
 
 client_gemini = genai.Client(vertexai=True, project="percent-vertex-test", location="global")
 
@@ -536,12 +541,12 @@ def unity_find_buttons_impl() -> List[Dict[str, Any]] | Dict[str, Any]:
         import requests
 
         try:
-            response = requests.get("http://localhost:37772/api/findAllButtons", timeout=5)
+            response = requests.get(f"{MCP_SERVER_URL}/api/findAllButtons", timeout=5)
             response.raise_for_status()
         except requests.exceptions.ConnectionError:
-            return {"error": f"Unity API connection failed: http://localhost:37772/api/findAllButtons - Is the Unity API server running?"}
+            return {"error": f"Unity API connection failed: {MCP_SERVER_URL}/api/findAllButtons - Is the Unity API server running?"}
         except requests.exceptions.Timeout:
-            return {"error": f"Unity API request timeout: http://localhost:37772/api/findAllButtons"}
+            return {"error": f"Unity API request timeout: {MCP_SERVER_URL}/api/findAllButtons"}
         except requests.exceptions.HTTPError as e:
             return {"error": f"Unity API HTTP error: {e.response.status_code} - {e.response.text[:200]}"}
         except requests.exceptions.RequestException as e:
@@ -1493,7 +1498,7 @@ def unity_hyperlink_text_impl() -> List[Dict[str, Any]]:
     """
     try:
         import requests
-        response = requests.get("http://localhost:37772/api/findHyperTextPositions", timeout=5)
+        response = requests.get(f"{MCP_SERVER_URL}/api/findHyperTextPositions", timeout=5)
         response.raise_for_status()
         data = response.json()
 
@@ -1532,7 +1537,7 @@ def unity_hyperlink_text_impl() -> List[Dict[str, Any]]:
         return buttons
 
     except requests.exceptions.ConnectionError:
-        return {"error": f"Unity API connection failed: http://localhost:37772/api/findHyperTextPositions"}
+        return {"error": f"Unity API connection failed: {MCP_SERVER_URL}/api/findHyperTextPositions"}
     except Exception as e:
         return {"error": str(e)}
 

@@ -2,20 +2,11 @@ version: '3.8'
 
 services:
   auto-qa:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: auto-qa:latest
-    container_name: auto-qa-dev
+    container_name: auto-qa
     network_mode: "host"
     
     volumes:
-      # 소스 코드 (개발 중 수정 반영)
-      - ./qa_agent:/app/qa_agent
-      - ./main.py:/app/main.py
-      - ./mcp_server.py:/app/mcp_server.py
-      - ./gradio_app.py:/app/gradio_app.py
-      
       # 결과물
       - ./report:/app/report
       - ./screenshots:/app/screenshots
@@ -27,9 +18,9 @@ services:
     environment:
       - ADB_DEVICE=127.0.0.1:5555
       - APK_PATH=/app/apks/cooptd.apk
-      - MCP_SERVER_URL=http://localhost:37772  # MCP Server URL
+      - MCP_SERVER_URL=http://localhost:37772
     
     env_file:
       - .env
     
-    command: python main.py
+    restart: "no"
