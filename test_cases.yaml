@@ -1,0 +1,55 @@
+# QA 자동화 테스트 케이스
+# 사용법: python main.py -f test_cases.yaml
+test_cases:
+  - name: "로그인 화면 진입 테스트"
+    goal: |
+      package_name: com.percent.aos.cooptd 실행
+      → google 로그인 버튼 클릭
+      → 이용약관 클릭
+      → https://www.supermagic.io/base-policy/index.html?category=terms-of-service 링크 확인
+      → 뒤로가기 버튼 클릭
+      → 잠시 대기 
+      → 개인정보 처리방침 클릭
+      → https://www.supermagic.io/base-policy/index.html?category=privacy-policy 링크 확인
+      → 앱 종료
+
+  - name: "게스트 화면 진입 테스트"
+    goal: |
+      package_name: com.percent.aos.cooptd 실행
+      → 게스트 로그인 버튼 클릭
+      → 동의 합니다 버튼 클릭
+      → 튜토리얼 화면 확인
+      → 앱 종료 
+
+  - name: "진동 설정 테스트"
+    goal: |
+      package_name: com.percent.aos.cooptd 실행
+      → 햄버거 메뉴 클릭
+      → 설정 메뉴 진입
+      → 진동 ON 버튼 클릭
+      → 앱 재실행
+      → 진동 OFF 표시 확인
+      → 앱 종료
+
+  - name: "알림 설정 테스트"
+    goal: |
+      package_name: com.percent.aos.cooptd 실행
+      → 햄버거 메뉴 클릭
+      → 설정 메뉴 진입
+      → 알림 켜짐 버튼 클릭
+      → 앱 재실행
+      → 알림 꺼짐 표시 확인
+      → 앱 종료
+
+  - name: "계정 삭제 테스트"
+    goal: |
+      package_name: com.percent.aos.cooptd 실행
+      → 햄버거 메뉴 클릭
+      → 설정 메뉴 진입
+      → 계정 연동 클릭
+      → 계정 삭제 클릭
+      → package_name: com.percent.aos.cooptd 종료
+      → package_name: com.percent.aos.cooptd 실행
+      → 게스트 로그인 버튼 클릭 
+      → 튜토리얼 화면 확인
+

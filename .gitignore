@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+reports
+screenshots/
+screenshots_debug/
+game_screenshots
+data
+*.log
+window_dump.xml
+screenshot.png
+credentials/
+.DS_Store
+cooptd.apk

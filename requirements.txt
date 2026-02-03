@@ -1,0 +1,15 @@
+gradio==5.31.0
+fastmcp==2.14.1
+mcp==1.24.0
+langchain-mcp-adapters==0.2.1
+langchain-google-genai==4.1.3
+langchain-google-vertexai==3.2.1
+langgraph==1.0.5
+google-genai==1.57.0
+google-cloud-aiplatform==1.132.0
+pydantic==2.12.5
+python-dotenv==1.1.0
+PyYAML==6.0.3
+anyio==4.12.1
+pillow==10.4.0
+requests==2.32.5

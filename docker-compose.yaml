@@ -1,0 +1,46 @@
+services:
+  qa-app:
+    build: .
+    container_name: auto-qa
+    ports:
+      - "7860:7860"
+
+    # ---------------------------------------------------------------
+    # 환경 변수 (.env 파일 또는 직접 지정)
+    # ---------------------------------------------------------------
+    env_file:
+      - .env
+    environment:
+      # Android 디바이스 연결 (호스트 ADB 서버 경유)
+      - QA_DEVICE=${QA_DEVICE:-host.docker.internal:5555}
+      - QA_PACKAGE=${QA_PACKAGE:-com.percent.aos.cooptd}
+      - QA_MAX_STEPS=${QA_MAX_STEPS:-100}
+      - QA_MCP_DEBUG=${QA_MCP_DEBUG:-0}
+      # Google Cloud 인증
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
+      - VERTEX_PROJECT=${VERTEX_PROJECT:-percent-vertex-test}
+      - VERTEX_LOCATION=${VERTEX_LOCATION:-global}
+      - VERTEX_MODEL=${VERTEX_MODEL:-gemini-2.5-pro}
+
+    # ---------------------------------------------------------------
+    # 볼륨 마운트
+    # ---------------------------------------------------------------
+    volumes:
+      # Google Cloud 서비스 계정 키 (호스트에서 마운트)
+      - ${GOOGLE_CREDENTIALS_PATH:-./credentials}:/app/credentials:ro
+      # 리포트 영속 저장
+      - ./reports:/app/reports
+      # 스크린샷 영속 저장
+      - ./screenshots:/app/screenshots
+      - ./screenshots_debug:/app/screenshots_debug
+      # 테스트 케이스 파일 (호스트에서 편집 가능)
+      - ./test_cases.yaml:/app/test_cases.yaml:ro
+
+    # ---------------------------------------------------------------
+    # 네트워크: host.docker.internal 으로 호스트 ADB 접근
+    # Linux에서는 extra_hosts 필요, macOS/Windows는 자동 지원
+    # ---------------------------------------------------------------
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    restart: unless-stopped
