@@ -4,7 +4,8 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from .prompts import planner_system_prompt
-
+import logging
+logger = logging.getLogger(__name__)
 
 class StepArgs(BaseModel):
     """Step의 arguments"""
@@ -107,7 +108,7 @@ async def make_plan(llm: ChatGoogleGenerativeAI, goal: str, tools_schema: List[D
         # Pydantic 모델을 dict로 변환
         plan = plan_obj.model_dump()
         
-        print("PLANNER STRUCTURED OUTPUT:\n", json.dumps(plan, ensure_ascii=False, indent=2)[:2000])
+        print(f"PLANNER STRUCTURED OUTPUT:\n{json.dumps(plan, ensure_ascii=False, indent=2)[:2000]}")
         
         if not isinstance(plan, dict) or "steps" not in plan:
             raise ValueError("bad plan format")

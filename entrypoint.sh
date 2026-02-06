@@ -9,7 +9,8 @@ echo "=========================================="
 ADB_DEVICE=${ADB_DEVICE:-127.0.0.1:5555}
 APK_PATH=${APK_PATH:-/app/apks/cooptd.apk}
 MCP_PORT=${MCP_PORT:-37772}
-MAX_RETRIES=5
+ADB_SERVER_SOCKET=${ADB_SERVER_SOCKET:-}
+MAX_RETRIES=10
 RETRY_DELAY=3
 
 echo
@@ -17,25 +18,54 @@ echo "[1/5] 환경 변수 확인"
 echo "  ADB_DEVICE: $ADB_DEVICE"
 echo "  APK_PATH: $APK_PATH"
 echo "  MCP_PORT: $MCP_PORT"
+if [ -n "$ADB_SERVER_SOCKET" ]; then
+    echo "  ADB_SERVER_SOCKET: $ADB_SERVER_SOCKET (호스트 ADB 서버 사용)"
+fi
 
-# ADB 연결
+# ADB 연결 (호스트 ADB 서버 모드 vs 직접 연결 모드)
 echo
 echo "[2/5] ADB 연결 중..."
-for i in $(seq 1 $MAX_RETRIES); do
-    echo "  시도 $i/$MAX_RETRIES..."
-    
-    if adb connect $ADB_DEVICE; then
-        echo "  [OK] ADB 연결 성공"
-        break
-    else
-        if [ $i -eq $MAX_RETRIES ]; then
-            echo "  [ERROR] ADB 연결 실패"
-            exit 1
+
+if [ -n "$ADB_SERVER_SOCKET" ]; then
+    # 호스트 ADB 서버를 통한 연결 (Docker 환경)
+    echo "  호스트 ADB 서버에 연결 중..."
+    for i in $(seq 1 $MAX_RETRIES); do
+        echo "  시도 $i/$MAX_RETRIES..."
+
+        # 호스트 ADB 서버에서 디바이스 목록 확인
+        if adb devices 2>/dev/null | grep -q "$ADB_DEVICE"; then
+            echo "  [OK] 호스트 ADB 서버를 통해 디바이스 발견"
+            break
+        else
+            if [ $i -eq $MAX_RETRIES ]; then
+                echo "  [ERROR] 호스트 ADB 서버에서 디바이스를 찾을 수 없습니다"
+                echo "  호스트에서 다음 명령어를 실행했는지 확인하세요:"
+                echo "    adb kill-server && adb -a -P 5037 nodaemon server"
+                echo "  그리고 BlueStacks가 실행 중인지 확인하세요."
+                exit 1
+            fi
+            echo "  디바이스 대기 중, ${RETRY_DELAY}초 후 재시도..."
+            sleep $RETRY_DELAY
         fi
-        echo "  연결 실패, ${RETRY_DELAY}초 후 재시도..."
-        sleep $RETRY_DELAY
-    fi
-done
+    done
+else
+    # 직접 연결 모드 (로컬 환경)
+    for i in $(seq 1 $MAX_RETRIES); do
+        echo "  시도 $i/$MAX_RETRIES..."
+
+        if adb connect $ADB_DEVICE 2>/dev/null | grep -q "connected"; then
+            echo "  [OK] ADB 연결 성공"
+            break
+        else
+            if [ $i -eq $MAX_RETRIES ]; then
+                echo "  [ERROR] ADB 연결 실패"
+                exit 1
+            fi
+            echo "  연결 실패, ${RETRY_DELAY}초 후 재시도..."
+            sleep $RETRY_DELAY
+        fi
+    done
+fi
 
 # 연결된 디바이스 확인
 echo

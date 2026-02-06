@@ -10,6 +10,7 @@ ENV PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y \
     android-tools-adb \
     aapt \
+    ffmpeg \
     wget \
     curl \
     unzip \
@@ -39,7 +40,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # 결과 저장 디렉토리 생성
-RUN mkdir -p /app/report /app/screenshots /app/logs /app/apks
+RUN mkdir -p /app/report /app/screenshots /app/logs /app/apks /app/recordings
 
 # 실행 권한
 RUN chmod +x main.py mcp_server.py gradio_app.py 

@@ -7,8 +7,11 @@ services:
       dockerfile: Dockerfile
     image: auto-qa:latest
     container_name: auto-qa-dev
-    network_mode: "host"
-    
+
+    # Mac/Windows에서 호스트의 BlueStacks에 접근하기 위한 설정
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     volumes:
       # 소스 코드 (개발 중 수정 반영)
       - ./qa_agent:/app/qa_agent
@@ -20,16 +23,35 @@ services:
       - ./report:/app/report
       - ./screenshots:/app/screenshots
       - ./logs:/app/logs
+      - ./recordings:/app/recordings
       
       # APK 파일
       - ./apks:/app/apks
-    
+
+      # 테스트 케이스 파일
+      - ./test_cases.yaml:/app/test_cases.yaml
+
+      # GCP 인증 (로컬 credentials 마운트)
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+
     environment:
+      # GCP/Vertex AI 설정
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - GOOGLE_CLOUD_PROJECT=percent-vertex-test
+      - VERTEX_PROJECT=percent-vertex-test
+      - VERTEX_LOCATION=global
+      - VERTEX_MODEL=gemini-2.5-pro
+      # 호스트의 ADB 서버를 통해 BlueStacks 연결
+      # 호스트에서 먼저 실행: adb kill-server && adb -a -P 5037 nodaemon server
+      - ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
       - ADB_DEVICE=127.0.0.1:5555
       - APK_PATH=/app/apks/cooptd.apk
-      - MCP_SERVER_URL=http://localhost:37772  # MCP Server URL
-    
+      - MCP_SERVER_URL=http://host.docker.internal:37772
+      - TEST_CASES_FILE=/app/test_cases.yaml
+      # 테스트 케이스 타입 필터 (콤마로 구분, 예: login,settings). 비워두면 전체 실행
+      - TEST_CASE_TYPE=settings
+
     env_file:
       - .env
     
-    command: python main.py
+    # command: python main.py

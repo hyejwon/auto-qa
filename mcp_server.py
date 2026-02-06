@@ -46,9 +46,82 @@ logger.addHandler(console_handler)
 # 루트 로거로 전파하지 않도록 설정 (중복 출력 방지)
 logger.propagate = False
 
+# ---------------------------------------------------------------------------
+# Optional: remote debugger (debugpy)
+#
+# MCP stdio transport is sensitive to *any* extra output on stdout. Avoid using
+# pdb/print debugging; prefer attaching via debugpy which uses a TCP port.
+#
+# Enable:
+#   QA_MCP_DEBUGPY=1
+# Optional:
+#   QA_MCP_DEBUGPY_HOST=127.0.0.1
+#   QA_MCP_DEBUGPY_PORT=5678
+#   QA_MCP_DEBUGPY_WAIT=1  (wait for debugger attach before serving)
+# ---------------------------------------------------------------------------
+if os.getenv("QA_MCP_DEBUGPY", "0") == "1":
+    try:
+        import debugpy  # type: ignore
+
+        host = os.getenv("QA_MCP_DEBUGPY_HOST", "127.0.0.1")
+        port = int(os.getenv("QA_MCP_DEBUGPY_PORT", "5678"))
+        debugpy.listen((host, port))
+        logger.info(f"🐞 debugpy listening on {host}:{port}")
+        if os.getenv("QA_MCP_DEBUGPY_WAIT", "0") == "1":
+            logger.info("🐞 Waiting for debugger to attach...")
+            debugpy.wait_for_client()
+            logger.info("🐞 Debugger attached")
+    except Exception as e:
+        logger.warning(f"Failed to start debugpy: {e}")
+
 # FastMCP 서버 생성
 mcp = FastMCP("mobile-mcp-server")
+import re
 
+LINK_RE = re.compile(r'<link="(?P<url>[^"]+)">(?P<body>.*?)</link>', re.DOTALL)
+TAG_RE  = re.compile(r'<[^>]+>')  # <sprite>, <color> 등 제거
+
+def strip_rich_text(s: str) -> str:
+    return TAG_RE.sub('', s).strip()
+
+def xy(p):
+    return (p.get("PositionX"), p.get("PositionY"))
+
+def sort_positions_screen_order(positions):
+    # 화면 읽는 순서: 위 -> 아래, 좌 -> 우
+    # (Y가 클수록 위인 케이스 기준: -Y로 내림차순)
+    return sorted(
+        positions,
+        key=lambda p: (-(p.get("PositionY", 0) or 0), (p.get("PositionX", 0) or 0))
+    )
+
+def parse_links_and_positions(item: dict):
+    text = item.get("Text", "") or ""
+    positions = item.get("HyperLinkPositions", []) or []
+
+    # 1) 텍스트에서 링크 추출 (이용약관, 개인정보처리방침)
+    links = []
+    for m in LINK_RE.finditer(text):
+        links.append({
+            "url": m.group("url"),
+            "text": strip_rich_text(m.group("body")),
+        })
+
+    # 2) 좌표를 화면 순서로 정렬해서 링크와 1:1 매칭
+    pos_sorted = sort_positions_screen_order(positions)
+
+    cand = []
+    for i, lk in enumerate(links):
+        p = pos_sorted[i] if i < len(pos_sorted) else None
+        cand.append({
+            "i": i,
+            "name": item.get("GameObjectName") or "",
+            "text": lk["text"],
+            "url": lk["url"],
+            "position": xy(p) if p else None,
+        })
+
+    return cand
 # 현재 연결된 디바이스 (전역 변수)
 def _get_first_connected_device() -> str | None:
     """ADB로 연결된 첫 번째 디바이스 ID 반환"""
@@ -104,6 +177,69 @@ async def validate_action(action: str) -> bool:
     
     
     return {"status": "success", "reason": "action is valid"}
+    
+
+async def llm_choose_hyperlink_candidate(target: str, buttons: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """
+    alias 하드코딩 없이 LLM이 후보 중 best 1개를 고르게 함.
+    반환: {"index": int, "reason": str} or None
+    """
+    result = take_screenshot_impl()
+    screenshot_image = result.get("image", "")
+    # LLM 입력 크기 제한을 위해 상위 N개만 (너무 많으면 토큰 폭발)
+    # N = 60
+    # cand = []
+    # for i, b in enumerate(buttons[:N]):
+    #     coordinates = b.get("HyperLinkPositions","")
+    #     text = b.get("Text")    
+        
+        
+        
+    #     cand.append({
+    #         "i": i,
+    #         "name": (b.get("GameObjectName") or ""),
+    #         "position": (b.get("PositionX"), b.get("PositionY")),
+    #         "parent": (b.get("ParentMetadata") or "")[:220],  # parent 너무 길면 자르기
+    #     })
+
+    cand = []
+    for item in buttons:  # 네가 준 배열
+        cand.extend(parse_links_and_positions(item))
+
+    prompt = f"""
+너는 모바일 QA 자동화에서 Unity UI 버튼을 고르는 랭커다.
+사용자 target(사람 언어): "{target}"
+
+아래 후보들 중 target과 의미적으로 가장 일치하는 버튼 1개를 고르고, 그 후보의 i를 반환해라.
+- target은 한국어일 수 있고 후보 name은 영어 식별자일 수 있다. 예: "햄버거" == "HambergerButton"
+- 이미지의 위치를 보고 주어진 target을 찾아라.
+- ParentMetadata에 Top/Right/Menu/Setting 같은 컨텍스트가 있으면 그걸 근거로 삼아라.
+- Frame 같은 일반 이름은 특별한 근거가 없으면 피하라.
+
+반환은 반드시 JSON만:
+{{"index": <int>, "reason": "<짧게>"}}
+
+후보 목록:
+{json.dumps(cand, ensure_ascii=False)}
+""".strip()
+
+    try:
+        # 너 코드에 이미 client_gemini 있으니 그대로 사용
+        resp = client_gemini.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[prompt,types.Part.from_bytes(data=screenshot_image, mime_type="image/jpeg")],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        obj = json.loads(resp.text)
+        idx = obj.get("index")
+        if not isinstance(idx, int):
+            return None
+        if idx < 0 or idx >= len(buttons):
+            return None
+        return {"index": idx, "reason": obj.get("reason", "")}
+    except Exception as e:
+        logger.error(f"[llm_choose_unity_candidate] error: {e}")
+        return None
     
 async def llm_choose_unity_candidate(target: str, buttons: List[Dict[str, Any]]) -> Dict[str, Any] | None:
     """
@@ -678,7 +814,7 @@ async def adb_press_button_impl(button: str) -> dict:
     # 표준화
     if button.lower() not in button_map:
         return {"error": f"Button {button} is not supported"}
-    adb_cmd = ["adb", "shell", "input", "keyevent", button_map[button.lower()]]
+    adb_cmd = ["adb", "-s", current_device, "shell", "input", "keyevent", button_map[button.lower()]]
     subprocess.run(adb_cmd, capture_output=True)
     return {"status": "success", "button": button}
 
@@ -1193,37 +1329,29 @@ async def smart_find_impl(
     """
     if not target or not target.strip():
         return {"status": "error", "reason": "empty target"}
+   
     
+    if target in "동의":
+        out = await find_vision_impl(target)
+        if out.get("status") == "found":
+            return out 
+
     # 1) Unity Hyperlink Text
     if strategy in ("auto", "unity"):
+        
         links = unity_hyperlink_text_impl()
-        picked = await llm_choose_unity_candidate(target, links)
-        if picked:
-            link = links[picked["index"]]
-            return {
-                "status": "found",
-                "method": "unity_hyperlink_text",
-                "element": link,
-                "score": 1.0,
-                "reason": picked.get("reason", "")
-            }
-        # return {"status": "not_found", "reason": "no link found"}
-        # if isinstance(links, list) and links:
-        #     picked = _pick_best_fuzzy(
-        #         target,
-        #         links,
-        #         text_getter=_get_link_text,
-        #         min_score=0.2,  # 링크 텍스트는 짧으니 약간 낮게
-        #     )
-        #     if picked:
-        #         link, score = picked
-        #         return {
-        #             "status": "found",
-        #             "method": "unity_hyperlink_text",
-        #             "element": link,
-        #             "score": score
-        #         }
 
+        if isinstance(links, list) and links:
+            picked = await llm_choose_hyperlink_candidate(target, links)
+            if picked:
+                link = links[picked["index"]]
+                return {
+                    "status": "found",
+                    "method": "unity_hyperlink_text",
+                    "element": link,
+                    "score": 1.0,
+                    "reason": picked.get("reason", "")
+                }
     # 2) Unity Button
     if strategy in ("auto", "unity"):
         unity_buttons = unity_find_buttons_impl()
@@ -1248,29 +1376,6 @@ async def smart_find_impl(
                     "score": 1.0,
                     "reason": picked.get("reason", "")
                 }
-
-
-
-    # # 2) Unity Button
-    # if strategy in ("auto", "unity"):
-    #     unity_buttons = unity_find_buttons_impl()
-                
-    #     if isinstance(unity_buttons, list) and unity_buttons:
-    #         picked = _pick_best_fuzzy(
-    #             target,
-    #             unity_buttons,
-    #             text_getter=_get_button_text,
-    #             min_score=0.5,
-    #         )
-    #         if picked:
-    #             btn, score = picked
-    #             return {
-    #                 "status": "found",
-    #                 "method": "unity_button",
-    #                 "element": btn,
-    #                 "score": score
-    #             }
-
     # 3) UIAutomator
     if strategy in ("auto", "uiauto"):
         out = await find_uiauto_impl(target)
@@ -1543,9 +1648,17 @@ def unity_hyperlink_text_impl() -> List[Dict[str, Any]]:
 
 @mcp.tool()
 async def adb_press_button(button: str) -> str:
-    """ADB 버튼 클릭 (JSON 문자열 반환)"""
+    """
+    ADB 하드웨어 버튼 클릭.
+
+    Args:
+        button: 버튼 이름. 가능한 값: back, home, menu, power, volume_up, volume_down, volume_mute, google
+
+    Returns:
+        JSON 문자열 (status, button)
+    """
     result = await adb_press_button_impl(button=button)
-    return json.dumps(result)
+    return json.dumps(result, ensure_ascii=False)
 
 # @mcp.tool()
 # async def handle_system_dialogs() -> str:
@@ -1645,7 +1758,7 @@ if __name__ == "__main__":
         for handler in logger.handlers:
             handler.flush()
     except Exception as e:
-        logger.error(f"❌ MCP server error: {e}")
+        logger.exception("❌ MCP server error")
         # 로그 강제 flush
         for handler in logger.handlers:
             handler.flush()

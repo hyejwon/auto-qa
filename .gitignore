@@ -12,5 +12,6 @@ data
 window_dump.xml
 screenshot.png
 credentials/
+credentials.json
 .DS_Store
 cooptd.apk

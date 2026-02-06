@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import argparse
+import os
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -22,9 +23,14 @@ from qa_agent.executor.executor import run_current_step
 from qa_agent.report.report import generate_report
 from qa_agent.graph.build_graph import build_graph
 
+def load_test_cases(file_path: str, case_types: List[str] = None) -> List[Dict[str, Any]]:
+    """
+    YAML 또는 JSON 파일에서 테스트 케이스 로드
 
-def load_test_cases(file_path: str) -> List[Dict[str, Any]]:
-    """YAML 또는 JSON 파일에서 테스트 케이스 로드"""
+    Args:
+        file_path: 테스트 케이스 파일 경로
+        case_types: 필터링할 케이스 타입 리스트 (None이면 전체 로드)
+    """
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"테스트 케이스 파일을 찾을 수 없습니다: {file_path}")
@@ -41,14 +47,42 @@ def load_test_cases(file_path: str) -> List[Dict[str, Any]]:
     # 단일 goal 문자열 리스트도 지원
     if isinstance(data, list):
         if all(isinstance(item, str) for item in data):
-            return [{"name": f"테스트 {i+1}", "goal": goal} for i, goal in enumerate(data)]
-        return data
-
+            test_cases = [{"name": f"테스트 {i+1}", "goal": goal} for i, goal in enumerate(data)]
+        else:
+            test_cases = data
     # test_cases 키가 있는 경우
-    if isinstance(data, dict) and "test_cases" in data:
-        return data["test_cases"]
+    elif isinstance(data, dict) and "test_cases" in data:
+        test_cases = data["test_cases"]
+    else:
+        raise ValueError("테스트 케이스 형식이 올바르지 않습니다.")
 
-    raise ValueError("테스트 케이스 형식이 올바르지 않습니다.")
+    # case_type 필터링
+    if case_types:
+        test_cases = [tc for tc in test_cases if tc.get("case_type") in case_types]
+
+    return test_cases
+
+
+def get_available_case_types(file_path: str) -> List[str]:
+    """테스트 케이스 파일에서 사용 가능한 case_type 목록 추출"""
+    path = Path(file_path)
+    if not path.exists():
+        return []
+
+    content = path.read_text(encoding="utf-8")
+    if path.suffix in (".yaml", ".yml"):
+        data = yaml.safe_load(content)
+    elif path.suffix == ".json":
+        data = json.loads(content)
+    else:
+        return []
+
+    test_cases = data.get("test_cases", []) if isinstance(data, dict) else data
+    case_types = set()
+    for tc in test_cases:
+        if isinstance(tc, dict) and tc.get("case_type"):
+            case_types.add(tc["case_type"])
+    return sorted(list(case_types))
 
 
 def generate_summary_report(results: List[Dict[str, Any]], output_dir: Path) -> str:
@@ -108,6 +142,10 @@ def generate_summary_report(results: List[Dict[str, Any]], output_dir: Path) -> 
 async def planner_node(state: AgentState, llm: ChatGoogleGenerativeAI):
     tools_schema = state.get("tools_schema", [])
     plan = await make_plan(llm, state.get("goal",""), tools_schema)
+    logging.getLogger("qa_agent.planner.planner").info(
+        f"PLANNED: {json.dumps(plan, ensure_ascii=False)[:2000]}"
+    )
+
     return {
         "plan": plan,
         "goal_steps": plan.get("steps", []),
@@ -207,7 +245,7 @@ async def main():
     parser = argparse.ArgumentParser(description="QA 자동화 테스트 실행")
     parser.add_argument(
         "-f", "--file",
-        help="테스트 케이스 파일 (YAML 또는 JSON)",
+        help="테스트 케이스 파일 (YAML 또는 JSON). 환경변수 TEST_CASES_FILE로도 지정 가능",
     )
     parser.add_argument(
         "-g", "--goal",
@@ -218,7 +256,29 @@ async def main():
         default="./reports",
         help="리포트 저장 디렉토리 (기본: ./reports)",
     )
+    parser.add_argument(
+        "-t", "--type",
+        default=os.environ.get("TEST_CASE_TYPE"),
+        help="실행할 테스트 케이스 타입 (콤마로 구분, 예: login,settings). 환경변수 TEST_CASE_TYPE으로도 지정 가능",
+    )
+    parser.add_argument(
+        "--list-types",
+        action="store_true",
+        help="테스트 케이스 파일에서 사용 가능한 타입 목록 출력 후 종료",
+    )
     args = parser.parse_args()
+
+    # --list-types 옵션 처리
+    if args.list_types:
+        if args.file:
+            types = get_available_case_types(args.file)
+            if types:
+                print(f"📋 사용 가능한 테스트 타입: {', '.join(types)}")
+            else:
+                print("⚠️ 테스트 케이스에 case_type이 정의되어 있지 않습니다.")
+        else:
+            print("⚠️ --file 옵션으로 테스트 케이스 파일을 지정해주세요.")
+        return
 
     cfg = QAConfig()
 
@@ -232,18 +292,24 @@ async def main():
     if cfg.debug:
         print("🐛 DEBUG mode enabled")
 
+    # case_types 파싱
+    case_types = None
+    if args.type:
+        case_types = [t.strip() for t in args.type.split(",") if t.strip()]
+
     # 테스트 케이스 준비
     if args.file:
-        test_cases = load_test_cases(args.file)
-        print(f"📂 테스트 케이스 파일 로드: {args.file} ({len(test_cases)}개)")
+        test_cases = load_test_cases(args.file, case_types=case_types)
+        type_info = f" (타입: {', '.join(case_types)})" if case_types else ""
+        print(f"📂 테스트 케이스 파일 로드: {args.file} ({len(test_cases)}개){type_info}")
     elif args.goal:
         test_cases = [{"name": "CLI 테스트", "goal": args.goal}]
     else:
         # 기본 테스트 (하드코딩된 goal)
         test_cases = [{
-            "name": "기본 테스트",
-            "goal": "package_name: com.percent.aos.cooptd 실행 → 햄버거 메뉴 → 설정 → 진동 ON 버튼 클릭 → 앱 재실행 → 진동 OFF 표시 확인"
-        }]
+            "name": "게스트 테스트",
+            "goal": "package_name: com.percent.aos.cooptd 실행 → 게스트 로그인 버튼 클릭→ 동의합니다 클릭"}]
+        
 
         # test_cases = load_test_cases("test_cases.yaml")
     
@@ -257,7 +323,12 @@ async def main():
         location=cfg.location,
     )
 
-    server_params = StdioServerParameters(command=cfg.mcp_command, args=cfg.mcp_args)
+    # 환경변수를 MCP 서버에 전달 (ADB_SERVER_SOCKET 등)
+    server_params = StdioServerParameters(
+        command=cfg.mcp_command,
+        args=cfg.mcp_args,
+        env=os.environ.copy()
+    )
     results = []
 
     try:
