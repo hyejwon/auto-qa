@@ -10,9 +10,13 @@ google-cloud-aiplatform==1.132.0
 fastmcp==2.14.1
 mcp==1.24.0
 
+# API Server
+fastapi[standard]
+uvicorn[standard]
+
 #UI
-gradio
-gradio_client
+gradio>=5.0,<6.0
+gradio_client>=1.0,<2.0
 # 유틸리티
 pydantic==2.12.5 
 python-dotenv==1.1.0

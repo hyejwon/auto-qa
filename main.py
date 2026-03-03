@@ -1,407 +1,592 @@
-# qa_agent/main.py
-import asyncio
-import json
+# main.py
 import logging
-import argparse
-import os
+import queue
+import threading
 import yaml
 from datetime import datetime
-from pathlib import Path
-from typing import List, Dict, Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from anyio import BrokenResourceError
-from langchain_mcp_adapters.tools import load_mcp_tools
-from langchain_google_genai import ChatGoogleGenerativeAI
+import gradio as gr
 
-from qa_agent.config import QAConfig
-from qa_agent.state import AgentState
-from qa_agent.tools.schemas import lc_tools_to_openai_schema
-from qa_agent.planner.planner import make_plan
-from qa_agent.executor.executor import run_current_step
-from qa_agent.report.report import generate_report
-from qa_agent.graph.build_graph import build_graph
+from adb_controller import ADBController
+from config import Config
+from planner_node import PlannerNode
+from qa_orchestrator import QAOrchestrator
 
-def load_test_cases(file_path: str, case_types: List[str] = None) -> List[Dict[str, Any]]:
-    """
-    YAML 또는 JSON 파일에서 테스트 케이스 로드
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-    Args:
-        file_path: 테스트 케이스 파일 경로
-        case_types: 필터링할 케이스 타입 리스트 (None이면 전체 로드)
-    """
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"테스트 케이스 파일을 찾을 수 없습니다: {file_path}")
+# ─────────────────────────────────────────────
+# 샘플 시나리오 (placeholder 예시)
+# ─────────────────────────────────────────────
+SAMPLE_SCENARIOS = [
+    (
+        "로그인 이용약관 확인",
+        "com.percent.aos.cooptd",
+        """\
+앱을 실행한다.
+→ 구글 로그인 버튼을 클릭한다.
+→ 이용약관 버튼을 클릭한다.
+→ 슈퍼매직 이용약관이 화면에 나오는지 확인.
+→ 뒤로가기를 누른다.
+→ 개인정보 처리방침 버튼을 클릭한다.
+→ 화면에서 개인정보 처리방침 텍스트를 확인한다.
+→ 앱을 종료한다.""",
+    ),
+    (
+        "진동 설정 ON 테스트",
+        "com.percent.aos.cooptd",
+        """\
+앱을 실행한다.
+→ 햄버거 메뉴를 클릭한다.
+→ 설정 메뉴로 진입한다.
+→ 진동 ON 버튼을 클릭한다.
+→ 앱을 재실행한다.
+→ 진동 OFF 표시가 보이는지 확인한다.
+→ 앱을 종료한다.""",
+    ),
+    (
+        "게스트 계정 삭제",
+        "com.percent.aos.cooptd",
+        """\
+앱을 실행한다.
+→ 햄버거 메뉴를 클릭한다.
+→ 설정 메뉴로 진입한다.
+→ 계정 연동을 클릭한다.
+→ 계정 삭제 버튼을 클릭한다.
+→ 앱을 재실행한다.
+→ 게스트 로그인 버튼이 보이는지 확인한다.
+→ 앱을 종료한다.""",
+    ),
+    (
+        "스태미너 충전 구매",
+        "com.percent.aos.cooptd",
+        """\
+앱을 실행한다.
+→ 10초 대기한다.
+→ 상단 번개 모양의 스태미너 충전 버튼을 클릭한다.
+→ 구매하기 버튼을 클릭한다.
+→ 구매 완료까지 대기한다.
+→ 스태미너가 정상 지급됐는지 확인한다.
+→ 다이아가 차감됐는지 확인한다.
+→ 앱을 종료한다.""",
+    ),
+]
 
-    content = path.read_text(encoding="utf-8")
+SCENARIO_PLACEHOLDER = """\
+예시:
+앱을 실행한다.
+→ 구글 로그인 버튼을 클릭한다.
+→ 이용약관 버튼을 클릭한다.
+→ UI에서 'terms-of-service' 텍스트를 확인한다.
+→ 뒤로가기를 누른다.
+→ 앱을 종료한다.
 
-    if path.suffix in (".yaml", ".yml"):
-        data = yaml.safe_load(content)
-    elif path.suffix == ".json":
-        data = json.loads(content)
-    else:
-        raise ValueError(f"지원하지 않는 파일 형식: {path.suffix} (yaml, yml, json만 지원)")
-
-    # 단일 goal 문자열 리스트도 지원
-    if isinstance(data, list):
-        if all(isinstance(item, str) for item in data):
-            test_cases = [{"name": f"테스트 {i+1}", "goal": goal} for i, goal in enumerate(data)]
-        else:
-            test_cases = data
-    # test_cases 키가 있는 경우
-    elif isinstance(data, dict) and "test_cases" in data:
-        test_cases = data["test_cases"]
-    else:
-        raise ValueError("테스트 케이스 형식이 올바르지 않습니다.")
-
-    # case_type 필터링
-    if case_types:
-        test_cases = [tc for tc in test_cases if tc.get("case_type") in case_types]
-
-    return test_cases
+위처럼 단계별로 자연어로 작성하거나,
+위의 샘플 버튼을 클릭하여 예시를 불러올 수 있습니다."""
 
 
-def get_available_case_types(file_path: str) -> List[str]:
-    """테스트 케이스 파일에서 사용 가능한 case_type 목록 추출"""
-    path = Path(file_path)
-    if not path.exists():
+# ─────────────────────────────────────────────
+# 헬퍼 함수
+# ─────────────────────────────────────────────
+
+def _config() -> Config:
+    return Config()
+
+
+def _get_testcase_choices() -> list[str]:
+    try:
+        tc_dir = _config().paths.testcases_dir
+        files = sorted(tc_dir.glob("*.yaml"))
+        return [f.stem for f in files]
+    except Exception:
         return []
 
-    content = path.read_text(encoding="utf-8")
-    if path.suffix in (".yaml", ".yml"):
-        data = yaml.safe_load(content)
-    elif path.suffix == ".json":
-        data = json.loads(content)
-    else:
-        return []
 
-    test_cases = data.get("test_cases", []) if isinstance(data, dict) else data
-    case_types = set()
-    for tc in test_cases:
-        if isinstance(tc, dict) and tc.get("case_type"):
-            case_types.add(tc["case_type"])
-    return sorted(list(case_types))
+# ─────────────────────────────────────────────
+# Gradio 이벤트 핸들러
+# ─────────────────────────────────────────────
+
+def load_sample(idx: int):
+    """샘플 시나리오를 입력 필드에 채운다."""
+    label, pkg, scenario = SAMPLE_SCENARIOS[idx]
+    return pkg, scenario
 
 
-def generate_summary_report(results: List[Dict[str, Any]], output_dir: Path) -> str:
-    """여러 테스트 결과를 요약한 리포트 생성"""
-    md = []
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    total = len(results)
-    passed = sum(1 for r in results if r["status"] == "done")
-    failed = total - passed
-
-    md.append("# 📊 QA 자동화 테스트 요약 리포트")
-    md.append("")
-    md.append(f"> **실행 시간:** {timestamp}")
-    md.append("")
-
-    # 전체 결과
-    if failed == 0:
-        md.append(f"> ### ✅ **전체 통과: {passed}/{total}**")
-    else:
-        md.append(f"> ### ⚠️ **{failed}개 실패: {passed}/{total} 통과**")
-    md.append("")
-
-    # 결과 테이블
-    md.append("## 📋 테스트 결과")
-    md.append("")
-    md.append("| # | 테스트명 | 결과 | 리포트 |")
-    md.append("|---|----------|------|--------|")
-
-    for idx, r in enumerate(results, 1):
-        status_icon = "✅" if r["status"] == "done" else "❌"
-        report_link = f"[상세보기]({r['report_file']})" if r.get("report_file") else "-"
-        md.append(f"| {idx} | {r['name']} | {status_icon} | {report_link} |")
-
-    md.append("")
-
-    # 실패한 테스트 상세
-    failed_tests = [r for r in results if r["status"] != "done"]
-    if failed_tests:
-        md.append("## ❌ 실패한 테스트")
-        md.append("")
-        for r in failed_tests:
-            md.append(f"### {r['name']}")
-            md.append("")
-            md.append(f"**Goal:** {r.get('goal', 'N/A')}")
-            md.append("")
-            if r.get("error"):
-                md.append(f"**에러:** `{r['error'][:200]}`")
-            md.append("")
-
-    md.append("---")
-    md.append("")
-    md.append("*QA 자동화 시스템에서 생성된 요약 리포트입니다.*")
-
-    return "\n".join(md)
-
-async def planner_node(state: AgentState, llm: ChatGoogleGenerativeAI):
-    tools_schema = state.get("tools_schema", [])
-    plan = await make_plan(llm, state.get("goal",""), tools_schema)
-    logging.getLogger("qa_agent.planner.planner").info(
-        f"PLANNED: {json.dumps(plan, ensure_ascii=False)[:2000]}"
-    )
-
-    return {
-        "plan": plan,
-        "goal_steps": plan.get("steps", []),
-        "current_step_idx": 0,
-        "mode": "executing",
-        "status": "running",
-        "messages": state.get("messages", []) + [{"role":"assistant","content": f"PLANNED: {json.dumps(plan, ensure_ascii=False)[:2000]}"}],
-    }
-
-async def replan_node(state: AgentState, llm: ChatGoogleGenerativeAI):
-    # 간단히 같은 플래너 재사용 + 실패 힌트 넣고 싶으면 make_plan 프롬프트에 recent trace 요약을 추가하면 됨
-    state["mode"] = "planning"
-    return await planner_node(state, llm)
-
-async def executor_node(state: AgentState):
-    # 실행만 전담
-    max_steps = state.get("max_steps", 40)
-    if state.get("step", 0) >= max_steps:
-        state["status"] = "error"
-        state["error"] = f"max_steps({max_steps}) reached"
-        return {"status": "error", "error": state["error"]}
-    return await run_current_step(state)
-
-async def run_single_test(
-    goal: str,
-    test_name: str,
-    cfg: QAConfig,
-    tools_schema: list,
-    tool_name_map: dict,
-    graph,
-    output_dir: Path,
-) -> Dict[str, Any]:
-    """단일 테스트 케이스 실행"""
-    print(f"\n{'='*60}")
-    print(f"🧪 테스트 시작: {test_name}")
-    print(f"📝 Goal: {goal[:80]}...")
-    print(f"{'='*60}\n")
-
-    init_state: AgentState = {
-        "mode": "planning",
-        "goal": goal,
-        "plan": {},
-        "goal_steps": [],
-        "current_step_idx": 0,
-        "messages": [{"role": "user", "content": "시작해줘. 필요한 도구를 호출해서 목표를 달성해."}],
-        "tools_schema": tools_schema,
-        "tool_name_map": tool_name_map,
-        "last_tool_results": [],
-        "trace": [],
-        "step": 0,
-        "max_steps": cfg.max_steps,
-        "status": "running",
-        "error": "",
-        "package_name": cfg.package_name,
-        "device_id": cfg.device_id,
-        "max_find_attempts": cfg.max_find_attempts,
-        "find_attempts": 0,
-        "repeat_count": 0,
-    }
+def generate_plan(package_name: str, scenario: str):
+    """자연어 시나리오 → YAML 테스트 플랜 생성."""
+    if not scenario.strip():
+        return "⚠️ 시나리오를 입력해주세요.", ""
 
     try:
-        final_state = await graph.ainvoke(init_state, config={"recursion_limit": 500})
+        cfg = _config()
+        planner = PlannerNode(
+            project=cfg.gemini.project,
+            location=cfg.gemini.location,
+            model=cfg.gemini.model,
+        )
+        plan = planner.create_test_plan(scenario.strip(), package_name.strip())
 
-        # 개별 리포트 저장
-        report_filename = None
-        if final_state.get("status") in ("done", "error"):
-            md = generate_report(final_state)
-            safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in test_name)
-            report_filename = f"qa_report_{safe_name}_{datetime.now().strftime('%H%M%S')}.md"
-            report_path = output_dir / report_filename
-            report_path.write_text(md, encoding="utf-8")
-            print(f"📄 리포트 저장: {report_path}")
-
-        status = final_state.get("status", "unknown")
-        status_icon = "✅" if status == "done" else "❌"
-        print(f"\n{status_icon} 테스트 완료: {test_name} - {status.upper()}")
-
-        return {
-            "name": test_name,
-            "goal": goal,
-            "status": status,
-            "error": final_state.get("error", ""),
-            "report_file": report_filename,
+        yaml_data = {
+            "title": plan.title,
+            "description": plan.description,
+            "package": plan.package,
+            "steps": [s.model_dump() for s in plan.steps],
+            "expected_results": plan.expected_results,
         }
+        yaml_str = yaml.dump(yaml_data, allow_unicode=True, sort_keys=False)
+        status = f"✅ 플랜 생성 완료 — {plan.title}  ({len(plan.steps)}개 스텝)"
+        return status, yaml_str
+
     except Exception as e:
-        logging.exception(f"테스트 실행 중 예외 발생: {test_name}")
-        return {
-            "name": test_name,
-            "goal": goal,
-            "status": "error",
-            "error": str(e),
-            "report_file": None,
-        }
+        logger.exception("generate_plan failed")
+        return f"❌ 오류: {e}", ""
 
 
-async def main():
-    parser = argparse.ArgumentParser(description="QA 자동화 테스트 실행")
-    parser.add_argument(
-        "-f", "--file",
-        help="테스트 케이스 파일 (YAML 또는 JSON). 환경변수 TEST_CASES_FILE로도 지정 가능",
-    )
-    parser.add_argument(
-        "-g", "--goal",
-        help="단일 goal 직접 지정 (파일 대신 사용)",
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default="./reports",
-        help="리포트 저장 디렉토리 (기본: ./reports)",
-    )
-    parser.add_argument(
-        "-t", "--type",
-        default=os.environ.get("TEST_CASE_TYPE"),
-        help="실행할 테스트 케이스 타입 (콤마로 구분, 예: login,settings). 환경변수 TEST_CASE_TYPE으로도 지정 가능",
-    )
-    parser.add_argument(
-        "--list-types",
-        action="store_true",
-        help="테스트 케이스 파일에서 사용 가능한 타입 목록 출력 후 종료",
-    )
-    args = parser.parse_args()
+def save_plan(yaml_preview: str, scenario: str = ""):
+    """생성된 YAML을 testcases 디렉토리에 저장."""
+    if not yaml_preview.strip():
+        return "⚠️ 먼저 플랜을 생성해주세요.", gr.update()
 
-    # --list-types 옵션 처리
-    if args.list_types:
-        if args.file:
-            types = get_available_case_types(args.file)
-            if types:
-                print(f"📋 사용 가능한 테스트 타입: {', '.join(types)}")
-            else:
-                print("⚠️ 테스트 케이스에 case_type이 정의되어 있지 않습니다.")
+    try:
+        cfg = _config()
+        tc_dir = cfg.paths.testcases_dir
+
+        existing = sorted(tc_dir.glob("TC_AUTO_*.yaml"))
+        next_num = len(existing) + 1
+        test_id = f"TC_AUTO_{next_num:03d}"
+
+        data = yaml.safe_load(yaml_preview)
+        data["id"] = test_id
+        data.setdefault("preconditions", [])
+        data["source_scenario"] = scenario.strip()
+
+        out_path = tc_dir / f"{test_id}.yaml"
+        with open(out_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+
+        return (
+            f"✅ 저장 완료 → {out_path.name}",
+            gr.update(choices=_get_testcase_choices()),
+        )
+
+    except Exception as e:
+        logger.exception("save_plan failed")
+        return f"❌ 오류: {e}", gr.update()
+
+
+def refresh_testcases():
+    return gr.update(choices=_get_testcase_choices())
+
+
+def _get_recording_choices() -> list[str]:
+    """recordings 디렉토리의 mp4 파일 목록 (최신순)."""
+    try:
+        rec_dir = _config().paths.recordings_dir
+        files = sorted(rec_dir.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
+        return [f.name for f in files]
+    except Exception:
+        return []
+
+
+def get_recording_file(filename: str):
+    """선택한 녹화 파일의 경로를 반환 (Video + File 컴포넌트 동시 업데이트)."""
+    if not filename:
+        return None, None
+    try:
+        path = _config().paths.recordings_dir / filename
+        p = str(path) if path.exists() else None
+        return p, p
+    except Exception:
+        return None, None
+
+
+def refresh_recordings():
+    return gr.update(choices=_get_recording_choices(), value=None)
+
+
+def load_testcase_info(test_id: str) -> str:
+    """선택한 테스트 케이스의 원본 자연어 시나리오를 반환."""
+    if not test_id:
+        return ""
+    try:
+        cfg = _config()
+        yaml_path = cfg.paths.testcases_dir / f"{test_id}.yaml"
+        with open(yaml_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return data.get("source_scenario", "")
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────
+# 화면 녹화 핸들러
+# ─────────────────────────────────────────────
+
+_rec_adb: ADBController | None = None       # 녹화 전용 ADB 인스턴스
+_test_stop_event: threading.Event | None = None  # 실행 중 테스트 중단 이벤트
+
+
+def start_recording():
+    """녹화 시작 — 3분 청크 단위 자동 분할."""
+    global _rec_adb
+    if _rec_adb and _rec_adb.is_recording:
+        return "⚠️ 이미 녹화 중입니다.", gr.update()
+
+    try:
+        cfg = _config()
+        _rec_adb = ADBController()
+        session = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _rec_adb.start_recording(cfg.paths.recordings_dir, session)
+        return f"🔴 녹화 중...  세션: {session}  (3분 단위 자동 분할)", gr.update(
+            value="", interactive=False
+        )
+    except Exception as e:
+        logger.exception("start_recording failed")
+        return f"❌ 오류: {e}", gr.update()
+
+
+def stop_recording():
+    """녹화 중지 — 저장된 파일 목록 반환."""
+    global _rec_adb
+    if not _rec_adb or not _rec_adb.is_recording:
+        return "⚠️ 녹화 중이 아닙니다.", gr.update()
+
+    try:
+        files = _rec_adb.stop_recording()
+        if files:
+            file_list = "\n".join(f.name for f in files)
+            status = f"⏹️ 녹화 완료 — {len(files)}개 청크 저장"
         else:
-            print("⚠️ --file 옵션으로 테스트 케이스 파일을 지정해주세요.")
+            file_list = "(저장된 파일 없음)"
+            status = "⏹️ 녹화 중지됨"
+        return status, gr.update(value=file_list)
+    except Exception as e:
+        logger.exception("stop_recording failed")
+        return f"❌ 오류: {e}", gr.update()
+
+
+def _format_summary(result) -> str:
+    """TestResult → Markdown 요약 문자열."""
+    icon = "✅" if result.status == "PASS" else "❌"
+    rows = [
+        f"## {icon} {result.status} — {result.title}",
+        "",
+        "| 항목 | 내용 |",
+        "|:---|:---|",
+        f"| 테스트 ID | `{result.test_id}` |",
+        f"| 스텝 통과 | **{result.steps_passed} / {result.steps_executed}** |",
+    ]
+    if result.end_time and result.start_time:
+        sec = (result.end_time - result.start_time).total_seconds()
+        rows.append(f"| 소요 시간 | {sec:.1f}초 |")
+    if result.screenshots:
+        rows.append(f"| 스크린샷 | {len(result.screenshots)}장 저장 |")
+    if result.error_message:
+        rows += ["", f"> ⚠️ **오류**: {result.error_message}"]
+
+    if result.step_results:
+        rows += ["", "### 스텝별 결과"]
+        for sr in result.step_results:
+            icon = "✅" if sr["passed"] else "❌"
+            rows.append(f"- {icon} **Step {sr['step']}** — {sr['label']}")
+
+    return "\n".join(rows)
+
+
+def stop_test():
+    """실행 중인 테스트에 중단 신호를 보낸다."""
+    global _test_stop_event
+    if _test_stop_event and not _test_stop_event.is_set():
+        _test_stop_event.set()
+        return "⏹️ 중단 요청됨 — 현재 스텝 완료 후 중지됩니다."
+    return "⚠️ 실행 중인 테스트가 없습니다."
+
+
+def run_test(test_id: str):
+    """스트리밍 제너레이터 — 실시간 로그 + 최종 Markdown 요약.
+    테스트 시작 시 화면 녹화를 자동으로 시작하고 종료 시 자동 중지한다.
+    """
+    global _rec_adb, _test_stop_event
+
+    if not test_id:
+        yield "⚠️ 테스트 케이스를 선택해주세요.", "", gr.update()
         return
 
-    cfg = QAConfig()
+    _test_stop_event = threading.Event()
+    log_q: queue.Queue = queue.Queue()
+    result_holder: dict = {}
 
-    # Configure logging based on debug flag
-    logging.basicConfig(
-        level=logging.DEBUG if cfg.debug else logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    _STEP_MARKERS = ("━", "▶ ", "┌─", "│", "└─", "⏹️", "🔴", "  결과:", "  테스트 시작:", "  패키지:")
 
-    if cfg.debug:
-        print("🐛 DEBUG mode enabled")
+    class _StreamHandler(logging.Handler):
+        def emit(self, record):
+            msg = record.getMessage()
+            if any(m in msg for m in _STEP_MARKERS):
+                log_q.put(msg)
 
-    # case_types 파싱
-    case_types = None
-    if args.type:
-        case_types = [t.strip() for t in args.type.split(",") if t.strip()]
+    handler = _StreamHandler()
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
 
-    # 테스트 케이스 준비
-    if args.file:
-        test_cases = load_test_cases(args.file, case_types=case_types)
-        type_info = f" (타입: {', '.join(case_types)})" if case_types else ""
-        print(f"📂 테스트 케이스 파일 로드: {args.file} ({len(test_cases)}개){type_info}")
-    elif args.goal:
-        test_cases = [{"name": "CLI 테스트", "goal": args.goal}]
-    else:
-        # 기본 테스트 (하드코딩된 goal)
-        test_cases = [{
-            "name": "게스트 테스트",
-            "goal": "package_name: com.percent.aos.cooptd 실행 → 게스트 로그인 버튼 클릭→ 동의합니다 클릭"}]
-        
+    def _run():
+        global _rec_adb
+        # ── 녹화 자동 시작 ────────────────────────────
+        try:
+            cfg = _config()
+            _rec_adb = ADBController()
+            session = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _rec_adb.start_recording(cfg.paths.recordings_dir, session)
+            logger.info(f"🔴 화면 녹화 시작 — 세션: {session}")
+        except Exception as e:
+            logger.warning(f"⚠️ 녹화 시작 실패 (테스트는 계속 진행): {e}")
+            _rec_adb = None
 
-        # test_cases = load_test_cases("test_cases.yaml")
-    
-    # 출력 디렉토리 생성
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    llm = ChatGoogleGenerativeAI(
-        model=cfg.model,
-        project=cfg.project,
-        location=cfg.location,
-    )
-
-    # 환경변수를 MCP 서버에 전달 (ADB_SERVER_SOCKET 등)
-    server_params = StdioServerParameters(
-        command=cfg.mcp_command,
-        args=cfg.mcp_args,
-        env=os.environ.copy()
-    )
-    results = []
-
-    try:
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await asyncio.wait_for(session.initialize(), timeout=30.0)
-                lc_tools = await asyncio.wait_for(load_mcp_tools(session), timeout=60.0)
-
-                tool_name_map = {t.name: t for t in lc_tools}
-                tools_schema = lc_tools_to_openai_schema(lc_tools)
-
-                # set_device 선 호출(옵션)
-                set_device_tool = tool_name_map.get("set_device")
-                if set_device_tool:
-                    if hasattr(set_device_tool, "ainvoke"):
-                        await set_device_tool.ainvoke({"device_id": cfg.device_id})
+        # ── 테스트 실행 ───────────────────────────────
+        try:
+            orchestrator = QAOrchestrator(_config())
+            result_holder["result"] = orchestrator.run_test(
+                test_id, _test_stop_event
+            )
+        except Exception as e:
+            logger.exception("run_test thread failed")
+            result_holder["error"] = str(e)
+        finally:
+            # ── 녹화 자동 중지 ────────────────────────
+            if _rec_adb and _rec_adb.is_recording:
+                try:
+                    files = _rec_adb.stop_recording()
+                    if files:
+                        names = "  |  ".join(f.name for f in files)
+                        logger.info(f"⏹️ 녹화 완료 — {len(files)}개 청크: {names}")
                     else:
-                        set_device_tool.invoke({"device_id": cfg.device_id})
+                        logger.info("⏹️ 녹화 중지됨 (저장 파일 없음)")
+                except Exception as e:
+                    logger.warning(f"녹화 중지 실패: {e}")
+            log_q.put(None)  # sentinel
 
-                # build graph with closures
-                async def planner_wrapper(state: AgentState):
-                    return await planner_node(state, llm)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
 
-                async def replan_wrapper(state: AgentState):
-                    return await replan_node(state, llm)
+    log_lines: list[str] = []
+    while True:
+        try:
+            msg = log_q.get(timeout=0.15)
+        except queue.Empty:
+            if not t.is_alive():
+                break
+            yield "\n".join(log_lines), "", gr.update()
+            continue
+        if msg is None:
+            break
+        log_lines.append(msg)
+        yield "\n".join(log_lines), "", gr.update()
 
-                graph = build_graph(
-                    planner_node=planner_wrapper,
-                    replan_node=replan_wrapper,
-                    executor_node=executor_node
+    root_logger.removeHandler(handler)
+    t.join(timeout=5)
+    _test_stop_event = None
+
+    # 최종 Markdown 요약
+    if "result" in result_holder:
+        summary = _format_summary(result_holder["result"])
+    else:
+        err = result_holder.get("error", "알 수 없는 오류")
+        summary = f"## ❌ 실행 실패\n\n> {err}"
+
+    # 테스트 완료 후 녹화 목록 갱신
+    yield "\n".join(log_lines), summary, gr.update(choices=_get_recording_choices())
+
+
+# ──────────────────────────���──────────────────
+# Gradio UI 빌드
+# ─────────────────────────────────────────────
+
+def build_app() -> gr.Blocks:
+    with gr.Blocks(title="QA 자동화 테스트", theme=gr.themes.Soft()) as app:
+
+        gr.Markdown("# 📱 QA 자동화 테스트 도구")
+        gr.Markdown(
+            "자연어 시나리오를 입력하면 AI가 테스트 플랜을 생성하고 디바이스에서 자동 실행합니다."
+        )
+
+        with gr.Tabs():
+
+            # ═══════════════════════════════════════
+            # Tab 1 — 테스트 케이스 작성
+            # ═══════════════════════════════════════
+            with gr.TabItem("📝 테스트 케이스 작성"):
+
+                gr.Markdown("### 샘플 시나리오")
+                gr.Markdown("버튼을 클릭하면 예시 시나리오가 자동으로 입력됩니다.")
+
+                with gr.Row():
+                    sample_btns = [
+                        gr.Button(label, size="sm", variant="secondary")
+                        for label, _, _ in SAMPLE_SCENARIOS
+                    ]
+
+                gr.Markdown("---")
+
+                with gr.Row():
+                    # ── 왼쪽: 입력 영역 ──────────────────
+                    with gr.Column(scale=1):
+                        pkg_input = gr.Textbox(
+                            label="패키지명",
+                            placeholder="예: com.percent.aos.cooptd",
+                            value="com.percent.aos.cooptd",
+                        )
+                        scenario_input = gr.Textbox(
+                            label="테스트 시나리오 (자연어)",
+                            placeholder=SCENARIO_PLACEHOLDER,
+                            lines=14,
+                        )
+                        with gr.Row():
+                            gen_btn = gr.Button(
+                                "🔍 플랜 생성", variant="primary", scale=2
+                            )
+                            save_btn = gr.Button(
+                                "💾 저장", variant="secondary", scale=1
+                            )
+                        status_box = gr.Textbox(
+                            label="상태", interactive=False, lines=1
+                        )
+
+                    # ── 오른쪽: YAML 미리보기 ─────────────
+                    with gr.Column(scale=1):
+                        yaml_box = gr.Code(
+                            label="생성된 테스트 플랜 (YAML 미리보기)",
+                            language="yaml",
+                            lines=22,
+                            interactive=True,
+                        )
+
+                # 샘플 버튼 이벤트
+                for i, btn in enumerate(sample_btns):
+                    btn.click(
+                        fn=lambda i=i: load_sample(i),
+                        outputs=[pkg_input, scenario_input],
+                    )
+
+                gen_btn.click(
+                    fn=generate_plan,
+                    inputs=[pkg_input, scenario_input],
+                    outputs=[status_box, yaml_box],
                 )
 
-                # 각 테스트 케이스 실행
-                for idx, tc in enumerate(test_cases, 1):
-                    test_name = tc.get("name", f"테스트 {idx}")
-                    goal = tc.get("goal", "")
+                # ── Tab 2 의 드롭다운을 함께 갱신하기 위해 미리 선언 후 연결
+                # (아래 Tab 2 블록에서 정의한 뒤 아래에서 outputs 추가)
 
-                    if not goal:
-                        print(f"⚠️ 건너뜀: {test_name} (goal이 비어있음)")
-                        continue
+            # ═══════════════════════════════════════
+            # Tab 2 — 테스트 실행
+            # ═══════════════════════════════════════
+            with gr.TabItem("▶️ 테스트 실행"):
 
-                    result = await run_single_test(
-                        goal=goal,
-                        test_name=test_name,
-                        cfg=cfg,
-                        tools_schema=tools_schema,
-                        tool_name_map=tool_name_map,
-                        graph=graph,
-                        output_dir=output_dir,
+                gr.Markdown("### 저장된 테스트 케이스 실행")
+
+                with gr.Row():
+                    tc_dropdown = gr.Dropdown(
+                        choices=_get_testcase_choices(),
+                        label="테스트 케이스 선택",
+                        interactive=True,
+                        scale=4,
                     )
-                    results.append(result)
+                    refresh_btn = gr.Button("🔄 새로고침", scale=1)
+                    run_btn = gr.Button("▶️ 실행", variant="primary", scale=1)
+                    stop_btn = gr.Button("⏹️ 중단", variant="stop", scale=1)
 
-                # 여러 테스트 실행 시 요약 리포트 생성
-                if len(results) > 1:
-                    summary_md = generate_summary_report(results, output_dir)
-                    summary_path = output_dir / f"qa_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-                    summary_path.write_text(summary_md, encoding="utf-8")
-                    print(f"\n📊 요약 리포트 저장: {summary_path}")
+                scenario_display = gr.Textbox(
+                    label="원본 시나리오 (자연어)",
+                    lines=5,
+                    interactive=False,
+                    placeholder="테스트 케이스를 선택하면 원본 자연어 시나리오가 표시됩니다.",
+                )
 
-                # 최종 결과 출력
-                print(f"\n{'='*60}")
-                print("🏁 전체 테스트 완료")
-                print(f"{'='*60}")
-                passed = sum(1 for r in results if r["status"] == "done")
-                print(f"✅ 통과: {passed}/{len(results)}")
-                if passed < len(results):
-                    print(f"❌ 실패: {len(results) - passed}/{len(results)}")
-                    for r in results:
-                        if r["status"] != "done":
-                            print(f"   - {r['name']}: {r.get('error', 'Unknown error')[:50]}")
+                gr.Markdown(
+                    "_테스트 실행 시 화면 녹화(3분 청크)가 자동으로 시작·종료됩니다._"
+                )
 
-    except* BrokenResourceError:
-        logging.warning("MCP stdio connection closed with BrokenResourceError (ignored).")
+                log_box = gr.Textbox(
+                    label="실시간 실행 로그",
+                    lines=20,
+                    interactive=False,
+                    autoscroll=True,
+                )
+                summary_md = gr.Markdown(value="", label="최종 결과 요약")
+
+                tc_dropdown.change(
+                    fn=load_testcase_info,
+                    inputs=[tc_dropdown],
+                    outputs=[scenario_display],
+                )
+                refresh_btn.click(fn=refresh_testcases, outputs=[tc_dropdown])
+                stop_btn.click(
+                    fn=stop_test,
+                    outputs=[log_box],
+                )
+
+            # ═══════════════════════════════════════
+            # Tab 3 — 녹화 영상
+            # ═══════════════════════════════════════
+            with gr.TabItem("🎬 녹화 영상"):
+
+                gr.Markdown("### 녹화된 테스트 영상 다운로드")
+                gr.Markdown(
+                    "테스트 실행 시 자동 저장된 화면 녹화 파일을 선택하여 미리보기 및 다운로드할 수 있습니다."
+                )
+
+                with gr.Row():
+                    rec_dropdown = gr.Dropdown(
+                        choices=_get_recording_choices(),
+                        label="녹화 파일 선택",
+                        interactive=True,
+                        scale=5,
+                    )
+                    rec_refresh_btn = gr.Button("🔄 새로고침", scale=1)
+
+                rec_video = gr.Video(
+                    label="녹화 영상 미리보기",
+                    interactive=False,
+                    height=360,
+                )
+                rec_file = gr.File(
+                    label="다운로드",
+                    interactive=False,
+                )
+
+                rec_dropdown.change(
+                    fn=get_recording_file,
+                    inputs=[rec_dropdown],
+                    outputs=[rec_video, rec_file],
+                )
+                rec_refresh_btn.click(
+                    fn=refresh_recordings,
+                    outputs=[rec_dropdown],
+                )
+
+        # run_btn 은 Tab 3 의 rec_dropdown 까지 갱신하므로 탭 블록 바깥에서 연결
+        run_btn.click(
+            fn=run_test,
+            inputs=[tc_dropdown],
+            outputs=[log_box, summary_md, rec_dropdown],
+        )
+
+        # save_btn 은 status_box + tc_dropdown 둘 다 갱신
+        save_btn.click(
+            fn=save_plan,
+            inputs=[yaml_box, scenario_input],
+            outputs=[status_box, tc_dropdown],
+        )
+
+    return app
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    cfg = _config()
+    build_app().launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        allowed_paths=[str(cfg.paths.recordings_dir)],
+    )

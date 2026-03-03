@@ -1,57 +1,51 @@
 version: '3.8'
 
 services:
-  auto-qa:
+  qa-gradio:
     build:
       context: .
       dockerfile: Dockerfile
-    image: auto-qa:latest
-    container_name: auto-qa-dev
+    image: qa-auto:latest
+    container_name: qa-gradio
 
-    # Mac/Windows에서 호스트의 BlueStacks에 접근하기 위한 설정
+    # Docker Desktop(Windows/Mac)에서 host.docker.internal 자동 등록
+    # Linux 환경에서는 host-gateway 매핑이 필요
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-    volumes:
-      # 소스 코드 (개발 중 수정 반영)
-      - ./qa_agent:/app/qa_agent
-      - ./main.py:/app/main.py
-      - ./mcp_server.py:/app/mcp_server.py
-      - ./gradio_app.py:/app/gradio_app.py
-      
-      # 결과물
-      - ./report:/app/report
-      - ./screenshots:/app/screenshots
-      - ./logs:/app/logs
-      - ./recordings:/app/recordings
-      
-      # APK 파일
-      - ./apks:/app/apks
-
-      # 테스트 케이스 파일
-      - ./test_cases.yaml:/app/test_cases.yaml
-
-      # GCP 인증 (로컬 credentials 마운트)
-      - ~/.config/gcloud:/root/.config/gcloud:ro
-
     environment:
-      # GCP/Vertex AI 설정
-      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
-      - GOOGLE_CLOUD_PROJECT=percent-vertex-test
-      - VERTEX_PROJECT=percent-vertex-test
-      - VERTEX_LOCATION=global
-      - VERTEX_MODEL=gemini-2.5-pro
-      # 호스트의 ADB 서버를 통해 BlueStacks 연결
-      # 호스트에서 먼저 실행: adb kill-server && adb -a -P 5037 nodaemon server
-      - ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
-      - ADB_DEVICE=127.0.0.1:5555
-      - APK_PATH=/app/apks/cooptd.apk
-      - MCP_SERVER_URL=http://host.docker.internal:37772
-      - TEST_CASES_FILE=/app/test_cases.yaml
-      # 테스트 케이스 타입 필터 (콤마로 구분, 예: login,settings). 비워두면 전체 실행
-      - TEST_CASE_TYPE=settings
+      # Google Cloud 인증 (서비스 계정 키 파일 경로)
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
+
+      # ADB: 컨테이너 내 adb 클라이언트 → Windows 호스트 ADB 서버로 연결
+      # Windows에서 반드시 먼저 실행: adb start-server
+      - ANDROID_ADB_SERVER_ADDRESS=host.docker.internal
+      - ANDROID_ADB_SERVER_PORT=5037
+
+    volumes:
+      # 테스트케이스 · 결과 · 스크린샷 · 녹화 영상 (호스트 ↔ 컨테이너 공유)
+      - ./testcases:/app/testcases
+      - ./test_results:/app/test_results
+      - ./screenshots:/app/screenshots
+      - ./screenshots_debug:/app/screenshots_debug
+      - ./recordings:/app/recordings
+
+      # Google Cloud 서비스 계정 키 파일 (읽기 전용)
+      # GCP Console → IAM → 서비스 계정 → 키 만들기 → JSON 다운로드 후
+      # 프로젝트 폴더에 credentials.json 으로 저장
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./credentials.json}:/app/credentials.json:ro
 
     env_file:
       - .env
-    
-    # command: python main.py
+
+    ports:
+      - "7860:7860"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
