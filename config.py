@@ -10,11 +10,13 @@ class PathConfig:
     results_dir: Path = project_root / "test_results"
     testcases_dir: Path = project_root / "testcases"
     recordings_dir: Path = project_root / "recordings"
+    apks_dir: Path = project_root / "apks"
 
     def __post_init__(self):
         """디렉토리 자동 생성"""
         for path in [self.screenshots_dir, self.debug_dir,
-                     self.results_dir, self.testcases_dir, self.recordings_dir]:
+                     self.results_dir, self.testcases_dir, self.recordings_dir,
+                     self.apks_dir]:
             path.mkdir(parents=True, exist_ok=True)
 
 @dataclass

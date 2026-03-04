@@ -61,13 +61,13 @@ class UnityAPIClient:
         model: str = "gemini-3-pro-preview",
         temperature: float = 0.1,
         base_url: Optional[str] = None,
-        timeout_sec: float = 5.0,
+        timeout_sec: float = 10.0,
     ):
         url = (
             base_url
             or os.getenv("UNITY_API_URL")
             or os.getenv("MCP_SERVER_URL")
-            or "http://localhost:37772"
+            or "http://127.0.0.1:37772"
         )
         self.adb = adb_controller
         self.base_url = url.rstrip("/")

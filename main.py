@@ -207,6 +207,38 @@ def refresh_recordings():
     return gr.update(choices=_get_recording_choices(), value=None)
 
 
+def _get_apk_choices() -> list[str]:
+    """apks 디렉토리의 APK 파일 목록 (최신순)."""
+    try:
+        apks_dir = _config().paths.apks_dir
+        files = sorted(apks_dir.glob("*.apk"), key=lambda f: f.stat().st_mtime, reverse=True)
+        return [f.name for f in files]
+    except Exception:
+        return []
+
+
+def refresh_apks():
+    return gr.update(choices=_get_apk_choices(), value=None)
+
+
+def install_apk(filename: str):
+    """선택한 APK를 디바이스에 설치."""
+    if not filename:
+        yield "⚠️ APK 파일을 선택해주세요."
+        return
+
+    apk_path = _config().paths.apks_dir / filename
+    yield f"📦 설치 중: {filename} ..."
+
+    try:
+        adb = ADBController()
+        _, msg = adb.install_apk(apk_path)
+        yield msg
+    except Exception as e:
+        logger.exception("install_apk failed")
+        yield f"❌ ADB 연결 오류: {e}"
+
+
 def load_testcase_info(test_id: str) -> str:
     """선택한 테스트 케이스의 원본 자연어 시나리오를 반환."""
     if not test_id:
@@ -412,9 +444,35 @@ def build_app() -> gr.Blocks:
         )
 
         with gr.Tabs():
+                        # ═══════════════════════════════════════
+            # Tab 1 — APK 설치
+            # ═══════════════════════════════════════
+            with gr.TabItem("📦 APK 설치"):
+
+                gr.Markdown("### APK 파일 설치")
+                gr.Markdown("`apks/` 폴더에 있는 APK 파일을 선택하여 연결된 디바이스에 설치합니다.")
+
+                with gr.Row():
+                    apk_dropdown = gr.Dropdown(
+                        choices=_get_apk_choices(),
+                        label="APK 파일 선택",
+                        interactive=True,
+                        scale=5,
+                    )
+                    apk_refresh_btn = gr.Button("🔄 새로고침", scale=1)
+
+                apk_install_btn = gr.Button("📲 설치", variant="primary")
+                apk_status = gr.Textbox(label="설치 상태", interactive=False, lines=3)
+
+                apk_refresh_btn.click(fn=refresh_apks, outputs=[apk_dropdown])
+                apk_install_btn.click(
+                    fn=install_apk,
+                    inputs=[apk_dropdown],
+                    outputs=[apk_status],
+                )
 
             # ═══════════════════════════════════════
-            # Tab 1 — 테스트 케이스 작성
+            # Tab 2 — 테스트 케이스 작성
             # ═══════════════════════════════════════
             with gr.TabItem("📝 테스트 케이스 작성"):
 
@@ -479,7 +537,7 @@ def build_app() -> gr.Blocks:
                 # (아래 Tab 2 블록에서 정의한 뒤 아래에서 outputs 추가)
 
             # ═══════════════════════════════════════
-            # Tab 2 — 테스트 실행
+            # Tab 3 — 테스트 실행
             # ═══════════════════════════════════════
             with gr.TabItem("▶️ 테스트 실행"):
 
@@ -527,7 +585,7 @@ def build_app() -> gr.Blocks:
                 )
 
             # ═══════════════════════════════════════
-            # Tab 3 — 녹화 영상
+            # Tab 4 — 녹화 영상
             # ═══════════════════════════════════════
             with gr.TabItem("🎬 녹화 영상"):
 

@@ -335,6 +335,29 @@ class ADBController:
     #         ])  
     #     return 1
     
+    def install_apk(self, apk_path: Path) -> tuple[bool, str]:
+        """APK 설치."""
+        if not apk_path.exists():
+            return False, f"파일 없음: {apk_path}"
+        try:
+            proc = subprocess.run(
+                self._adb_cmd(["install", str(apk_path)]),
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            output = (proc.stdout + proc.stderr).strip()
+            if proc.returncode == 0 and "Success" in output:
+                logger.info("APK installed: %s", apk_path.name)
+                return True, f"✅ 설치 완료: {apk_path.name}"
+            logger.warning("APK install failed: %s", output)
+            return False, f"❌ 설치 실패: {output[:300]}"
+        except subprocess.TimeoutExpired:
+            return False, "❌ 타임아웃 (180초 초과)"
+        except Exception as e:
+            logger.error("APK install exception: %s", e)
+            return False, f"❌ 오류: {e}"
+
     def close_app(self, package: str) -> bool:
         """앱 종료"""
         try:

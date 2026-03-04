@@ -29,6 +29,7 @@ services:
       - ./screenshots:/app/screenshots
       - ./screenshots_debug:/app/screenshots_debug
       - ./recordings:/app/recordings
+      - ./apks:/app/apks
 
       # Google Cloud 서비스 계정 키 파일 (읽기 전용)
       # GCP Console → IAM → 서비스 계정 → 키 만들기 → JSON 다운로드 후

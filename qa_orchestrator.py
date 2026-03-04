@@ -40,12 +40,14 @@ class QAOrchestrator:
     def __init__(self, config: Config = Config()):
         self.config = config
         self.adb = ADBController()
+        #self.adb = None
         self.unity = UnityAPIClient(
             adb_controller=self.adb,
             project=config.gemini.project,
             location=config.gemini.location,
             model=config.gemini.model,
             temperature=config.gemini.temperature,
+            base_url="http://host.docker.internal:37772"
         )
         self.vision = GeminiVisionAgent(
             project=config.gemini.project,
@@ -129,6 +131,7 @@ class QAOrchestrator:
 
         try:
             # 앱 실행
+        
             if testcase.package:
                 logger.info(f"▶ 앱 실행 중: {testcase.package}")
                 self.adb.launch_app(testcase.package)
