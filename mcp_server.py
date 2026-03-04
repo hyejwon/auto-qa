@@ -2,16 +2,13 @@ from fastmcp import FastMCP
 import subprocess
 import json
 import base64
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 import re
 from datetime import datetime
 from pathlib import Path
 import logging
 import base64
-from google.genai import types
-from google import genai
-from pydantic import BaseModel, Field
 import asyncio
 import io
 from PIL import Image, ImageDraw
@@ -20,8 +17,6 @@ from typing import Any
 import httpx
 
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:37772")
-
-client_gemini = genai.Client(vertexai=True, project="percent-vertex-test", location="global")
 
 # 로깅 설정 (버퍼링 최소화로 중단 시에도 로그 보존)
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -74,6 +69,37 @@ if os.getenv("QA_MCP_DEBUGPY", "0") == "1":
     except Exception as e:
         logger.warning(f"Failed to start debugpy: {e}")
 
+
+async def _adb_exec(device_id: str, *args) -> asyncio.subprocess.Process:
+    """adb -s <device> <args...> 를 실행하는 헬퍼"""
+    return await asyncio.create_subprocess_exec(
+        "adb",
+        "-s",
+        device_id,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=os.environ.copy(),
+    
+    )
+async def adb_forward_37772(device_id: str, log_callback=None) -> bool:
+    """adb forward tcp:37772 tcp:37772"""
+    try:
+        proc = await _adb_exec(device_id, "forward", "tcp:37772", "tcp:37772")
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            if log_callback:
+                log_callback(f"⚠️ adb forward 실패: {err.decode(errors='ignore')[:200]}")
+            return False
+        if log_callback:
+            log_callback("✅ adb forward tcp:37772 설정 완료")
+        return True
+    except Exception as e:
+        if log_callback:
+            log_callback(f"⚠️ adb forward 예외: {e}")
+        return False
+    
+    
 # FastMCP 서버 생성
 mcp = FastMCP("mobile-mcp-server")
 import re
@@ -156,145 +182,7 @@ button_map = {
 }
 
 
-# ========= FastMCP 툴 정의 (Python 버전) =========
-class VisionClickArgs(BaseModel):
-    button_description: str = Field(
-        ..., 
-        description="이미지에서 클릭할 버튼에 대한 구체적인 설명 (예: '그린스톤 구매 버튼', '2700 실버라고 적힌 녹색 버튼')"
-    )
-
 # ========= 내부 구현 함수들 (직접 호출용) =========
-import re
-from difflib import SequenceMatcher
-from typing import Optional, Tuple, List, Dict, Any
-
-async def validate_action(action: str) -> bool:
-    """
-    주어진 action이 유효한지 llm 혹은 버튼 조회 으로 화면을 검증해서 검증 결과를 반환
-    """
-    
-    smart_find_impl(action)
-    
-    
-    return {"status": "success", "reason": "action is valid"}
-    
-
-async def llm_choose_hyperlink_candidate(target: str, buttons: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-    """
-    alias 하드코딩 없이 LLM이 후보 중 best 1개를 고르게 함.
-    반환: {"index": int, "reason": str} or None
-    """
-    result = take_screenshot_impl()
-    screenshot_image = result.get("image", "")
-    # LLM 입력 크기 제한을 위해 상위 N개만 (너무 많으면 토큰 폭발)
-    # N = 60
-    # cand = []
-    # for i, b in enumerate(buttons[:N]):
-    #     coordinates = b.get("HyperLinkPositions","")
-    #     text = b.get("Text")    
-        
-        
-        
-    #     cand.append({
-    #         "i": i,
-    #         "name": (b.get("GameObjectName") or ""),
-    #         "position": (b.get("PositionX"), b.get("PositionY")),
-    #         "parent": (b.get("ParentMetadata") or "")[:220],  # parent 너무 길면 자르기
-    #     })
-
-    cand = []
-    for item in buttons:  # 네가 준 배열
-        cand.extend(parse_links_and_positions(item))
-
-    prompt = f"""
-너는 모바일 QA 자동화에서 Unity UI 버튼을 고르는 랭커다.
-사용자 target(사람 언어): "{target}"
-
-아래 후보들 중 target과 의미적으로 가장 일치하는 버튼 1개를 고르고, 그 후보의 i를 반환해라.
-- target은 한국어일 수 있고 후보 name은 영어 식별자일 수 있다. 예: "햄버거" == "HambergerButton"
-- 이미지의 위치를 보고 주어진 target을 찾아라.
-- ParentMetadata에 Top/Right/Menu/Setting 같은 컨텍스트가 있으면 그걸 근거로 삼아라.
-- Frame 같은 일반 이름은 특별한 근거가 없으면 피하라.
-
-반환은 반드시 JSON만:
-{{"index": <int>, "reason": "<짧게>"}}
-
-후보 목록:
-{json.dumps(cand, ensure_ascii=False)}
-""".strip()
-
-    try:
-        # 너 코드에 이미 client_gemini 있으니 그대로 사용
-        resp = client_gemini.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[prompt,types.Part.from_bytes(data=screenshot_image, mime_type="image/jpeg")],
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        obj = json.loads(resp.text)
-        idx = obj.get("index")
-        if not isinstance(idx, int):
-            return None
-        if idx < 0 or idx >= len(buttons):
-            return None
-        return {"index": idx, "reason": obj.get("reason", "")}
-    except Exception as e:
-        logger.error(f"[llm_choose_unity_candidate] error: {e}")
-        return None
-    
-async def llm_choose_unity_candidate(target: str, buttons: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-    """
-    alias 하드코딩 없이 LLM이 후보 중 best 1개를 고르게 함.
-    반환: {"index": int, "reason": str} or None
-    """
-    result = take_screenshot_impl()
-    screenshot_image = result.get("image", "")
-    # LLM 입력 크기 제한을 위해 상위 N개만 (너무 많으면 토큰 폭발)
-    N = 60
-    cand = []
-    for i, b in enumerate(buttons[:N]):
-        cand.append({
-            "i": i,
-            "name": (b.get("GameObjectName") or ""),
-            "position": (b.get("PositionX"), b.get("PositionY")),
-            "parent": (b.get("ParentMetadata") or "")[:220],  # parent 너무 길면 자르기
-        })
-
-    prompt = f"""
-너는 모바일 QA 자동화에서 Unity UI 버튼을 고르는 랭커다.
-사용자 target(사람 언어): "{target}"
-
-아래 후보들 중 target과 의미적으로 가장 일치하는 버튼 1개를 고르고, 그 후보의 i를 반환해라.
-- target은 한국어일 수 있고 후보 name은 영어 식별자일 수 있다. 예: "햄버거" == "HambergerButton"
-- 이미지의 위치를 보고 주어진 target을 찾아라.
-- ParentMetadata에 Top/Right/Menu/Setting 같은 컨텍스트가 있으면 그걸 근거로 삼아라.
-- Frame 같은 일반 이름은 특별한 근거가 없으면 피하라.
-
-반환은 반드시 JSON만:
-{{"index": <int>, "reason": "<짧게>"}}
-
-후보 목록:
-{json.dumps(cand, ensure_ascii=False)}
-""".strip()
-
-    try:
-        # 너 코드에 이미 client_gemini 있으니 그대로 사용
-        resp = client_gemini.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[prompt,types.Part.from_bytes(data=screenshot_image, mime_type="image/jpeg")],
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        obj = json.loads(resp.text)
-        idx = obj.get("index")
-        if not isinstance(idx, int):
-            return None
-        if idx < 0 or idx >= min(len(buttons), N):
-            return None
-        return {"index": idx, "reason": obj.get("reason", "")}
-    except Exception as e:
-        logger.error(f"[llm_choose_unity_candidate] error: {e}")
-        return None
-
-
 def mobile_swipe_on_screen_impl(
     direction: str,
     x: Optional[int] = None,
@@ -419,80 +307,6 @@ def _get_screen_size(device_id: str) -> Tuple[int, int]:
     except Exception as e:
         logger.error(f"Error getting screen size: {e}")
         return (720, 1280)  # 기본값
-
-def _get_link_text(item: Dict[str, Any]) -> str:
-    # 실제 스키마에 맞게 조정
-    return (
-        item.get("text")
-        or item.get("Text")
-        or item.get("Label")
-        or item.get("SpecifiedName")
-        or item.get("GameObjectName")
-        or ""
-    )
-
-def _get_button_text(item: Dict[str, Any]) -> str:
-    return (
-        item.get("SpecifiedName")
-        or item.get("GameObjectName")
-        or item.get("text")
-        or item.get("Text")
-        or ""
-    )
-    
-def _norm_text(s: str) -> str:
-    if not s:
-        return ""
-    s = s.strip().lower()
-    # 공백/구두점 단순화 (필요시 조절)
-    s = re.sub(r"[\s\-_]+", " ", s)
-    s = re.sub(r"[^\w\s가-힣]", "", s)
-    return s
-
-def _sim(a: str, b: str) -> float:
-    a, b = _norm_text(a), _norm_text(b)
-    if not a or not b:
-        return 0.0
-    return SequenceMatcher(None, a, b).ratio()
-
-def _pick_best_fuzzy(
-    target: str,
-    candidates: List[Dict[str, Any]],
-    text_getter,
-    min_score: float = 0.72,
-) -> Optional[Tuple[Dict[str, Any], float]]:
-    """
-    candidates 중 target과 가장 유사한 1개 선택.
-    text_getter: candidate -> 비교할 텍스트 반환 함수
-    """
-    # 1) 정규식이면 우선 정규식 매칭 먼저 (기존 동작 유지)
-    try:
-        rx = re.compile(target, re.IGNORECASE)
-        regex_hits = [c for c in candidates if rx.search(_norm_text(text_getter(c)))]
-        if regex_hits:
-            # regex hit이 여러 개면 그 중에서도 유사도로 1개 고르면 안정적
-            best = None
-            best_s = -1.0
-            for c in regex_hits:
-                s = _sim(target, text_getter(c))
-                if s > best_s:
-                    best, best_s = c, s
-            return (best, best_s)
-    except re.error:
-        # 정규식이 아니라면 그냥 fuzzy로
-        pass
-
-    # 2) fuzzy
-    best = None
-    best_s = -1.0
-    for c in candidates:
-        s = _sim(target, text_getter(c))
-        if s > best_s:
-            best, best_s = c, s
-
-    if best is None or best_s < min_score:
-        return None
-    return (best, best_s)
 
 def mobile_launch_app_impl(package_name: str) -> dict:
     """
@@ -719,95 +533,116 @@ def unity_find_buttons_impl() -> List[Dict[str, Any]] | Dict[str, Any]:
 
         return {"error": str(e)}
 
-async def get_vision_coordinates(image_data: str, button_name: str = None):
-    """
-    VLM을 사용하여 스크린샷에서 특정 UI 요소의 좌표를 추출합니다.
-    """
-    # image_path = "screenshot.png"
+# async def get_vision_coordinates(image_data: str, button_name: str = None):
+#     """
+#     VLM을 사용하여 스크린샷에서 특정 UI 요소의 좌표를 추출합니다.
+#     """
+#     # image_path = "screenshot.png"
 
-    # with open(image_path, "rb") as f:
-    #     image_bytes = f.read()
+#     # with open(image_path, "rb") as f:
+#     #     image_bytes = f.read()
 
-    # 프롬프트 구성: 픽셀 좌표를 직접 추출하도록 유도
+#     # 프롬프트 구성: 픽셀 좌표를 직접 추출하도록 유도
+#     width, height = _get_screen_size(current_device)
+#     prompt = """
+#     위 이미지의 bbox를 분석해서 해당 해상도 비율에 맞춘 픽셀 좌표 뽑아줘
+#         - bbox 컬러는 빨간색
+#         - 사이즈는 720 * 1280 
+#     [반환 형식]:
+#     절대 아래 JSON 형식 이외의 텍스트를 출력하지 마.
+#     {{
+#       "bbox": [ymin, xmin, ymax, xmax],
+#       "reason": "<왜 이 영역을 판단했는지에 대한 간단한 설명>"
+#     }}
+#     """
+#     # prompt = f"""
+#     # 당신은 UI 좌표 추출 전문가입니다. 
+#     # 제공된 이미지에서 오직 '{button_name}'라는 텍스트나 아이콘을 포함한 버튼 하나를 찾아서 bounding box를 추출해줘.
+#     # 제공된 이미지 사이즈는 {width}x{height} 입니다.
 
+#     # [반환 형식]:
+#     # 절대 아래 JSON 형식 이외의 텍스트를 출력하지 마.
+#     # {{
+#     #   "bbox": [ymin, xmin, ymax, xmax],
+#     #   "reason": "<왜 이 영역이 '{button_name}' 버튼이라고 판단했는지에 대한 간단한 설명>"
+#     # }}
 
-    width, height = _get_screen_size(current_device)
-    prompt = f"""
-    당신은 UI 좌표 추출 전문가입니다. 
-    제공된 이미지에서 오직 '{button_name}'라는 텍스트나 아이콘을 포함한 버튼 하나를 찾아서 bounding box를 추출해줘.
-    제공된 이미지 사이즈는 {width}x{height} 입니다.
-
-    [반환 형식]:
-    절대 아래 JSON 형식 이외의 텍스트를 출력하지 마.
-    {{
-      "bbox": [ymin, xmin, ymax, xmax],
-      "reason": "<왜 이 영역이 '{button_name}' 버튼이라고 판단했는지에 대한 간단한 설명>"
-    }}
-
-    - bbox 는 픽셀 단위 좌표여야 한다.
-    - bbox 배열에는 정확히 네 개의 값만 포함된다.
-    - reason 은 한국어 한두 문장으로만 작성한다.
-    """
-    # base64 문자열을 bytes로 디코딩
-    image_bytes = base64.b64decode(image_data)
+#     # - bbox 는 픽셀 단위 좌표여야 한다.
+#     # - bbox 배열에는 정확히 네 개의 값만 포함된다.
+#     # - reason 은 한국어 한두 문장으로만 작성한다.
+#     # """
+#     # base64 문자열을 bytes로 디코딩
+#     image_bytes = base64.b64decode(image_data)
     
-    response = client_gemini.models.generate_content(
-        model="gemini-3-pro-preview", # 또는 gemini-1.5-pro
-        contents=[
-            types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
-            prompt
-        ],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-        )
-    )
+#     path = "/Users/111percent/Documents/auto-qa/screenshots_debug/bbox_data.png"
+#     response = client_gemini.models.generate_content(
+#         model="gemini-3-pro-preview", # 또는 gemini-1.5-pro
+#         contents=[
+#             Image.open(path),
+#             prompt
+#         ],
+#         config=types.GenerateContentConfig(
+#             response_mime_type="application/json",
+#         )
+#     )
     
-    try:
-        resp_obj = json.loads(response.text)
-        bbox = resp_obj.get("bbox") or []
-        reason = resp_obj.get("reason", "")
+#     # response = client_gemini.models.generate_content(
+#     #     model="gemini-3-pro-preview", # 또는 gemini-1.5-pro
+#     #     contents=[
+#     #         types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
+#     #         prompt
+#     #     ],
+#     #     config=types.GenerateContentConfig(
+#     #         response_mime_type="application/json",
+#     #     )
+#     # )
+    
+#     try:
+#         resp_obj = json.loads(response.text)
+#         bbox = resp_obj.get("bbox") or []
+#         reason = resp_obj.get("reason", "")
 
-        if not isinstance(bbox, list) or len(bbox) != 4:
-            raise ValueError(f"Invalid bbox format: {bbox}")
+#         if not isinstance(bbox, list) or len(bbox) != 4:
+#             raise ValueError(f"Invalid bbox format: {bbox}")
 
-        abs_y1 = bbox[0]
-        abs_x1 = bbox[1]
-        abs_y2 = bbox[2]
-        abs_x2 = bbox[3]
-    except Exception as e:
-        logger.error(f"[get_vision_coordinates] parse error: {e}, raw: {response.text}")
-        return {"x": -1, "y": -1, "reason": str(e)}
-    # abs_y1 = int(bounding_box["box_2d"][0]/1000 * height)
-    # abs_x1 = int(bounding_box["box_2d"][1]/1000 * width)
-    # abs_y2 = int(bounding_box["box_2d"][2]/1000 * height)
-    # abs_x2 = int(bounding_box["box_2d"][3]/1000 * width)
+#         abs_y1 = bbox[0]
+#         abs_x1 = bbox[1]
+#         abs_y2 = bbox[2]
+#         abs_x2 = bbox[3]
+#     except Exception as e:
+#         logger.error(f"[get_vision_coordinates] parse error: {e}, raw: {response.text}")
+#         return {"x": -1, "y": -1, "reason": str(e)}
+#     # abs_y1 = int(bounding_box["box_2d"][0]/1000 * height)
+#     # abs_x1 = int(bounding_box["box_2d"][1]/1000 * width)
+#     # abs_y2 = int(bounding_box["box_2d"][2]/1000 * height)
+#     # abs_x2 = int(bounding_box["box_2d"][3]/1000 * width)
    
-    # base64 문자열을 PIL Image로 변환 (위에서 이미 디코딩한 image_bytes 재사용)
-    image_with_boxes = Image.open(io.BytesIO(image_bytes))
+#     # base64 문자열을 PIL Image로 변환 (위에서 이미 디코딩한 image_bytes 재사용)
+#     image_with_boxes = Image.open(io.BytesIO(image_bytes))
     
-    draw = ImageDraw.Draw(image_with_boxes)
+#     draw = ImageDraw.Draw(image_with_boxes)
 
-    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+#     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
 
-    # for i, bbox in enumerate([bounding_box]):
-    #     x1, y1, x2, y2 = bbox
-    #     # Draw rectangle with different colors for each box
-    #     color = colors[i % len(colors)]
-    draw.rectangle([abs_x1, abs_y1, abs_x2, abs_y2], outline=colors[0], width=3)
+#     # for i, bbox in enumerate([bounding_box]):
+#     #     x1, y1, x2, y2 = bbox
+#     #     # Draw rectangle with different colors for each box
+#     #     color = colors[i % len(colors)]
+#     draw.rectangle([abs_x1, abs_y1, abs_x2, abs_y2], outline=colors[0], width=3)
         
-        # # Optionally add label if available
-        # if i < len(bounding_boxes) and isinstance(bounding_boxes[i], dict) and "label" in bounding_boxes[i]:
-        #     label = bounding_boxes[i]["label"]
-        #     draw.text((x1, y1 - 15), label, fill=color)
+#         # # Optionally add label if available
+#         # if i < len(bounding_boxes) and isinstance(bounding_boxes[i], dict) and "label" in bounding_boxes[i]:
+#         #     label = bounding_boxes[i]["label"]
+#         #     draw.text((x1, y1 - 15), label, fill=color)
 
-    # Save the image with bounding boxes
-    output_path = "/Users/111percent/Documents/auto-qa/screenshots_debug/screenshot_with_boxes.png"
-    image_with_boxes.save(output_path)
+#     # Save the image with bounding boxes
+#     output_path = "/Users/111percent/Documents/auto-qa/screenshots_debug/screenshot_with_boxes.png"
+#     image_with_boxes.save(output_path)
  
-    center_x = (abs_x1 + abs_x2) / 2
-    center_y = (abs_y1 + abs_y2) / 2
+#     center_x = (abs_x1 + abs_x2) / 2
+#     center_y = (abs_y1 + abs_y2) / 2
 
-    return {"x": center_x, "y": center_y}
+#     return {"x": center_x, "y": center_y}
 
     
 async def adb_press_button_impl(button: str) -> dict:
@@ -1246,15 +1081,6 @@ async def click_uiauto_impl(target: str) -> Dict[str, Any]:
 
     return {"status": "success", "method": "uiautomator", "clicked": chosen}
 
-def _match_unity(target: str, btn: Dict[str, Any]) -> bool:
-    pat = re.compile(target, re.IGNORECASE)
-    for k in ("GameObjectName", "SpecifiedName", "Text", "Name"):
-        v = btn.get(k)
-        if isinstance(v, str) and pat.search(v):
-            return True
-    return False
-
-
 # ========= FastMCP 툴 래퍼 (기존 MCP 프로토콜용) =========
 
 async def find_uiauto_impl(target: str) -> Dict[str, Any]:
@@ -1276,200 +1102,6 @@ async def find_uiauto_impl(target: str) -> Dict[str, Any]:
     # 가장 큰 버튼/중앙에 가까운 요소 등 고도화 가능. 일단 첫 번째.
     chosen = candidates[0]
     return {"status": "found", "method": "uiautomator", "element": chosen}
-
-async def find_vision_impl(button_name: str) -> Dict[str, Any]:
-    """Vision 기반으로 버튼 찾기만 수행 (클릭하지 않음)"""
-    if not button_name or len(button_name.strip()) == 0:
-        return {"status": "error", "reason": "button_name is empty"}
-
-    screenshot_result = take_screenshot_impl()
-    image_data = screenshot_result["image"]
-
-    vision_data = await get_vision_coordinates(image_data, button_name)
-
-    x, y = vision_data["x"], vision_data["y"]
-
-    # 못 찾으면 -1 리턴하도록 prompt에 써놨으니 여기서 막아야 함
-    if x < 0 or y < 0:
-        return {"status": "not_found", "reason": f"'{button_name}' not found on screen"}
-
-    return {
-        "status": "found",
-        "method": "vision",
-        "coordinates": {"x": int(x), "y": int(y)},
-        "button_name": button_name
-    }
-def _get_unity_search_text(btn: Dict[str, Any]) -> str:
-    parts = []
-    for k in ("SpecifiedName", "GameObjectName", "Text", "Name"):
-        v = btn.get(k)
-        if isinstance(v, str) and v.strip():
-            parts.append(v.strip())
-    meta = btn.get("ParentMetadata")
-    if isinstance(meta, str) and meta.strip():
-        parts.append(meta.strip())
-    return " | ".join(parts)
-
-async def smart_find_impl(
-    target: str,
-    strategy: str = "auto",
-) -> Dict[str, Any]:
-    """
-    target(정규식 가능)으로 버튼을 찾기만 수행 (클릭하지 않음).
-    우선순위: Unity Hyperlink Text -> Unity Button -> UIAutomator -> Vision
-    
-    Returns:
-        {
-            "status": "found" | "not_found",
-            "method": "unity_hyperlink_text" | "unity_button" | "uiautomator" | "vision",
-            "element": {...},  # 찾은 요소 정보
-            "score": float,  # 유사도 점수 (fuzzy 매칭인 경우)
-            ...
-        }
-    """
-    if not target or not target.strip():
-        return {"status": "error", "reason": "empty target"}
-   
-    
-    if target in "동의":
-        out = await find_vision_impl(target)
-        if out.get("status") == "found":
-            return out 
-
-    # 1) Unity Hyperlink Text
-    if strategy in ("auto", "unity"):
-        
-        links = unity_hyperlink_text_impl()
-
-        if isinstance(links, list) and links:
-            picked = await llm_choose_hyperlink_candidate(target, links)
-            if picked:
-                link = links[picked["index"]]
-                return {
-                    "status": "found",
-                    "method": "unity_hyperlink_text",
-                    "element": link,
-                    "score": 1.0,
-                    "reason": picked.get("reason", "")
-                }
-    # 2) Unity Button
-    if strategy in ("auto", "unity"):
-        unity_buttons = unity_find_buttons_impl()
-        if isinstance(unity_buttons, list) and unity_buttons:
-            # 1) 먼저 규칙 기반(빠르고 공짜)으로 대충 컷다운
-            #    - Frame/음수Y/화면 밖 제거는 이미 unity_find_buttons_impl에서 하고 있음
-            #    - 그래도 너무 많으면 text가 있는 애들 우선
-            pre = unity_buttons
-            with_text = [b for b in pre if (b.get("SpecifiedName") or b.get("Text"))]
-            if with_text:
-                pre = with_text
-
-            # 2) LLM에게 최종 1개 선택 맡김 (alias 하드코딩 X)
-            picked = await llm_choose_unity_candidate(target, pre)
-
-            if picked:
-                btn = pre[picked["index"]]
-                return {
-                    "status": "found",
-                    "method": "unity_button",
-                    "element": btn,
-                    "score": 1.0,
-                    "reason": picked.get("reason", "")
-                }
-    # 3) UIAutomator
-    if strategy in ("auto", "uiauto"):
-        out = await find_uiauto_impl(target)
-        if out.get("status") == "found":
-            return out
-
-    # 4) Vision
-    if strategy in ("auto", "vision"):
-        out = await find_vision_impl(target)
-        if out.get("status") == "found":
-            return out
-
-    return {"status": "not_found", "reason": "no strategy matched"}
-
-@mcp.tool()
-async def smart_find(
-    target: str,
-    strategy: str = "auto",
-) -> str:
-    """
-    target(정규식 가능)으로 버튼을 찾기만 수행 (클릭하지 않음).
-    우선순위: Unity Hyperlink Text -> Unity Button -> UIAutomator -> Vision
-    """
-    result = await smart_find_impl(target=target, strategy=strategy)
-    return json.dumps(result, ensure_ascii=False)
-
-@mcp.tool()
-async def smart_click(
-    target: str,
-    strategy: str = "auto",
-    max_scroll: int = 2,
-) -> str:
-    """
-    target(정규식 가능)으로 버튼을 찾아 클릭.
-    우선순위: Unity Hyperlink Text -> Unity Button -> UIAutomator -> Vision
-    실패 시 스크롤 후 재시도.
-    """
-    if not target or not target.strip():
-        return json.dumps({"status": "error", "reason": "empty target"}, ensure_ascii=False)
-    
-    async def _try_once() -> Dict[str, Any]:
-        # smart_find_impl로 버튼 찾기
-        find_result = await smart_find_impl(target=target, strategy=strategy)
-        
-        if find_result.get("status") != "found":
-            return find_result
-        
-        # 찾은 버튼을 클릭
-        method = find_result.get("method")
-        element = find_result.get("element")
-        
-        if method == "unity_hyperlink_text" or method == "unity_button":
-            # Unity 버튼 클릭
-            out = unity_click_button_impl(element)
-            return {
-                "status": "success",
-                "method": method,
-                "score": find_result.get("score"),
-                "detail": out
-            }
-        elif method == "uiautomator":
-            # UIAutomator 요소 클릭
-            chosen = element
-            cx, cy = chosen["center"]["x"], chosen["center"]["y"]
-            await click_button_with_coordinates_impl(x=cx, y=cy)
-            return {
-                "status": "success",
-                "method": "uiautomator",
-                "detail": {"clicked": chosen}
-            }
-        elif method == "vision":
-            # Vision 좌표 클릭
-            coords = find_result.get("coordinates", {})
-            x, y = coords["x"], coords["y"]
-            await click_button_with_coordinates_impl(x=x, y=y)
-            return {
-                "status": "success",
-                "method": "vision",
-                "detail": f"clicked '{find_result.get('button_name')}' at ({x}, {y})"
-            }
-        
-        return {"status": "error", "reason": f"unknown method: {method}"}
-
-    # 스크롤 포함 retry
-    for i in range(max_scroll + 1):
-        res = await _try_once()
-        if res.get("status") == "success":
-            return json.dumps(res, ensure_ascii=False)
-
-        if i < max_scroll:
-            unity_scroll_impl("down")
-            await asyncio.sleep(0.5)
-
-    return json.dumps({"status": "not_found", "target": target}, ensure_ascii=False)
 
 @mcp.tool()
 def list_devices() -> str:
@@ -1566,23 +1198,6 @@ async def click_button_with_coordinates(x: int, y: int) -> str:
     result = await click_button_with_coordinates_impl(x=x, y=y)
     return json.dumps(result)
 
-async def vision_enhanced_click_impl(button_name: str) -> str:
-    """Vision 기반 버튼 클릭 구현 함수"""
-    find_result = await find_vision_impl(button_name)
-    
-    if find_result.get("status") != "found":
-        if find_result.get("status") == "error":
-            return f"ERROR: {find_result.get('reason', 'unknown error')}"
-        return f"NOT_FOUND: {find_result.get('reason', 'button not found')}"
-    
-    coords = find_result.get("coordinates", {})
-    x, y = coords["x"], coords["y"]
-    await click_button_with_coordinates_impl(x=x, y=y)
-    return f"OK: clicked '{button_name}' at ({x}, {y})"
-
-async def vision_enhanced_click(button_name: str) -> str:
-    """Vision 기반 버튼 클릭 (JSON 문자열 반환)"""
-    return await vision_enhanced_click_impl(button_name)
 
 @mcp.tool()
 async def uiauto_click(target: str) -> str:
