@@ -1,29 +1,22 @@
 version: '3.8'
 
 services:
-  qa-gradio:
+  qa-app:
     build:
       context: .
       dockerfile: Dockerfile
     image: qa-auto:latest
-    container_name: qa-gradio
+    container_name: qa-app
 
-    # Docker Desktop(Windows/Mac)에서 host.docker.internal 자동 등록
-    # Linux 환경에서는 host-gateway 매핑이 필요
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
     environment:
-      # Google Cloud 인증 (서비스 계정 키 파일 경로)
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
-
-      # ADB: 컨테이너 내 adb 클라이언트 → Windows 호스트 ADB 서버로 연결
-      # Windows에서 반드시 먼저 실행: adb start-server
       - ANDROID_ADB_SERVER_ADDRESS=host.docker.internal
       - ANDROID_ADB_SERVER_PORT=5037
 
     volumes:
-      # 테스트케이스 · 결과 · 스크린샷 · 녹화 영상 (호스트 ↔ 컨테이너 공유)
       - ./testcases:/app/testcases
       - ./test_results:/app/test_results
       - ./screenshots:/app/screenshots
@@ -31,10 +24,6 @@ services:
       - ./recordings:/app/recordings
       - ./apks:/app/apks
       - ./templates:/app/templates
-
-      # Google Cloud 서비스 계정 키 파일 (읽기 전용)
-      # GCP Console → IAM → 서비스 계정 → 키 만들기 → JSON 다운로드 후
-      # 프로젝트 폴더에 credentials.json 으로 저장
       - ${GOOGLE_APPLICATION_CREDENTIALS:-./credentials.json}:/app/credentials.json:ro
 
     env_file:
@@ -46,7 +35,7 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860"]
+      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
       interval: 30s
       timeout: 10s
       retries: 3

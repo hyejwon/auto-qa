@@ -16,3 +16,5 @@ data/
 *.jpg
 window_dump.xml
 credentials/
+node_modules/
+frontend/

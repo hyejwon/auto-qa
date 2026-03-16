@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-LABEL description="QA 자동화 Gradio 앱"
+LABEL description="QA 자동화 NiceGUI 앱"
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -30,12 +30,12 @@ COPY adb_controller.py \
      test_manager.py \
      unity_api_client.py \
      vision_agent.py \
-     main.py \
+     main_nicegui.py \
      ./
 
-# 데이터 디렉토리 (볼륨 마운트가 없을 때 컨테이너 내 기본값)
-RUN mkdir -p screenshots screenshots_debug test_results testcases recordings templates
+# 데이터 디렉토리
+RUN mkdir -p screenshots screenshots_debug test_results testcases recordings templates apks
 
 EXPOSE 7860
 
-CMD ["python", "main.py"]
+CMD ["python", "main_nicegui.py"]
