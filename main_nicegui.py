@@ -395,37 +395,21 @@ def main_page():
                 ui.run_javascript('''
                     setTimeout(() => {
                         const el = document.getElementById("step-sortable-list");
-                        if (el && !el._sortableInstance) {
-                            el._sortableInstance = new Sortable(el, {
-                                handle: ".drag-handle",
-                                animation: 200,
-                                ghostClass: "sortable-ghost",
-                                dragClass: "sortable-drag",
-                                onEnd: function(evt) {
-                                    const oldIdx = evt.oldIndex;
-                                    const newIdx = evt.newIndex;
-                                    if (oldIdx !== newIdx) {
-                                        emitEvent("sort_end", {old: oldIdx, new: newIdx});
-                                    }
-                                }
-                            });
-                        } else if (el && el._sortableInstance) {
-                            // 기존 인스턴스가 있으면 파괴 후 재생성
+                        if (!el) return;
+                        if (el._sortableInstance) {
                             el._sortableInstance.destroy();
-                            el._sortableInstance = new Sortable(el, {
-                                handle: ".drag-handle",
-                                animation: 200,
-                                ghostClass: "sortable-ghost",
-                                dragClass: "sortable-drag",
-                                onEnd: function(evt) {
-                                    const oldIdx = evt.oldIndex;
-                                    const newIdx = evt.newIndex;
-                                    if (oldIdx !== newIdx) {
-                                        emitEvent("sort_end", {old: oldIdx, new: newIdx});
-                                    }
-                                }
-                            });
                         }
+                        el._sortableInstance = new Sortable(el, {
+                            handle: ".drag-handle",
+                            animation: 200,
+                            ghostClass: "sortable-ghost",
+                            dragClass: "sortable-drag",
+                            onEnd: function(evt) {
+                                const cards = el.querySelectorAll("[data-step-idx]");
+                                const newOrder = Array.from(cards).map(c => parseInt(c.getAttribute("data-step-idx")));
+                                emitEvent("sort_end", {order: newOrder});
+                            }
+                        });
                     }, 100);
                 ''')
 
@@ -434,23 +418,29 @@ def main_page():
 
             def _handle_sort(e):
                 """드래그 완료 시 스텝 순서를 변경한다."""
-                args = e.args
-                old_idx = args.get('old', 0)
-                new_idx = args.get('new', 0)
-                if 0 <= old_idx < len(template_steps) and 0 <= new_idx < len(template_steps):
-                    item = template_steps.pop(old_idx)
-                    template_steps.insert(new_idx, item)
-                    tpl_status.text = f'↕️ Step {old_idx+1} → Step {new_idx+1} 이동됨'
-                    _render_steps()
+                args = e.args if isinstance(e.args, dict) else {}
+                new_order = args.get('order')
+                if not new_order or len(new_order) != len(template_steps):
+                    logger.warning("sort_end: invalid order %s (steps=%d)", new_order, len(template_steps))
+                    return
+                reordered = [template_steps[i] for i in new_order]
+                template_steps.clear()
+                template_steps.extend(reordered)
+                tpl_status.text = f'↕️ 순서 변경됨 (총 {len(template_steps)}스텝)'
+                _render_steps()
 
             def _build_step_card(idx: int, step: dict):
                 """개별 스텝 카드 UI."""
                 action = step.get('action', '')
                 target = step.get('target') or ''
                 desc = step.get('description', '')
+                params = step.get('params') or {}
+                expect_vis = params.get('expect_visible') or ''
+                expect_hid = params.get('expect_hidden') or ''
                 has_target = action in TARGET_ACTIONS
 
-                with ui.card().classes('step-card w-full p-2'):
+                with ui.card().classes('step-card w-full p-2') as card:
+                    card._props['data-step-idx'] = str(idx)
                     with ui.row().classes('w-full items-center no-wrap gap-2'):
                         # 드래그 핸들
                         ui.icon('drag_indicator').classes('drag-handle')
@@ -511,25 +501,45 @@ def main_page():
                             'flat dense round size=sm'
                         ).tooltip('삭제')
 
-                        # 액션 변경 시 target readonly 토글
-                        def _on_action_change(e, i=idx, t_inp=target_inp):
-                            template_steps[i]['action'] = e.value
-                            if e.value in TARGET_ACTIONS:
-                                t_inp.props(remove='readonly')
-                            else:
-                                t_inp.props(add='readonly')
-                                template_steps[i]['target'] = None
-                        action_sel.on_value_change(_on_action_change)
+                    # 두 번째 줄: expect_visible / expect_hidden
+                    with ui.row().classes('w-full items-center no-wrap gap-2 pl-10'):
+                        expect_vis_inp = ui.input(
+                            '기대 화면 (expect_visible)', value=expect_vis,
+                        ).classes('flex-grow').props('dense outlined')
 
-                        # 타겟 변경 반영
-                        def _on_target_change(e, i=idx):
-                            template_steps[i]['target'] = e.value if e.value else None
-                        target_inp.on_value_change(_on_target_change)
+                        expect_hid_inp = ui.input(
+                            '사라져야 하는 화면 (expect_hidden)', value=expect_hid,
+                        ).classes('flex-grow').props('dense outlined')
 
-                        # 설명 변경 반영
-                        def _on_desc_change(e, i=idx):
-                            template_steps[i]['description'] = e.value or ''
-                        desc_inp.on_value_change(_on_desc_change)
+                    # 액션 변경 시 target readonly 토글
+                    def _on_action_change(e, i=idx, t_inp=target_inp):
+                        template_steps[i]['action'] = e.value
+                        if e.value in TARGET_ACTIONS:
+                            t_inp.props(remove='readonly')
+                        else:
+                            t_inp.props(add='readonly')
+                            template_steps[i]['target'] = None
+                    action_sel.on_value_change(_on_action_change)
+
+                    # 타겟 변경 반영
+                    def _on_target_change(e, i=idx):
+                        template_steps[i]['target'] = e.value if e.value else None
+                    target_inp.on_value_change(_on_target_change)
+
+                    # 설명 변경 반영
+                    def _on_desc_change(e, i=idx):
+                        template_steps[i]['description'] = e.value or ''
+                    desc_inp.on_value_change(_on_desc_change)
+
+                    # expect_visible 변경 반영
+                    def _on_expect_vis_change(e, i=idx):
+                        template_steps[i].setdefault('params', {})['expect_visible'] = e.value if e.value else None
+                    expect_vis_inp.on_value_change(_on_expect_vis_change)
+
+                    # expect_hidden 변경 반영
+                    def _on_expect_hid_change(e, i=idx):
+                        template_steps[i].setdefault('params', {})['expect_hidden'] = e.value if e.value else None
+                    expect_hid_inp.on_value_change(_on_expect_hid_change)
 
             def do_load_template():
                 name = tpl_select.value
