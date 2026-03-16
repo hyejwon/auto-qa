@@ -18,7 +18,10 @@ class ActionType(str, Enum):
     BACK = "back"
     HOME = "home"
     LAUNCH_APP = "launch_app"
-    CLOSE_APP = "close_app"   
+    CLOSE_APP = "close_app"
+    READ_TEXT = "read_text"
+    SKIP_TUTORIAL = "skip_tutorial"
+
 
 class TestStep(BaseModel):
     """테스트 스텝"""
@@ -52,6 +55,7 @@ class TestResult(BaseModel):
     error_message: Optional[str] = None
     screenshots: List[str] = []
     step_results: List[Dict] = []  # 스텝별 통과 여부
+    context: Dict = {}  # read_text 등으로 저장한 값
     
 class TestCaseManager:
     """테스트케이스 관리자"""
@@ -83,6 +87,6 @@ class TestCaseManager:
         result_file = results_dir / f"{result.test_id}_{timestamp}.json"
         
         with open(result_file, 'w', encoding='utf-8') as f:
-            json.dump(result.dict(), f, indent=2, ensure_ascii=False, default=str)
+            json.dump(result.model_dump(), f, indent=2, ensure_ascii=False, default=str)
         
         logger.info(f"Test result saved: {result_file}")

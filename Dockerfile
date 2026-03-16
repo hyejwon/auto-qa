@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     android-tools-adb \
     ffmpeg \
     curl \
+    sqlite3 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,6 +24,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 애플리케이션 코드
 COPY adb_controller.py \
      config.py \
+     element_cache.py \
      planner_node.py \
      qa_orchestrator.py \
      test_manager.py \
@@ -32,7 +34,7 @@ COPY adb_controller.py \
      ./
 
 # 데이터 디렉토리 (볼륨 마운트가 없을 때 컨테이너 내 기본값)
-RUN mkdir -p screenshots screenshots_debug test_results testcases recordings
+RUN mkdir -p screenshots screenshots_debug test_results testcases recordings templates
 
 EXPOSE 7860
 

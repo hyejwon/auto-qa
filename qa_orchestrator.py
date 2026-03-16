@@ -1,6 +1,7 @@
 import threading
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 import time
 import logging
 
@@ -12,30 +13,27 @@ from vision_agent import GeminiVisionAgent
 from test_manager import TestCaseManager, TestResult, ActionType
 from planner_node import PlannerNode  # 추가
 from unity_api_client import UnityAPIClient
+from element_cache import ElementCache
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 class QAOrchestrator:
     """QA 자동화 오케스트레이터"""
 
-    UNITY_MIN_SCORE = 0.55
-    SCREEN_CHANGE_THRESHOLD = 0.01
+    # 고정 좌표 매핑 — Vision 호출 없이 바로 탭 (키: target 부분 매칭)
+    FIXED_TAP_TARGETS: dict[str, tuple[int, int]] = {
+        "동의합니다": (360, 823),
+        "개인정보처리방침": (360, 1015),
+        "이용약관": (360, 955),
+    }
+
     POST_TAP_DELAY_SEC = 0.7
-    VISION_ONLY_TARGETS = (
-        "이용약관",
-        "terms of use",
-        "termsofuse",
-        "button_termsofuse",
-        "개인정보처리방침",
-        "개인정보 처리방침",
-        "privacy policy",
-        "privacy-policy",
-    )
+    POST_TAP_VERIFY_TIMEOUT_SEC = 2.0
+    POST_TAP_POLL_INTERVAL_SEC = 0.3
+    STABILITY_POLL_INTERVAL_SEC = 0.5
+    STABILITY_TIMEOUT_SEC = 10.0
+    STABILITY_THRESHOLD = 0.01
     
     def __init__(self, config: Config = Config()):
         self.config = config
@@ -54,13 +52,20 @@ class QAOrchestrator:
             location=config.gemini.location,
             model=config.gemini.model
         )
+        self.vision_lite = GeminiVisionAgent(
+            project=config.gemini.project,
+            location=config.gemini.location,
+            model="gemini-2.5-flash"
+        )
         self.test_manager = TestCaseManager(config.paths.testcases_dir)
-        # Planner Node 추가
         self.planner = PlannerNode(
             project=config.gemini.project,
             location=config.gemini.location,
             model=config.gemini.model
         )
+        self.cache = ElementCache(config.paths.cache_db)
+        self._current_package: str = ""
+        self._current_screen_type: str = ""
     def run_natural_language_test(
         self,
         scenario: str,
@@ -110,9 +115,13 @@ class QAOrchestrator:
         self,
         test_id: str,
         stop_event: threading.Event | None = None,
+        testcase_override: "TestCase | None" = None,
     ) -> TestResult:
-        """단일 테스트 실행"""
-        testcase = self.test_manager.get_testcase(test_id)
+        """단일 테스트 실행. testcase_override가 주어지면 파일 대신 해당 객체를 사용."""
+        if testcase_override is not None:
+            testcase = testcase_override
+        else:
+            testcase = self.test_manager.get_testcase(test_id)
         if not testcase:
             raise ValueError(f"Test case not found: {test_id}")
         
@@ -121,6 +130,9 @@ class QAOrchestrator:
         logger.info(f"  테스트 시작: {testcase.title}")
         logger.info(f"  패키지: {testcase.package}  |  스텝 수: {total}")
         logger.info("━" * 52)
+
+        self._current_package = testcase.package or ""
+        self._current_screen_type = ""
 
         result = TestResult(
             test_id=testcase.id,
@@ -135,7 +147,7 @@ class QAOrchestrator:
             if testcase.package:
                 logger.info(f"▶ 앱 실행 중: {testcase.package}")
                 self.adb.launch_app(testcase.package)
-                time.sleep(3)
+                self._wait_for_screen_stable()
 
             # 각 스텝 실행
             for idx, step in enumerate(testcase.steps):
@@ -219,7 +231,7 @@ class QAOrchestrator:
         
         try:
             if step.action == ActionType.FIND_AND_TAP:
-                return self._find_and_tap(screenshot_path, step.target)
+                return self._find_and_tap(step)
             
             elif step.action == ActionType.SWIPE:
                 params = step.params
@@ -241,34 +253,30 @@ class QAOrchestrator:
             elif step.action == ActionType.LAUNCH_APP:
                 package = step.params.get("package")
                 if package:
-                    return self.adb.launch_app(package)
+                    self._current_screen_type = ""
+                    launched = self.adb.launch_app(package)
+                    if launched:
+                        self._wait_for_screen_stable()
+                    return launched
                 return False
-            
+
             elif step.action == ActionType.CLOSE_APP:
                 package = step.params.get("package")
                 if package:
+                    self._current_screen_type = ""
                     return self.adb.close_app(package)
                 return False
             
-            # elif step.action == ActionType.VERIFY_UI_DUMP:
-            #     # UI Dump 검증
-            #     expected_text = step.params.get("expected_text", "")
-            #     match_type = step.params.get("match_type", "contains")
-                
-            #     success = self.adb.verify_ui_text(expected_text, match_type)
-                
-            #     # UI Dump도 파일로 저장 (디버깅용)
-            #     if not success:
-            #         ui_dump = self.adb.get_ui_dump()
-            #         dump_file = self.config.paths.debug_dir / f"ui_dump_{timestamp}.xml"
-            #         dump_file.write_text(ui_dump, encoding='utf-8')
-            #         logger.info(f"UI dump saved for debugging: {dump_file}")
-                
-            #     return success
-            
             elif step.action == ActionType.VERIFY:
-                return self._verify_screen(screenshot_path, step.target)
-            
+                fresh_path = self._capture_runtime_screenshot(prefix="verify")
+                return self._verify_screen(fresh_path, step.target)
+
+            elif step.action == ActionType.READ_TEXT:
+                return self._read_text_step(screenshot_path, step, result)
+
+            elif step.action == ActionType.SKIP_TUTORIAL:
+                return self.unity.skip_tutorial(package=self._current_package)
+
             else:
                 logger.warning(f"Unknown action type: {step.action}")
                 return False
@@ -280,7 +288,7 @@ class QAOrchestrator:
     def _execute_back_step(self, step) -> bool:
         """뒤로가기 + 선택적 화면 검증을 원자적으로 수행"""
         params = step.params or {}
-        wait_seconds = float(params.get("wait_seconds", self.POST_TAP_DELAY_SEC))
+        wait_seconds = self._to_float(params.get("wait_seconds"), self.POST_TAP_DELAY_SEC)
         expect_visible = self._to_target_list(params.get("expect_visible") or step.target)
         expect_hidden = self._to_target_list(params.get("expect_hidden"))
         max_attempts = 2 if (expect_visible or expect_hidden) else 1
@@ -296,7 +304,7 @@ class QAOrchestrator:
                 return True
 
             screenshot_path = self._capture_runtime_screenshot(prefix=f"post_back_{attempt + 1}")
-            if self._verify_back_outcome(screenshot_path, expect_visible, expect_hidden):
+            if self._verify_expected_targets(screenshot_path, expect_visible, expect_hidden):
                 if attempt == 1:
                     logger.info("Back verification succeeded after one additional back press.")
                 return True
@@ -308,7 +316,7 @@ class QAOrchestrator:
 
         return False
 
-    def _verify_back_outcome(
+    def _verify_expected_targets(
         self,
         screenshot_path: Path,
         expect_visible: list[str],
@@ -317,7 +325,7 @@ class QAOrchestrator:
         for target in expect_visible:
             if not self._verify_screen(screenshot_path, target):
                 logger.warning(
-                    "Back verification failed: expected visible target '%s' was not found.",
+                    "Expected visible target '%s' was not found.",
                     target,
                 )
                 return False
@@ -325,7 +333,7 @@ class QAOrchestrator:
         for target in expect_hidden:
             if self._verify_screen(screenshot_path, target):
                 logger.warning(
-                    "Back verification failed: expected hidden target '%s' is still visible.",
+                    "Expected hidden target '%s' is still visible.",
                     target,
                 )
                 return False
@@ -348,77 +356,150 @@ class QAOrchestrator:
 
     @staticmethod
     def _uses_internal_retry(step) -> bool:
-        if step.action != ActionType.BACK:
-            return False
         params = step.params or {}
-        return bool(params.get("expect_visible") or params.get("expect_hidden") or step.target)
+        if step.action == ActionType.BACK:
+            return bool(params.get("expect_visible") or params.get("expect_hidden") or step.target)
+        return False
 
-    def _find_and_tap(self, screenshot_path: Path, target: str) -> bool:
-        """요소 찾아서 클릭 (Unity API 우선, Vision 폴백)"""
+    @staticmethod
+    def _to_float(value, default: float) -> float:
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _get_screen_type(self, screenshot_path: Path) -> str:
+        """현재 화면 타입 반환. 미감지 시 Vision으로 탐지 후 캐싱."""
+        if self._current_screen_type:
+            return self._current_screen_type
+        state = self.vision.analyze_screen_state(screenshot_path)
+        screen_type = state.get("screen_type", "unknown")
+        self._current_screen_type = screen_type
+        logger.info("Screen type detected: %s", screen_type)
+        return screen_type
+
+    def _find_and_tap(self, step) -> bool:
+        """고정 좌표 우선 → Vision으로 요소를 찾아서 클릭"""
+        target = step.target
         if not target:
             logger.error("find_and_tap action requires target")
             return False
 
-        if self._should_force_vision(target):
-            logger.info("Target '%s' is configured as Vision-only. Skipping Unity.", target)
-            latest_path = self._capture_runtime_screenshot(prefix="vision_only")
-            return self._find_and_tap_with_vision(latest_path, target)
+        # 고정 좌표 매칭
+        fixed = self._match_fixed_target(target)
+        if fixed:
+            logger.info("Fixed coordinate HIT for '%s' → (%d, %d).", target, fixed[0], fixed[1])
+            self._wait_for_screen_stable()
+            self.adb.tap(fixed[0], fixed[1])
+            self._current_screen_type = ""
+            return self._verify_find_and_tap_outcome(step, tap_source="Fixed")
 
-        if self._find_and_tap_with_unity(target):
-            if self._verify_screen_changed(screenshot_path):
-                return True
-            logger.warning(
-                "Unity click post-verification failed for target '%s'. Falling back to Vision.",
-                target,
-            )
-        else:
-            logger.info("Unity match not found for target '%s'. Falling back to Vision.", target)
-
-        latest_path = self._capture_runtime_screenshot(prefix="vision_fallback")
-        return self._find_and_tap_with_vision(latest_path, target)
-
-    def _find_and_tap_with_unity(self, target: str) -> bool:
-        match = self.unity.find_best_button(target, min_score=self.UNITY_MIN_SCORE)
-        if not match:
-            return False
-
-        coords = self.unity.unity_to_screen_coords(
-            button=match.button,
-            screen_width=self.adb.width,
-            screen_height=self.adb.height,
-        )
+        logger.info("Vision for target '%s'.", target)
+        time.sleep(3)
+        latest_path = self._wait_for_screen_stable()
+        coords = self._resolve_with_vision(latest_path, target)
         if not coords:
-            logger.warning("Unity matched target '%s' but coordinates were invalid.", target)
             return False
+        self.adb.tap(coords["x"], coords["y"])
+        self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
+        self._current_screen_type = ""
+        return self._verify_find_and_tap_outcome(step, tap_source="Vision")
 
-        button_name = (
-            match.button.get("SpecifiedName")
-            or match.button.get("GameObjectName")
-            or match.button.get("Name")
-            or target
-        )
-        logger.info(
-            "Unity matched '%s' (score=%.2f) -> '%s' at (%d, %d)",
-            target,
-            match.score,
-            button_name,
-            coords["x"],
-            coords["y"],
-        )
-        return self.adb.tap(coords["x"], coords["y"])
+    def _match_fixed_target(self, target: str) -> tuple[int, int] | None:
+        """FIXED_TAP_TARGETS에서 target과 부분 매칭되는 고정 좌표 반환."""
+        normalized = target.strip().replace(" ", "")
+        for key, coords in self.FIXED_TAP_TARGETS.items():
+            if key in normalized:
+                return coords
+        return None
 
-    def _find_and_tap_with_vision(self, screenshot_path: Path, target: str) -> bool:
+    def _cache_element(self, screenshot_path: Path, target: str, x: int, y: int, source: str) -> None:
+        """현재 화면 타입 기준으로 요소 좌표를 캐시에 저장."""
+        if not self._current_package:
+            return
+        screen_type = self._get_screen_type(screenshot_path)
+        self.cache.set(self._current_package, screen_type, target, x, y, source)
+
+    def _resolve_with_vision(self, screenshot_path: Path, target: str) -> Optional[dict]:
+        """Vision으로 좌표 반환. 실패 시 None."""
         vision_result = self.vision.find_element(
-            screenshot_path,
-            target,
-            self.config.paths.debug_dir,
+            screenshot_path, target, self.config.paths.debug_dir
         )
         if not vision_result.success or not vision_result.bbox:
             logger.error("Element not found by Vision: %s", target)
-            return False
+            return None
+        return vision_result.bbox.to_pixels(self.adb.width, self.adb.height)
 
-        pixel_coords = vision_result.bbox.to_pixels(self.adb.width, self.adb.height)
-        return self.adb.tap(pixel_coords["x"], pixel_coords["y"])
+    def _verify_find_and_tap_outcome(self, step, tap_source: str) -> bool:
+        params = step.params or {}
+        target = step.target or ""
+        expect_visible = self._to_target_list(params.get("expect_visible"))
+        expect_hidden = self._to_target_list(params.get("expect_hidden"))
+
+        if not expect_visible and not expect_hidden:
+            logger.info("%s tap for target '%s' — no expect_visible/hidden, skipping verification.", tap_source, target)
+            return True
+
+        # 안정화 → 검증 → 실패 시 재대기, step.timeout 내 반복
+        deadline = time.time() + step.timeout
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            stable_screenshot = self._wait_for_screen_stable(
+                timeout=min(self.STABILITY_TIMEOUT_SEC, deadline - time.time())
+            )
+            if self._verify_expected_targets(stable_screenshot, expect_visible, expect_hidden):
+                logger.info("%s tap verified for '%s' (attempt %d).", tap_source, target, attempt)
+                return True
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            # 다음 화면 변화를 기다리기 위해 짧게 대기
+            time.sleep(min(self.POST_TAP_POLL_INTERVAL_SEC, remaining))
+
+        logger.warning(
+            "%s tap post-verification timed out for target '%s' after %ds.",
+            tap_source, target, step.timeout,
+        )
+        return False
+
+    def _wait_for_screen_stable(self, timeout: float | None = None, min_wait: float = 0.5) -> Path:
+        """화면이 안정화될 때까지 폴링. 안정화된 스크린샷 경로 반환."""
+        timeout = timeout or self.STABILITY_TIMEOUT_SEC
+        interval = self.STABILITY_POLL_INTERVAL_SEC
+        threshold = self.STABILITY_THRESHOLD
+
+        time.sleep(min_wait)
+        prev_path = self._capture_runtime_screenshot(prefix="stable_check")
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            time.sleep(interval)
+            curr_path = self._capture_runtime_screenshot(prefix="stable_check")
+
+            try:
+                with Image.open(prev_path) as prev_img, Image.open(curr_path) as curr_img:
+                    p = prev_img.convert("RGB")
+                    c = curr_img.convert("RGB")
+                    if p.size != c.size:
+                        c = c.resize(p.size)
+                    diff = ImageChops.difference(p, c)
+                    hist = diff.histogram()
+                    weighted = sum((i % 256) * cnt for i, cnt in enumerate(hist))
+                    max_val = 255 * p.width * p.height * 3
+                    ratio = (weighted / max_val) if max_val else 0.0
+            except Exception:
+                prev_path = curr_path
+                continue
+
+            logger.info("Screen stability check: change_ratio=%.4f", ratio)
+            if ratio < threshold:
+                return curr_path
+            prev_path = curr_path
+
+        logger.warning("Screen did not stabilize within %.1fs — proceeding with last capture.", timeout)
+        return prev_path
 
     def _capture_runtime_screenshot(self, prefix: str) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -426,65 +507,61 @@ class QAOrchestrator:
         self.adb.screenshot(path)
         return path
 
-    def _verify_screen_changed(self, before_path: Path) -> bool:
-        time.sleep(self.POST_TAP_DELAY_SEC)
-        after_path = self._capture_runtime_screenshot(prefix="post_tap")
-
-        try:
-            with Image.open(before_path) as before_source, Image.open(after_path) as after_source:
-                before_img = before_source.convert("RGB")
-                after_img = after_source.convert("RGB")
-
-                if before_img.size != after_img.size:
-                    after_img = after_img.resize(before_img.size)
-
-                diff = ImageChops.difference(before_img, after_img)
-                histogram = diff.histogram()
-                if not histogram:
-                    return False
-
-                weighted_sum = sum((index % 256) * count for index, count in enumerate(histogram))
-                max_sum = 255 * before_img.width * before_img.height * 3
-                change_ratio = (weighted_sum / max_sum) if max_sum else 0.0
-
-                logger.info("Post-click screen change ratio: %.4f", change_ratio)
-                return change_ratio >= self.SCREEN_CHANGE_THRESHOLD
-        except Exception as exc:
-            logger.warning("Screen-change verification failed: %s", exc)
-            return False
-
     def _verify_screen(self, screenshot_path: Path, target: str) -> bool:
         if not target:
             logger.error("verify action requires target")
             return False
-
-        if self._should_force_vision(target):
-            logger.info("Verify target '%s' is configured as Vision-only. Skipping Unity.", target)
-            vision_result = self.vision.find_element(
-                screenshot_path,
-                target,
-                self.config.paths.debug_dir,
-            )
-            return vision_result.success
-
-        if self.unity.verify_element(target, min_score=self.UNITY_MIN_SCORE):
-            logger.info("Verified by Unity API: %s", target)
-            return True
-
-        logger.info("Unity verification failed for '%s'. Falling back to Vision.", target)
-        vision_result = self.vision.find_element(
-            screenshot_path,
-            target,
-            self.config.paths.debug_dir,
+        vision_result = self.vision_lite.find_element(
+            screenshot_path, target, self.config.paths.debug_dir
         )
-        return vision_result.success
+        if not vision_result.success or not vision_result.bbox:
+            return False
+        return True
 
-    @classmethod
-    def _should_force_vision(cls, target: str) -> bool:
-        normalized = target.strip().lower()
-        compact = normalized.replace(" ", "")
-        for keyword in cls.VISION_ONLY_TARGETS:
-            lowered = keyword.lower()
-            if lowered in normalized or lowered.replace(" ", "") in compact:
-                return True
-        return False
+    def _read_text_step(self, screenshot_path: Path, step, result: TestResult) -> bool:
+        """화면에서 텍스트를 읽어 result.context에 저장하고, 이전 값과 비교 검증"""
+        target = step.target
+        if not target:
+            logger.error("read_text action requires target")
+            return False
+
+        params = step.params or {}
+        save_as = params.get("save_as")
+        compare_with = params.get("compare_with")
+        expect_changed = params.get("expect_changed")  # True/False
+
+        value = self.vision.read_text(screenshot_path, target)
+        if value is None:
+            logger.error("read_text: '%s' 텍스트를 찾지 못했습니다.", target)
+            return False
+
+        logger.info("read_text: '%s' = %s", target, value)
+
+        if not hasattr(result, "context"):
+            result.context = {}
+
+        if save_as:
+            result.context[save_as] = value
+
+        if compare_with:
+            prev = result.context.get(compare_with)
+            if prev is None:
+                logger.warning("read_text: compare_with '%s' 값이 없습니다.", compare_with)
+                return False
+            changed = prev != value
+            if expect_changed is True and not changed:
+                logger.error("read_text: PID 변경 기대했으나 동일함 (%s)", value)
+                return False
+            if expect_changed is False and changed:
+                logger.error("read_text: PID 유지 기대했으나 변경됨 (%s → %s)", prev, value)
+                return False
+            logger.info(
+                "read_text 비교: %s → %s (%s)",
+                prev,
+                value,
+                "변경됨" if changed else "유지됨",
+            )
+
+        return True
+
+

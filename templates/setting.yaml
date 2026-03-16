@@ -1,0 +1,27 @@
+title: 설정 메뉴 진입
+description: 햄버거 메뉴 → 설정 팝업 진입 → 설정 항목 확인
+package: com.percent.aos.rollinghero
+steps:
+- action: find_and_tap
+  target: 좌측 상단 햄버거 메뉴 버튼
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+    wait_seconds: 2
+  description: 메뉴 버튼 클릭
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  params:
+    expect_visible: 설정 팝업
+  description: 설정 버튼 클릭
+  timeout: 10
+  retry: 2
+- action: verify
+  target: 설정 팝업
+  params: {}
+  description: 설정 팝업이 정상 출력되는지 확인합니다.
+  timeout: 10
+  retry: 2
+expected_results:
+- 설정 팝업이 정상적으로 출력되어야 한다.

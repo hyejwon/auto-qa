@@ -1,0 +1,120 @@
+title: Guest 로그인 + 계정 연동
+description: Guest 로그인(아니오→예) → 튜토리얼 스킵 → 햄버거 메뉴 → 설정 → 계정 연동 → Google 로그인
+package: com.percent.aos.rollinghero
+steps:
+- action: launch_app
+  target: null
+  params:
+    package: com.percent.aos.rollinghero
+  description: 앱을 실행한다.
+  timeout: 30
+  retry: 3
+- action: find_and_tap
+  target: Guest login 버튼
+  params:
+    expect_visible: 게스트 로그인 데이터 유실 안내 팝업
+  description: Guest login 버튼을 클릭한다.
+  timeout: 15
+  retry: 2
+- action: find_and_tap
+  target: 아니오 버튼
+  params:
+    expect_hidden: 게스트 로그인 데이터 유실 안내 팝업
+  description: 데이터 유실 안내 팝업 내 아니오 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: Guest login 버튼
+  params:
+    expect_visible: 게스트 로그인 데이터 유실 안내 팝업
+  description: 다시 Guest login 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 예 버튼
+  params:
+    expect_hidden: 게스트 로그인 데이터 유실 안내 팝업
+    wait_seconds: 10
+  description: 데이터 유실 안내 팝업 내 예 버튼을 클릭한다.
+  timeout: 15
+  retry: 2
+- action: skip_tutorial
+  target: null
+  params: {}
+  description: 튜토리얼 스킵(치트)을 실행한다.
+  timeout: 10
+  retry: 3
+- action: wait
+  target: null
+  params:
+    seconds: 5
+  description: 스킵 적용 및 화면 전환 대기
+  timeout: 10
+  retry: 0
+- action: verify
+  target: 로비 화면
+  params: {}
+  description: 로비(메인) 화면으로 진입했는지 검증한다.
+  timeout: 10
+  retry: 3
+- action: find_and_tap
+  target: 좌측 상단 햄버거 메뉴 버튼
+  params:
+    expect_visible: 설정 버튼
+    wait_seconds: 2
+  description: 우측 상단 톱니바퀴 모양의 햄버거 메뉴 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 설정 버튼
+  params:
+    expect_visible: 설정 팝업
+  description: 설정 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 계정 연동 버튼
+  params:
+    expect_visible: 계정 연동 팝업
+  description: 설정 팝업에서 계정 연동 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: Google 로그인 버튼
+  params:
+    expect_visible: 약관 알림 팝업
+  description: 계정 연동 팝업 내 Google 로그인 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 약관 알림 팝업 내 동의합니다 영역
+  params:
+    expect_visible: 계정 선택 팝업
+  description: 약관 알림 팝업 내 동의합니다 영역을 터치한다.
+  timeout: 10
+  retry: 2
+- action: verify
+  target: qa_google_01@111percnet.net
+  params: {}
+  description: qa_google_01@111percnet.net 계정이 연동되어 있는지 확인한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: qa_google_01@111percnet.net
+  params:
+    expect_hidden: 계정 연동 팝업
+    wait_seconds: 5
+  description: 계정을 선택하고 로그인 완료를 확인한다.
+  timeout: 20
+  retry: 2
+- action: verify
+  target: 계정 연동 팝업이 닫힌 상태
+  params: {}
+  description: 계정 연동 로그인 성공 시 계정 연동 팝업이 닫혔는지 확인한다.
+  timeout: 10
+  retry: 2
+expected_results:
+- Guest 로그인 데이터 유실 안내 팝업에서 아니오 클릭 시 팝업이 닫혀야 한다.
+- 예 클릭 시 로그인이 진행되어야 한다.
+- 튜토리얼 스킵 후 로비로 진입해야 한다.
+- 계정 연동 Google 로그인이 정상 완료되어야 한다.

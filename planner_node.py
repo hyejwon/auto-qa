@@ -95,6 +95,15 @@ class PlannerNode:
 
 2. `find_and_tap` - UI 요소 찾아서 클릭
    - target: "찾을 UI 요소 설명" (예: "구글 로그인 버튼", "확인 버튼")
+   - params:
+     {{
+       "expect_visible": "탭 후 보여야 하는 요소 (필수)",
+       "wait_seconds": 3,
+       "verify_timeout_sec": 2.0,
+       "expect_hidden": "탭 후 사라져야 하는 요소 (선택)"
+     }}
+   - **`expect_visible`은 필수이다.** 탭 후 어떤 요소/화면이 보여야 하는지 반드시 명시하라.
+   - 예: 버튼 탭 → 팝업이 뜨면 expect_visible="팝업 제목", 화면 전환이면 expect_visible="다음 화면 특징 요소"
 
 3. `verify` - 화면에 특정 요소가 보이는지 검증
    - target: "검증할 UI 요소"
@@ -119,6 +128,22 @@ class PlannerNode:
 8. `swipe` - 스와이프
    - params: {{x1, y1, x2, y2, duration}}
 
+9. `read_text` - 화면에서 텍스트 값을 읽어 저장하고, 이전 값과 비교 검증
+   - target: "읽을 텍스트 영역 설명" (예: "PID 값", "유저 ID 숫자")
+   - params(선택):
+     {{
+       "save_as": "변수명",           // 읽은 값을 저장할 변수명 (나중에 compare_with로 참조)
+       "compare_with": "변수명",      // 이전에 save_as로 저장한 변수명과 비교
+       "expect_changed": true/false   // true: 값이 달라야 PASS / false: 값이 같아야 PASS
+     }}
+   - PID 변경 여부 확인 예시:
+     1) 연동 전: action=read_text, target="PID 값", params={{save_as: "pid_before"}}
+     2) 연동 후: action=read_text, target="PID 값", params={{compare_with: "pid_before", expect_changed: true}}
+
+10. `skip_tutorial` - 튜토리얼/훈련소 클리어 치트 실행 (Unity SR API 호출)
+    - params: 없음
+
+
 **변환 규칙:**
 1. 시나리오를 논리적 순서대로 스텝으로 분해
 2. 각 스텝은 하나의 명확한 액션만 수행
@@ -129,6 +154,11 @@ class PlannerNode:
 7. 뒤로가기 후 특정 화면으로 복귀해야 하는 경우 `back` 스텝의 params에
    `expect_visible`, `expect_hidden`, `wait_seconds`를 넣어 atomic 하게 검증
 8. 단, back 이후 완전히 다른 사용자 액션이 이어지고 복귀 확인 기준이 없으면 일반 `back`만 사용
+9. 모든 `find_and_tap`에는 반드시 `expect_visible`을 넣어야 한다. 탭 후 어떤 요소/화면이 나타나야 하는지 명시하라.
+10. 다음 스텝의 target과 동일한 요소라도 `expect_visible`은 생략하지 말라.
+11. `skip_tutorial`은 필요 시 `wait`를 넣어 치트 적용 시간을 보장
+12. 튜토리얼 스킵 후 로비 진입 시 뜨는 팝업(이벤트, 공지, 보상 등)은 개별 `find_and_tap` 스텝으로 처리하세요.
+13. `launch_app` 후 별도 `wait` 스텝은 불필요하다 (실행 후 5초 대기가 자동 적용됨).
 
 **출력 형식 (JSON):**
 {{
@@ -156,6 +186,9 @@ class PlannerNode:
 - 모든 필드를 빠짐없이 채우세요
 - steps 배열은 최소 1개 이상의 스텝을 포함해야 합니다
 - 가능하면 `back + wait + verify`를 따로 나누지 말고, `back.params.expect_visible/expect_hidden`로 표현하세요
+- 가능하면 `find_and_tap + wait + verify`도 `find_and_tap.params.expect_visible/expect_hidden`로 합치세요
+- PID / 유저 ID / 계정 ID 등 숫자/문자 값의 변경·유지 여부를 확인해야 하는 경우 `read_text`를 사용하세요
+- `read_text`로 값을 비교할 때는 반드시 확인 전(save_as)과 후(compare_with)를 쌍으로 구성하세요
 """
     
     def save_as_yaml(
@@ -186,7 +219,7 @@ class PlannerNode:
             "title": test_plan.title,
             "description": test_plan.description,
             "package": test_plan.package,
-            "steps": [step.dict() for step in test_plan.steps],
+            "steps": [step.model_dump() for step in test_plan.steps],
             "expected_results": test_plan.expected_results
         }
         

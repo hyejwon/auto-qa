@@ -358,6 +358,29 @@ class ADBController:
             logger.error("APK install exception: %s", e)
             return False, f"❌ 오류: {e}"
 
+    def uninstall_app(self, package: str) -> tuple[bool, str]:
+        """앱 삭제 (uninstall)."""
+        if not package or not package.strip():
+            return False, "패키지명이 비어 있습니다."
+        try:
+            proc = subprocess.run(
+                self._adb_cmd(["uninstall", package.strip()]),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            output = (proc.stdout + proc.stderr).strip()
+            if proc.returncode == 0 and "Success" in output:
+                logger.info("App uninstalled: %s", package)
+                return True, f"✅ 삭제 완료: {package}"
+            logger.warning("App uninstall failed: %s", output)
+            return False, f"❌ 삭제 실패: {output[:300]}"
+        except subprocess.TimeoutExpired:
+            return False, "❌ 타임아웃 (60초 초과)"
+        except Exception as e:
+            logger.error("App uninstall exception: %s", e)
+            return False, f"❌ 오류: {e}"
+
     def close_app(self, package: str) -> bool:
         """앱 종료"""
         try:

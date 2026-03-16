@@ -12,10 +12,12 @@ from config import Config
 from planner_node import PlannerNode
 from qa_orchestrator import QAOrchestrator
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+if not _root.handlers:
+    _console = logging.StreamHandler()
+    _console.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    _root.addHandler(_console)
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
@@ -103,6 +105,316 @@ def _get_testcase_choices() -> list[str]:
         return [f.stem for f in files]
     except Exception:
         return []
+
+
+# ─────────────────────────────────────────────
+# 템플릿 편집 헬퍼
+# ─────────────────────────────────────────────
+
+MAX_TEMPLATE_STEPS = 20  # UI에 미리 생성할 최대 스텝 수
+
+# 사용 가능한 액션 목록
+ACTION_CHOICES = [
+    "find_and_tap", "verify", "read_text",
+    "wait", "back", "home",
+    "launch_app", "close_app", "skip_tutorial", "swipe",
+]
+
+TARGET_ACTIONS = {"find_and_tap", "verify", "read_text"}
+
+
+def _get_template_choices() -> list[str]:
+    """templates/ 디렉토리의 YAML 파일 목록."""
+    try:
+        tpl_dir = _config().paths.templates_dir
+        files = sorted(tpl_dir.glob("*.yaml"))
+        return [f.stem for f in files]
+    except Exception:
+        return []
+
+
+def _load_template(name: str) -> dict | None:
+    if not name:
+        return None
+    try:
+        path = _config().paths.templates_dir / f"{name}.yaml"
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except Exception:
+        return None
+
+
+def _steps_to_yaml_state(steps: list[dict]) -> str:
+    """스텝 리스트를 YAML 문자열로 직렬화 (hidden state 용)."""
+    return yaml.dump(steps, allow_unicode=True, sort_keys=False)
+
+
+def _yaml_state_to_steps(yaml_str: str) -> list[dict]:
+    """hidden state YAML → 스텝 리스트."""
+    if not yaml_str.strip():
+        return []
+    try:
+        data = yaml.safe_load(yaml_str)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _build_step_ui_outputs(steps: list[dict]) -> list:
+    """스텝 리스트 → Gradio UI 업데이트 값 생성.
+
+    Returns: *(visible, action, target, description) × MAX_TEMPLATE_STEPS
+    """
+    rows: list = []
+    for i in range(MAX_TEMPLATE_STEPS):
+        if i < len(steps):
+            s = steps[i]
+            action = s.get("action", "")
+            target = s.get("target") or ""
+            desc = s.get("description", "")
+            has_target = action in TARGET_ACTIONS
+            rows.extend([
+                gr.update(visible=True),
+                gr.update(value=action),
+                gr.update(value=target, interactive=has_target),
+                gr.update(value=desc),
+            ])
+        else:
+            rows.extend([
+                gr.update(visible=False),
+                gr.update(value=""),
+                gr.update(value="", interactive=False),
+                gr.update(value=""),
+            ])
+    return rows
+
+
+def load_template_for_edit(name: str):
+    """템플릿 로드.
+
+    Returns: (status, steps_yaml, title, package,
+              *(visible, action, target, description) × MAX)
+    """
+    empty_rows = _build_step_ui_outputs([])
+
+    if not name:
+        return ("⚠️ 템플릿을 선택해주세요.", "", "", "", *empty_rows)
+
+    data = _load_template(name)
+    if not data:
+        return (f"❌ {name} 로드 실패", "", "", "", *empty_rows)
+
+    steps = data.get("steps", [])
+    title = data.get("title", "")
+    package = data.get("package", "")
+    steps_yaml = _steps_to_yaml_state(steps)
+    ui_rows = _build_step_ui_outputs(steps)
+
+    return (
+        f"✅ 로드 완료 — {title} ({len(steps)}스텝)",
+        steps_yaml,
+        title,
+        package,
+        *ui_rows,
+    )
+
+
+def append_step(steps_yaml: str, action: str):
+    """맨 뒤에 새 스텝 추가. Returns: (info, steps_yaml, *ui_rows)"""
+    steps = _yaml_state_to_steps(steps_yaml)
+    new_step = {
+        "action": action or "find_and_tap",
+        "target": None,
+        "params": {},
+        "description": "",
+        "timeout": 10,
+        "retry": 2,
+    }
+    steps.append(new_step)
+    info = f"✅ Step {len(steps)} 추가됨 (총 {len(steps)}스텝)"
+    return (info, _steps_to_yaml_state(steps), *_build_step_ui_outputs(steps))
+
+
+def insert_step(steps_yaml: str, position: int, action: str):
+    """지정 위치에 새 스텝 삽입. Returns: (info, steps_yaml, *ui_rows)"""
+    steps = _yaml_state_to_steps(steps_yaml)
+    new_step = {
+        "action": action or "find_and_tap",
+        "target": None,
+        "params": {},
+        "description": "",
+        "timeout": 10,
+        "retry": 2,
+    }
+    pos = max(0, min(int(position), len(steps)))
+    steps.insert(pos, new_step)
+    info = f"✅ Step {pos+1} 위치에 삽입됨 (총 {len(steps)}스텝)"
+    return (info, _steps_to_yaml_state(steps), *_build_step_ui_outputs(steps))
+
+
+def remove_step_at(steps_yaml: str, position: int):
+    """지정 위치의 스텝 삭제 (1-based). Returns: (info, steps_yaml, *ui_rows)"""
+    steps = _yaml_state_to_steps(steps_yaml)
+    idx = int(position) - 1
+    if 0 <= idx < len(steps):
+        removed = steps.pop(idx)
+        info = f"🗑️ Step {idx+1} ({removed.get('action','')}) 삭제됨 (총 {len(steps)}스텝)"
+    else:
+        info = f"⚠️ 유효하지 않은 위치: {position}"
+    return (info, _steps_to_yaml_state(steps), *_build_step_ui_outputs(steps))
+
+
+def move_step(steps_yaml: str, position: int, direction: int):
+    """스텝을 위/아래로 이동 (1-based position, direction: -1=up, +1=down).
+    Returns: (info, steps_yaml, *ui_rows)"""
+    steps = _yaml_state_to_steps(steps_yaml)
+    idx = int(position) - 1
+    new_idx = idx + direction
+    if 0 <= idx < len(steps) and 0 <= new_idx < len(steps):
+        steps[idx], steps[new_idx] = steps[new_idx], steps[idx]
+        arrow = "⬆️" if direction == -1 else "⬇️"
+        info = f"{arrow} Step {idx+1} → Step {new_idx+1} 이동됨"
+    else:
+        info = "⚠️ 이동할 수 없습니다."
+    return (info, _steps_to_yaml_state(steps), *_build_step_ui_outputs(steps))
+
+
+def _collect_steps_from_ui(steps_yaml: str, actions, targets, descriptions) -> list[dict]:
+    """UI 값을 현재 steps에 반영."""
+    steps = _yaml_state_to_steps(steps_yaml)
+    for i, s in enumerate(steps):
+        if i < len(actions) and actions[i]:
+            s["action"] = actions[i]
+        if i < len(targets) and s.get("action") in TARGET_ACTIONS:
+            s["target"] = targets[i] if targets[i] else s.get("target")
+        if i < len(descriptions) and descriptions[i]:
+            s["description"] = descriptions[i]
+    return steps
+
+
+def _build_testcase_from_template(steps_yaml: str, title: str, package: str,
+                                   actions, targets, descriptions):
+    """편집된 값을 반영하여 TestCase 객체를 생성."""
+    from test_manager import TestCase
+
+    steps = _collect_steps_from_ui(steps_yaml, actions, targets, descriptions)
+
+    # launch_app 스텝의 패키지 동기화
+    if package.strip():
+        for step in steps:
+            if step.get("action") == "launch_app":
+                step.setdefault("params", {})["package"] = package.strip()
+
+    data = {
+        "id": "TPL_RUN",
+        "title": title.strip() or "템플릿 실행",
+        "description": "",
+        "package": package.strip(),
+        "steps": steps,
+        "expected_results": [],
+        "preconditions": [],
+    }
+    return TestCase(**data)
+
+
+def run_template(steps_yaml: str, title: str, package: str, *field_values):
+    """편집된 템플릿을 저장 없이 바로 실행 (스트리밍 제너레이터).
+
+    field_values: (action, target, description) × MAX_TEMPLATE_STEPS
+    """
+    global _rec_adb, _test_stop_event
+
+    if not steps_yaml.strip():
+        yield "⚠️ 먼저 템플릿을 로드해주세요.", ""
+        return
+
+    # field_values를 action/target/description 리스트로 분리
+    actions = [field_values[i * 3] for i in range(MAX_TEMPLATE_STEPS) if i * 3 < len(field_values)]
+    targets = [field_values[i * 3 + 1] for i in range(MAX_TEMPLATE_STEPS) if i * 3 + 1 < len(field_values)]
+    descriptions = [field_values[i * 3 + 2] for i in range(MAX_TEMPLATE_STEPS) if i * 3 + 2 < len(field_values)]
+
+    try:
+        testcase = _build_testcase_from_template(
+            steps_yaml, title, package, actions, targets, descriptions
+        )
+    except Exception as e:
+        yield f"❌ 템플릿 구성 오류: {e}", ""
+        return
+
+    _test_stop_event = threading.Event()
+    log_q: queue.Queue = queue.Queue()
+    result_holder: dict = {}
+
+    _STEP_MARKERS = ("━", "▶ ", "┌─", "│", "└─", "⏹️", "🔴", "  결과:", "  테스트 시작:", "  패키지:")
+
+    class _StreamHandler(logging.Handler):
+        def emit(self, record):
+            msg = record.getMessage()
+            if any(m in msg for m in _STEP_MARKERS):
+                log_q.put(msg)
+
+    handler = _StreamHandler()
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+
+    def _run():
+        global _rec_adb
+        try:
+            cfg = _config()
+            _rec_adb = ADBController()
+            session = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _rec_adb.start_recording(cfg.paths.recordings_dir, session)
+            logger.info(f"🔴 화면 녹화 시작 — 세션: {session}")
+        except Exception as e:
+            logger.warning(f"⚠️ 녹화 시작 실패: {e}")
+            _rec_adb = None
+
+        try:
+            orchestrator = QAOrchestrator(_config())
+            result_holder["result"] = orchestrator.run_test(
+                testcase.id, _test_stop_event, testcase_override=testcase
+            )
+        except Exception as e:
+            logger.exception("run_template thread failed")
+            result_holder["error"] = str(e)
+        finally:
+            if _rec_adb and _rec_adb.is_recording:
+                try:
+                    files = _rec_adb.stop_recording()
+                    if files:
+                        logger.info(f"⏹️ 녹화 완료 — {len(files)}개 청크")
+                except Exception:
+                    pass
+            log_q.put(None)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    log_lines: list[str] = []
+    while True:
+        try:
+            msg = log_q.get(timeout=0.15)
+        except queue.Empty:
+            if not t.is_alive():
+                break
+            yield "\n".join(log_lines), ""
+            continue
+        if msg is None:
+            break
+        log_lines.append(msg)
+        yield "\n".join(log_lines), ""
+
+    root_logger.removeHandler(handler)
+    t.join(timeout=5)
+    _test_stop_event = None
+
+    if "result" in result_holder:
+        summary = _format_summary(result_holder["result"])
+    else:
+        err = result_holder.get("error", "알 수 없는 오류")
+        summary = f"## ❌ 실행 실패\n\n> {err}"
+
+    yield "\n".join(log_lines), summary
 
 
 # ─────────────────────────────────────────────
@@ -236,6 +548,32 @@ def install_apk(filename: str):
         yield msg
     except Exception as e:
         logger.exception("install_apk failed")
+        yield f"❌ ADB 연결 오류: {e}"
+
+
+INSTALLED_PACKAGES = [
+    "com.percent.aos.cooptd",
+    "com.percent.aos.rollinghero",
+    "com.supermagic.aos.statusman",
+    "com.percent.aos.luckydefense",
+    "com.percent.aos.arenago2",
+]
+
+
+def uninstall_app(package: str):
+    """선택한 앱을 디바이스에서 삭제."""
+    if not package:
+        yield "⚠️ 패키지를 선택해주세요."
+        return
+
+    yield f"🗑️ 삭제 중: {package} ..."
+
+    try:
+        adb = ADBController()
+        _, msg = adb.uninstall_app(package)
+        yield msg
+    except Exception as e:
+        logger.exception("uninstall_app failed")
         yield f"❌ ADB 연결 오류: {e}"
 
 
@@ -435,8 +773,24 @@ def run_test(test_id: str):
 # Gradio UI 빌드
 # ─────────────────────────────────────────────
 
+_CUSTOM_CSS = """
+.step-row {
+    align-items: flex-end !important;
+}
+.step-btn {
+    margin-bottom: 7px !important;
+}
+.step-btn button {
+    height: 42px !important;
+    min-height: 42px !important;
+    max-height: 42px !important;
+    padding: 0 10px !important;
+}
+"""
+
+
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="QA 자동화 테스트", theme=gr.themes.Soft()) as app:
+    with gr.Blocks(title="QA 자동화 테스트", theme=gr.themes.Soft(), css=_CUSTOM_CSS) as app:
 
         gr.Markdown("# 📱 QA 자동화 테스트 도구")
         gr.Markdown(
@@ -445,11 +799,11 @@ def build_app() -> gr.Blocks:
 
         with gr.Tabs():
                         # ═══════════════════════════════════════
-            # Tab 1 — APK 설치
+            # Tab 1 — APK 관리 (설치 / 삭제)
             # ═══════════════════════════════════════
-            with gr.TabItem("📦 APK 설치"):
+            with gr.TabItem("📦 APK 관리"):
 
-                gr.Markdown("### APK 파일 설치")
+                gr.Markdown("### APK 설치")
                 gr.Markdown("`apks/` 폴더에 있는 APK 파일을 선택하여 연결된 디바이스에 설치합니다.")
 
                 with gr.Row():
@@ -471,6 +825,25 @@ def build_app() -> gr.Blocks:
                     outputs=[apk_status],
                 )
 
+                gr.Markdown("---")
+                gr.Markdown("### 앱 삭제")
+
+                with gr.Row():
+                    uninstall_dropdown = gr.Dropdown(
+                        choices=INSTALLED_PACKAGES,
+                        label="패키지 선택",
+                        interactive=True,
+                        scale=5,
+                    )
+                uninstall_btn = gr.Button("🗑️ 삭제", variant="stop")
+                uninstall_status = gr.Textbox(label="삭제 상태", interactive=False, lines=3)
+
+                uninstall_btn.click(
+                    fn=uninstall_app,
+                    inputs=[uninstall_dropdown],
+                    outputs=[uninstall_status],
+                )
+
             # ═══════════════════════════════════════
             # Tab 2 — 테스트 케이스 작성
             # ═══════════════════════════════════════
@@ -490,10 +863,11 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     # ── 왼쪽: 입력 영역 ──────────────────
                     with gr.Column(scale=1):
-                        pkg_input = gr.Textbox(
+                        pkg_input = gr.Dropdown(
+                            choices=INSTALLED_PACKAGES,
                             label="패키지명",
-                            placeholder="예: com.percent.aos.cooptd",
                             value="com.percent.aos.cooptd",
+                            interactive=True,
                         )
                         scenario_input = gr.Textbox(
                             label="테스트 시나리오 (자연어)",
@@ -533,11 +907,220 @@ def build_app() -> gr.Blocks:
                     outputs=[status_box, yaml_box],
                 )
 
-                # ── Tab 2 의 드롭다운을 함께 갱신하기 위해 미리 선언 후 연결
-                # (아래 Tab 2 블록에서 정의한 뒤 아래에서 outputs 추가)
+            # ═══════════════════════════════════════
+            # Tab 3 — 템플릿 편집
+            # ═══════════════════════════════════════
+            with gr.TabItem("🧩 템플릿 편집"):
+
+                gr.Markdown("### 템플릿 기반 테스트 실행")
+                gr.Markdown(
+                    "템플릿을 로드한 후 스텝을 편집·추가·삭제하여 바로 실행할 수 있습니다.  \n"
+                    "`find_and_tap`, `verify`, `read_text` 액션의 **target** 값만 수정 가능합니다."
+                )
+
+                with gr.Row():
+                    tpl_dropdown = gr.Dropdown(
+                        choices=_get_template_choices(),
+                        label="템플릿 선택",
+                        interactive=True,
+                        scale=4,
+                    )
+                    tpl_refresh_btn = gr.Button("🔄 새로고침", scale=1)
+                    tpl_load_btn = gr.Button("📂 로드", variant="primary", scale=1)
+
+                tpl_status = gr.Textbox(label="상태", interactive=False, lines=1)
+
+                with gr.Row():
+                    tpl_title = gr.Textbox(label="테스트 제목 (수정 가능)", scale=3)
+                    tpl_package = gr.Dropdown(
+                        choices=INSTALLED_PACKAGES,
+                        label="패키지 (수정 가능)",
+                        interactive=True,
+                        scale=2,
+                    )
+
+                gr.Markdown("#### 스텝 목록")
+
+                # 전체 스텝 행 (MAX개 미리 생성, 필요한 만큼만 표시)
+                # 각 행: [Step N] [action] [target] [description] [🗑️]
+                tpl_step_groups = []  # gr.Group containers
+                tpl_actions = []      # action dropdowns
+                tpl_targets = []      # target textboxes
+                tpl_descs = []        # description textboxes
+                tpl_del_btns = []     # per-row delete buttons
+                tpl_up_btns = []      # per-row move up buttons
+                tpl_down_btns = []    # per-row move down buttons
+
+                for idx in range(MAX_TEMPLATE_STEPS):
+                    with gr.Group(visible=False) as grp:
+                        with gr.Row(elem_classes=["step-row"]):
+                            act = gr.Dropdown(
+                                choices=ACTION_CHOICES,
+                                label="액션",
+                                interactive=False,
+                                allow_custom_value=True,
+                                scale=2,
+                                min_width=120,
+                            )
+                            tgt = gr.Textbox(
+                                label="target",
+                                interactive=False,
+                                scale=3,
+                            )
+                            desc = gr.Textbox(
+                                label="설명",
+                                interactive=False,
+                                scale=4,
+                            )
+                            up_btn = gr.Button(
+                                "⬆", scale=0, min_width=42, size="sm",
+                                elem_classes=["step-btn"],
+                            )
+                            down_btn = gr.Button(
+                                "⬇", scale=0, min_width=42, size="sm",
+                                elem_classes=["step-btn"],
+                            )
+                            del_btn = gr.Button(
+                                "✕", variant="stop", scale=0, min_width=42,
+                                size="sm", elem_classes=["step-btn"],
+                            )
+                    tpl_step_groups.append(grp)
+                    tpl_actions.append(act)
+                    tpl_targets.append(tgt)
+                    tpl_descs.append(desc)
+                    tpl_up_btns.append(up_btn)
+                    tpl_down_btns.append(down_btn)
+                    tpl_del_btns.append(del_btn)
+
+                tpl_steps_yaml = gr.Textbox(visible=False)  # hidden state
+
+                # ── 스텝 추가 컨트롤 ──
+                gr.Markdown("#### 스텝 추가")
+                with gr.Row():
+                    tpl_add_action = gr.Dropdown(
+                        choices=ACTION_CHOICES, label="추가할 액션",
+                        value="find_and_tap", interactive=True, scale=2,
+                    )
+                    tpl_append_btn = gr.Button(
+                        "➕ 맨 뒤에 추가", variant="primary", scale=1,
+                    )
+
+                with gr.Accordion("특정 위치에 삽입", open=False):
+                    with gr.Row():
+                        tpl_insert_pos = gr.Number(
+                            label="삽입 위치 (1 = 맨 앞)",
+                            value=1, precision=0, minimum=1, scale=1,
+                        )
+                        tpl_insert_action = gr.Dropdown(
+                            choices=ACTION_CHOICES, label="액션",
+                            value="find_and_tap", interactive=True, scale=2,
+                        )
+                        tpl_insert_btn = gr.Button(
+                            "➕ 삽입", scale=1,
+                        )
+
+                gr.Markdown("---")
+
+                with gr.Row():
+                    tpl_run_btn = gr.Button("▶️ 바로 실행", variant="primary", scale=2)
+                    tpl_stop_btn = gr.Button("⏹️ 중단", variant="stop", scale=1)
+
+                tpl_log_box = gr.Textbox(
+                    label="실시간 실행 로그",
+                    lines=15,
+                    interactive=False,
+                    autoscroll=True,
+                )
+                tpl_summary_md = gr.Markdown(value="", label="실행 결과")
+
+                # ── 이벤트 연결 ──
+
+                # 공통 output 리스트: status + steps_yaml + *(group, action, target, desc) × MAX
+                _step_ui_outputs_with_status = [tpl_status, tpl_steps_yaml]
+                for i in range(MAX_TEMPLATE_STEPS):
+                    _step_ui_outputs_with_status.extend([
+                        tpl_step_groups[i], tpl_actions[i],
+                        tpl_targets[i], tpl_descs[i],
+                    ])
+
+                # 로드 outputs: status, steps_yaml, title, package, *(group, action, target, desc) × MAX
+                tpl_load_outputs = [tpl_status, tpl_steps_yaml, tpl_title, tpl_package]
+                for i in range(MAX_TEMPLATE_STEPS):
+                    tpl_load_outputs.extend([
+                        tpl_step_groups[i], tpl_actions[i],
+                        tpl_targets[i], tpl_descs[i],
+                    ])
+
+                tpl_refresh_btn.click(
+                    fn=lambda: gr.update(choices=_get_template_choices()),
+                    outputs=[tpl_dropdown],
+                )
+
+                tpl_load_btn.click(
+                    fn=load_template_for_edit,
+                    inputs=[tpl_dropdown],
+                    outputs=tpl_load_outputs,
+                    show_progress="hidden",
+                )
+
+                # 맨 뒤에 추가
+                tpl_append_btn.click(
+                    fn=append_step,
+                    inputs=[tpl_steps_yaml, tpl_add_action],
+                    outputs=_step_ui_outputs_with_status,
+                    show_progress="hidden",
+                )
+
+                # 특정 위치에 삽입
+                tpl_insert_btn.click(
+                    fn=insert_step,
+                    inputs=[tpl_steps_yaml, tpl_insert_pos, tpl_insert_action],
+                    outputs=_step_ui_outputs_with_status,
+                    show_progress="hidden",
+                )
+
+                # 각 행의 ⬆️⬇️🗑️ 버튼
+                for i in range(MAX_TEMPLATE_STEPS):
+                    tpl_up_btns[i].click(
+                        fn=lambda yaml_str, pos=i: move_step(yaml_str, pos + 1, -1),
+                        inputs=[tpl_steps_yaml],
+                        outputs=_step_ui_outputs_with_status,
+                        show_progress="hidden",
+                    )
+                    tpl_down_btns[i].click(
+                        fn=lambda yaml_str, pos=i: move_step(yaml_str, pos + 1, +1),
+                        inputs=[tpl_steps_yaml],
+                        outputs=_step_ui_outputs_with_status,
+                        show_progress="hidden",
+                    )
+                    tpl_del_btns[i].click(
+                        fn=lambda yaml_str, pos=i: remove_step_at(yaml_str, pos + 1),
+                        inputs=[tpl_steps_yaml],
+                        outputs=_step_ui_outputs_with_status,
+                        show_progress="hidden",
+                    )
+
+                # 실행 inputs: steps_yaml, title, package, *(action, target, desc) × MAX
+                tpl_run_inputs = [tpl_steps_yaml, tpl_title, tpl_package]
+                for i in range(MAX_TEMPLATE_STEPS):
+                    tpl_run_inputs.extend([
+                        tpl_actions[i], tpl_targets[i], tpl_descs[i],
+                    ])
+
+                tpl_run_event = tpl_run_btn.click(
+                    fn=run_template,
+                    inputs=tpl_run_inputs,
+                    outputs=[tpl_log_box, tpl_summary_md],
+                )
+
+                tpl_stop_btn.click(
+                    fn=stop_test,
+                    outputs=[tpl_log_box],
+                    cancels=[tpl_run_event],
+                )
 
             # ═══════════════════════════════════════
-            # Tab 3 — 테스트 실행
+            # Tab 4 — 테스트 실행
             # ═══════════════════════════════════════
             with gr.TabItem("▶️ 테스트 실행"):
 
@@ -579,13 +1162,9 @@ def build_app() -> gr.Blocks:
                     outputs=[scenario_display],
                 )
                 refresh_btn.click(fn=refresh_testcases, outputs=[tc_dropdown])
-                stop_btn.click(
-                    fn=stop_test,
-                    outputs=[log_box],
-                )
 
             # ═══════════════════════════════════════
-            # Tab 4 — 녹화 영상
+            # Tab 5 — 녹화 영상
             # ═══════════════════════════════════════
             with gr.TabItem("🎬 녹화 영상"):
 
@@ -624,10 +1203,17 @@ def build_app() -> gr.Blocks:
                 )
 
         # run_btn 은 Tab 3 의 rec_dropdown 까지 갱신하므로 탭 블록 바깥에서 연결
-        run_btn.click(
+        run_event = run_btn.click(
             fn=run_test,
             inputs=[tc_dropdown],
             outputs=[log_box, summary_md, rec_dropdown],
+        )
+
+        # stop_btn: cancels 로 run_event 제너레이터를 강제 종료
+        stop_btn.click(
+            fn=stop_test,
+            outputs=[log_box],
+            cancels=[run_event],
         )
 
         # save_btn 은 status_box + tc_dropdown 둘 다 갱신
@@ -642,7 +1228,7 @@ def build_app() -> gr.Blocks:
 
 if __name__ == "__main__":
     cfg = _config()
-    build_app().launch(
+    build_app().queue().launch(
         server_name="0.0.0.0",
         server_port=7860,
         share=False,

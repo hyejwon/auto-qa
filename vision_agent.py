@@ -10,8 +10,6 @@ from pydantic import BaseModel
 from langsmith import wrappers
 from langsmith import traceable
 
-
-
 logger = logging.getLogger(__name__)
 
 class BoundingBox(BaseModel):
@@ -153,16 +151,21 @@ class GeminiVisionAgent:
         현재 화면 상태 전반 분석
         """
         prompt = """
-        이 게임 화면을 분석해줘:
+        이 게임 화면을 분석해줘.
 
-        1. 현재 어떤 화면인지 (메인/전투/상점/설정 등)
-        2. 화면에 보이는 주요 UI 요소들
-        3. 팝업이나 에러가 있는지
-        4. 다음 가능한 액션들
+        screen_type은 반드시 아래 값 중 하나만 사용해:
+        - "title"    : 타이틀/스플래시/로그인 화면 (게스트·Google·Apple 로그인 버튼 등)
+        - "lobby"    : 메인 로비/홈 화면 (햄버거 메뉴, 전투 시작 등 주요 HUD 포함)
+        - "settings" : 설정 팝업 또는 설정 화면 (진동·효과음·이용약관·계정연동 등)
+        - "account"  : 계정 연동 팝업 (Google/Apple 연동·로그아웃·계정삭제 버튼 등)
+        - "shop"     : 상점/구매 화면
+        - "battle"   : 전투/게임플레이 화면
+        - "ranking"  : 랭킹 화면
+        - "unknown"  : 위 항목에 해당하지 않는 경우
 
         JSON 형식으로 반환:
         {
-        "screen_type": "메인화면/전투/상점/...",
+        "screen_type": "위 목록 중 하나",
         "ui_elements": ["요소1", "요소2", ...],
         "popups": ["팝업1", ...] or [],
         "suggested_actions": ["액션1", "액션2", ...]
@@ -182,7 +185,48 @@ class GeminiVisionAgent:
             logger.error(f"Screen analysis failed: {e}")
             return {}
     
-    def _draw_bbox(self, image_path: Path, bbox: BoundingBox, 
+    @traceable
+    def read_text(self, image_path: Path, region_description: str) -> Optional[str]:
+        """
+        화면에서 특정 영역의 텍스트 값을 읽어서 반환
+
+        Args:
+            image_path: 스크린샷 경로
+            region_description: 읽을 텍스트 영역 설명 (예: "PID 값", "유저 ID 숫자")
+
+        Returns:
+            읽은 텍스트 문자열, 찾지 못하면 None
+        """
+        prompt = f"""
+        이 게임 화면에서 '{region_description}'에 해당하는 텍스트 값을 읽어줘.
+
+        **규칙:**
+        1. 해당 영역의 텍스트만 정확히 반환한다.
+        2. 찾을 수 없으면 value를 null로 반환한다.
+
+        **반환 형식 (JSON만):**
+        {{
+        "found": true/false,
+        "value": "읽은 텍스트" or null
+        }}
+        """
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, Image.open(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(response.text)
+            if not data.get("found"):
+                return None
+            return data.get("value")
+        except Exception as e:
+            logger.error(f"read_text failed: {e}")
+            return None
+
+    def _draw_bbox(self, image_path: Path, bbox: BoundingBox,
                    debug_dir: Path, width: int = 720, height: int = 1280):
         """BBox 시각화"""
         try:

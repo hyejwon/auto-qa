@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import requests
 from google import genai
@@ -41,6 +42,34 @@ TARGET_HINTS_MAP = {
     "합성": ["merge"],
     "on": ["on", "enabled", "true"],
     "off": ["off", "disabled", "false"],
+}
+
+
+GAME_CHEAT_MAP: Dict[str, Dict[str, Dict[str, str]]] = {
+    "com.percent.aos.cooptd": {
+        "skip_tutorial": {
+            "category": "Tutorual",
+            "name": "튜토리얼/ 훈련소 클리어",
+        },
+    },
+    "com.percent.aos.rollinghero": {
+        "skip_tutorial": {
+            "category": "인게임/0. 빠른 디버깅",
+            "name": "현재 튜토 즉시 종료 및 모든 튜토 완료 처리",
+        },
+    },
+    "com.percent.aos.luckydefense": {
+        "skip_tutorial": {
+            "category": "",
+            "name": "",
+        },
+    },
+    "com.percent.aos.arenago2": {
+        "skip_tutorial": {
+            "category": "튜토리얼",
+            "name": "튜토리얼 스킵",
+        },
+    },
 }
 
 
@@ -106,6 +135,27 @@ class UnityAPIClient:
         ]
         return [f for f in fields if isinstance(f, str) and f.strip()]
 
+    def _expanded_button_search_fields(self, button: Dict[str, Any]) -> List[tuple[str, float, bool]]:
+        weighted_fields: List[tuple[str, float, bool]] = []
+        field_specs = [
+            ("SpecifiedName", 1.0, True),
+            ("GameObjectName", 1.0, True),
+            ("Text", 0.95, True),
+            ("Name", 0.95, True),
+            ("ParentMetadata", 0.65, False),
+        ]
+        for key, weight, is_primary in field_specs:
+            value = button.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+
+            weighted_fields.append((value, weight, is_primary))
+            tokens = self._split_identifier_tokens(value)
+            tokenized_value = " ".join(tokens)
+            if tokenized_value and tokenized_value.lower() != value.strip().lower():
+                weighted_fields.append((tokenized_value, weight, is_primary))
+        return weighted_fields
+
     @staticmethod
     def _split_identifier_tokens(value: str) -> List[str]:
         if not value:
@@ -150,14 +200,14 @@ class UnityAPIClient:
         return filtered
 
     def _score(self, target: str, button: Dict[str, Any]) -> float:
-        fields = self._button_search_fields(button)
+        fields = self._expanded_button_search_fields(button)
         if not fields:
             return 0.0
 
         # Regex target support when caller provides pattern-like target.
         try:
             rx = re.compile(target, re.IGNORECASE)
-            if any(rx.search(field) for field in fields):
+            if any(rx.search(field) for field, _, _ in fields):
                 return 1.0
         except re.error:
             pass
@@ -166,18 +216,157 @@ class UnityAPIClient:
         if not normalized_target:
             return 0.0
 
-        best = 0.0
-        for field in fields:
+        target_hints = [
+            self._normalize_text(hint)
+            for hint in self._build_target_hints(target)
+            if isinstance(hint, str) and hint.strip()
+        ]
+        hint_tokens = {
+            token
+            for hint in target_hints
+            for token in hint.split()
+            if token
+        }
+        toggle_tokens = {"on", "off", "enabled", "disabled", "true", "false", "toggle", "switch", "button"}
+        non_toggle_hint_tokens = hint_tokens - {"on", "off", "enabled", "disabled", "true", "false"}
+
+        best_primary = 0.0
+        best_context = 0.0
+        for field, weight, is_primary in fields:
             normalized_field = self._normalize_text(field)
             if not normalized_field:
                 continue
+            field_score = 0.0
             if normalized_target in normalized_field:
-                best = max(best, 0.95)
-            best = max(
-                best,
+                field_score = max(field_score, 0.95)
+            field_score = max(
+                field_score,
                 SequenceMatcher(None, normalized_target, normalized_field).ratio(),
             )
+
+            if any(hint == normalized_field for hint in target_hints):
+                field_score = max(field_score, 0.92)
+            if any(hint in normalized_field for hint in target_hints):
+                field_score = max(field_score, 0.80)
+
+            field_tokens = set(normalized_field.split())
+            if hint_tokens and field_tokens:
+                overlap = len(hint_tokens & field_tokens) / len(hint_tokens)
+                if overlap > 0:
+                    field_score = max(field_score, 0.55 + (0.35 * overlap))
+
+            if (
+                is_primary
+                and non_toggle_hint_tokens
+                and field_tokens
+                and field_tokens <= toggle_tokens
+                and field_tokens & {"on", "off", "enabled", "disabled", "true", "false"}
+            ):
+                field_score = min(field_score, 0.50)
+
+            weighted_score = min(1.0, field_score) * weight
+            if is_primary:
+                best_primary = max(best_primary, weighted_score)
+            else:
+                best_context = max(best_context, weighted_score)
+
+        best = max(best_primary, best_context)
+        if best_primary > 0 and best_context > 0:
+            best = max(best, min(1.0, best_primary + (best_context * 0.25)))
         return best
+
+    def call_cheat(self, category: str, name: str) -> bool:
+        """SR 치트 API 호출. Unity 서버가 응답 없이 연결을 끊는 경우도 성공으로 처리."""
+        if self.adb:
+            self.adb.ensure_forward(local_port=37772, remote_port=37772)
+
+        # category에 슬래시(/)가 포함될 수 있으므로 safe='/'로 유지
+        encoded_query = f"category={quote(category, safe='/')}&name={quote(name, safe='/')}"
+        candidate_bases: List[str] = []
+        for base in (
+            self.base_url,
+            os.getenv("UNITY_API_URL"),
+            os.getenv("MCP_SERVER_URL"),
+            "http://host.docker.internal:37772",
+            "http://localhost:37772",
+            "http://127.0.0.1:37772",
+        ):
+            if not isinstance(base, str) or not base.strip():
+                continue
+            normalized = base.rstrip("/")
+            if normalized not in candidate_bases:
+                candidate_bases.append(normalized)
+
+        for base in candidate_bases:
+            endpoint = f"{base}/api/sr/call?{encoded_query}"
+            # curl command in user workflow uses POST first.
+            for method in ("POST", "GET"):
+                try:
+                    if method == "POST":
+                        response = requests.post(endpoint, data=b"", timeout=self.timeout_sec)
+                    else:
+                        response = requests.get(endpoint, timeout=self.timeout_sec)
+                    response.raise_for_status()
+                    logger.info(
+                        "Cheat called (%s): [%s] %s via %s → %s",
+                        method,
+                        category,
+                        name,
+                        base,
+                        response.text[:200],
+                    )
+                    return True
+                except requests.exceptions.ConnectionError as exc:
+                    # Unity 서버가 치트 실행 후 응답 없이 연결을 끊는 경우 → 성공으로 간주
+                    cause = str(exc)
+                    if "RemoteDisconnected" in cause or "Connection aborted" in cause:
+                        logger.info(
+                            "Cheat called (%s): [%s] %s via %s — no HTTP response (assumed success)",
+                            method,
+                            category,
+                            name,
+                            base,
+                        )
+                        return True
+                    logger.warning("Cheat %s connection error via %s: %s", method, base, exc)
+                except requests.exceptions.ReadTimeout:
+                    # Unity 서버가 치트 실행 후 응답을 보내지 않아 타임아웃 → 성공으로 간주
+                    logger.info(
+                        "Cheat called (%s): [%s] %s via %s — read timeout (assumed success)",
+                        method,
+                        category,
+                        name,
+                        base,
+                    )
+                    return True
+                except requests.RequestException as exc:
+                    logger.warning("Cheat %s failed via %s: %s", method, base, exc)
+
+        logger.error(
+            "Cheat call failed [%s] %s after endpoint fallbacks: %s",
+            category,
+            name,
+            candidate_bases,
+        )
+        return False
+
+    def skip_tutorial(self, package: str = "") -> bool:
+        """패키지명에 맞는 치트로 튜토리얼 스킵"""
+        cheat = self._get_cheat(package, "skip_tutorial")
+        if not cheat:
+            logger.error("skip_tutorial cheat not configured for package: %s", package)
+            return False
+        return self.call_cheat(category=cheat["category"], name=cheat["name"])
+
+    @staticmethod
+    def _get_cheat(package: str, cheat_key: str) -> Optional[Dict[str, str]]:
+        """GAME_CHEAT_MAP에서 패키지별 치트 정보 조회"""
+        game = GAME_CHEAT_MAP.get(package, {})
+        cheat = game.get(cheat_key)
+        if not cheat or not cheat.get("category") or not cheat.get("name"):
+            return None
+        return cheat
+        
 
     def _fetch_buttons(self) -> List[Dict[str, Any]]:
         endpoint = f"{self.base_url}/api/findAllButtons"
@@ -221,6 +410,38 @@ class UnityAPIClient:
                 }
             )
         return candidates
+
+    @staticmethod
+    def _strip_json_fence(value: str) -> str:
+        value = value.strip()
+        if value.startswith("```") and value.endswith("```"):
+            lines = value.splitlines()
+            if len(lines) >= 3:
+                return "\n".join(lines[1:-1]).strip()
+        return value
+
+    def _parse_llm_selection_payload(self, raw_text: str) -> Optional[Dict[str, Any]]:
+        cleaned = self._strip_json_fence(raw_text)
+        payload = json.loads(cleaned)
+
+        if isinstance(payload, dict):
+            return payload
+
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict) and "index" in item:
+                    return item
+            if len(payload) == 1:
+                first = payload[0]
+                if isinstance(first, dict):
+                    return first
+                if isinstance(first, int):
+                    return {"index": first}
+            logger.warning("Gemini returned list payload without selectable index: %s", payload)
+            return None
+
+        logger.warning("Gemini returned unsupported Unity payload type: %s", type(payload).__name__)
+        return None
 
     def _choose_with_llm(
         self,
@@ -277,7 +498,9 @@ target hints: {json.dumps(target_hints, ensure_ascii=False)}
                     temperature=self.temperature,
                 ),
             )
-            payload = json.loads(response.text)
+            payload = self._parse_llm_selection_payload(response.text)
+            if not payload:
+                return None
             index = payload.get("index")
             if index is None:
                 return None

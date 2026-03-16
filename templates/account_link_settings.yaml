@@ -1,0 +1,56 @@
+title: 계정 연동 (설정 직접)
+description: 설정 버튼 → 계정 연동 → Google 로그인 → 약관 동의 → 계정 선택 → 완료
+package: com.percent.aos.cooptd
+steps:
+- action: find_and_tap
+  target: 우측 상단 톱니바퀴 모양의 설정 버튼
+  params:
+    expect_visible: 설정 팝업
+  description: 우측 상단 톱니바퀴 모양의 설정 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 계정 연동 버튼
+  params:
+    expect_visible: 계정 연동 팝업
+  description: 설정 팝업에서 계정 연동 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: Google 로그인 버튼
+  params:
+    expect_visible: 약관 알림 팝업
+  description: 계정 연동 팝업 내 Google 로그인 버튼을 클릭한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 약관 알림 팝업 내 동의합니다 영역
+  params:
+    expect_visible: 계정 선택 팝업
+  description: 약관 알림 팝업 내 동의합니다 영역을 터치한다.
+  timeout: 10
+  retry: 2
+- action: verify
+  target: qa_google_01@111percnet.net
+  params: {}
+  description: qa_google_01@111percnet.net 계정이 연동되어 있는지 확인한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: qa_google_01@111percnet.net
+  params:
+    expect_hidden: 계정 선택 팝업
+    wait_seconds: 5
+  description: 계정을 선택한다.
+  timeout: 20
+  retry: 2
+- action: verify
+  target: 계정 연동 팝업이 닫힌 상태
+  params: {}
+  description: 계정 연동 로그인 성공 시 계정 연동 팝업이 닫혔는지 확인한다.
+  timeout: 10
+  retry: 2
+expected_results:
+- 설정 → 계정 연동 진입이 정상 작동해야 한다.
+- Google 계정 로그인이 정상 완료되어야 한다.
+- 로그인 후 관련 팝업이 모두 닫혀야 한다.

@@ -5,6 +5,10 @@ __pycache__/
 venv/
 reports
 screenshots/
+testcases/
+test_results/
+recordings/
+apks/
 screenshots_debug/
 game_screenshots
 data
