@@ -82,7 +82,9 @@ class GeminiVisionAgent:
         이 게임 화면에서 '{target_description}'을(를) 찾아서 정확한 위치를 알려줘.
 
         **중요 규칙:**
-        1. 화면비 기준 좌표를 사용 (0 < x1,y1,x2,y2 < 1)
+        1. 좌표는 반드시 0.0~1.0 사이의 소수(float)로 반환. 예: 0.5, 0.23, 0.871
+           - 절대 픽셀 좌표(예: 359, 640)나 0~1000 스케일 좌표를 사용하지 마세요.
+           - 이미지 왼쪽 상단이 (0.0, 0.0), 오른쪽 하단이 (1.0, 1.0)입니다.
         2. bbox는 해당 요소를 정확히 둘러싸야 함
         3. 요소가 여러 개면 가장 중앙/명확한 것 선택
         4. 찾을 수 없으면 bbox를 null로 반환
@@ -94,6 +96,8 @@ class GeminiVisionAgent:
         "description": "찾은 요소 설명",
         "confidence": 0.0~1.0
         }}
+
+        bbox 예시: [0.12, 0.34, 0.56, 0.78] — 모든 값이 0.0~1.0 사이여야 합니다.
         """
         
         try:
@@ -119,11 +123,13 @@ class GeminiVisionAgent:
             if not bbox_list or len(bbox_list) != 4:
                 raise ValueError(f"Invalid bbox format: {bbox_list}")
             
+            # 좌표 정규화: x1<x2, y1<y2 보장
+            bx1, by1, bx2, by2 = bbox_list
             bbox = BoundingBox(
-                x1=bbox_list[0],
-                y1=bbox_list[1],
-                x2=bbox_list[2],
-                y2=bbox_list[3]
+                x1=min(bx1, bx2),
+                y1=min(by1, by2),
+                x2=max(bx1, bx2),
+                y2=max(by1, by2)
             )
             
             result = VisionResult(

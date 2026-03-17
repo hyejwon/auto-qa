@@ -706,9 +706,39 @@ def main_page():
                 else:
                     tpl_status.text = '⚠️ 실행 중인 테스트가 없습니다.'
 
+            async def do_save_edited_template():
+                if not template_steps:
+                    tpl_status.text = '⚠️ 저장할 스텝이 없습니다.'
+                    return
+                title = (tpl_title.value or '').strip()
+                if not title:
+                    tpl_status.text = '⚠️ 테스트 제목을 입력해주세요.'
+                    return
+                pkg = (tpl_package.value or '').strip()
+                safe_name = title.replace(' ', '_')
+                data = {
+                    'title': title,
+                    'description': '',
+                    'package': pkg,
+                    'steps': [dict(s) for s in template_steps],
+                    'expected_results': [],
+                    'preconditions': [],
+                }
+                out_path = _config().paths.templates_dir / f'{safe_name}.yaml'
+                try:
+                    with open(out_path, 'w', encoding='utf-8') as f:
+                        yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+                    tpl_status.text = f'💾 템플릿 저장 완료 → {out_path.name}'
+                    tpl_select.options = _get_template_choices()
+                    tpl_select.update()
+                except Exception as e:
+                    logger.exception('save edited template failed')
+                    tpl_status.text = f'❌ 저장 오류: {e}'
+
             with ui.row():
                 ui.button('▶️ 바로 실행', on_click=do_run_template, color='primary')
                 ui.button('⏹️ 중단', on_click=do_stop_template, color='negative')
+                ui.button('💾 템플릿 저장', on_click=do_save_edited_template)
 
         # ═══════════════════════════════════════
         # Tab 4 — 녹화 영상

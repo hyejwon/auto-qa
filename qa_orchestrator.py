@@ -6,6 +6,7 @@ import time
 import logging
 
 from PIL import Image, ImageChops
+from langsmith import traceable
 
 from config import Config
 from adb_controller import ADBController
@@ -111,6 +112,16 @@ class QAOrchestrator:
         return result
     
 
+    @traceable(
+        run_type="chain",
+        name="qa_test_run",
+        process_inputs=lambda inputs: {
+            "test_id": inputs.get("test_id"),
+            "package": getattr(inputs.get("testcase_override"), "package", ""),
+            "title": getattr(inputs.get("testcase_override"), "title", ""),
+            "steps_count": len(getattr(inputs.get("testcase_override"), "steps", [])),
+        },
+    )
     def run_test(
         self,
         test_id: str,
@@ -165,7 +176,9 @@ class QAOrchestrator:
                 if target_info:
                     logger.info(f"│  {target_info.strip()}")
 
-                success = self._execute_step(step, result)
+                step_result = self._execute_step(step, result)
+                tap_ok_verify_fail = (step_result == self._TAP_OK_VERIFY_FAIL)
+                success = bool(step_result) and not tap_ok_verify_fail
                 result.steps_executed += 1
 
                 if success:
@@ -174,15 +187,32 @@ class QAOrchestrator:
                 else:
                     if step.retry > 1 and not self._uses_internal_retry(step):
                         for retry_count in range(step.retry - 1):
-                            logger.warning(
-                                f"│  ↩ 재시도 {retry_count + 1}/{step.retry - 1} ..."
-                            )
-                            time.sleep(2)
-                            if self._execute_step(step, result):
-                                result.steps_passed += 1
-                                success = True
-                                logger.info("└─ ✅ 완료 (재시도 성공)")
-                                break
+                            if tap_ok_verify_fail:
+                                # 탭은 성공했으므로 검증만 재시도
+                                logger.warning(
+                                    f"│  ↩ 검증 재시도 {retry_count + 1}/{step.retry - 1} (탭 성공, 검증 실패) ..."
+                                )
+                                time.sleep(2)
+                                if self._verify_find_and_tap_outcome(step, tap_source="Retry"):
+                                    result.steps_passed += 1
+                                    success = True
+                                    logger.info("└─ ✅ 완료 (검증 재시도 성공)")
+                                    break
+                            else:
+                                # 탭 자체가 실패했으므로 스텝 전체 재시도
+                                logger.warning(
+                                    f"│  ↩ 재시도 {retry_count + 1}/{step.retry - 1} ..."
+                                )
+                                time.sleep(2)
+                                retry_result = self._execute_step(step, result)
+                                if retry_result and retry_result != self._TAP_OK_VERIFY_FAIL:
+                                    result.steps_passed += 1
+                                    success = True
+                                    logger.info("└─ ✅ 완료 (재시도 성공)")
+                                    break
+                                elif retry_result == self._TAP_OK_VERIFY_FAIL:
+                                    # 재시도에서 탭은 성공 → 이후 검증만 재시도로 전환
+                                    tap_ok_verify_fail = True
 
                     if not success:
                         logger.error("└─ ❌ 실패")
@@ -194,6 +224,9 @@ class QAOrchestrator:
                     "label": label,
                     "passed": success,
                 })
+
+                # 스텝 완료 후 임시 스크린샷 정리
+                self._cleanup_step_files()
 
                 if result.status == "FAIL":
                     break
@@ -231,7 +264,10 @@ class QAOrchestrator:
         
         try:
             if step.action == ActionType.FIND_AND_TAP:
-                return self._find_and_tap(step)
+                result_val = self._find_and_tap(step)
+                if result_val == self._TAP_OK_VERIFY_FAIL:
+                    return self._TAP_OK_VERIFY_FAIL
+                return bool(result_val)
             
             elif step.action == ActionType.SWIPE:
                 params = step.params
@@ -378,8 +414,13 @@ class QAOrchestrator:
         logger.info("Screen type detected: %s", screen_type)
         return screen_type
 
-    def _find_and_tap(self, step) -> bool:
-        """고정 좌표 우선 → Vision으로 요소를 찾아서 클릭"""
+    # 탭 성공했으나 검증만 실패했음을 나타내는 센티널
+    _TAP_OK_VERIFY_FAIL = "TAP_OK_VERIFY_FAIL"
+
+    def _find_and_tap(self, step) -> bool | str:
+        """고정 좌표 우선 → Vision으로 요소를 찾아서 클릭.
+        Returns: True(성공), False(탭 실패), _TAP_OK_VERIFY_FAIL(탭 성공+검증 실패)
+        """
         target = step.target
         if not target:
             logger.error("find_and_tap action requires target")
@@ -392,7 +433,8 @@ class QAOrchestrator:
             self._wait_for_screen_stable()
             self.adb.tap(fixed[0], fixed[1])
             self._current_screen_type = ""
-            return self._verify_find_and_tap_outcome(step, tap_source="Fixed")
+            verified = self._verify_find_and_tap_outcome(step, tap_source="Fixed")
+            return True if verified else self._TAP_OK_VERIFY_FAIL
 
         logger.info("Vision for target '%s'.", target)
         time.sleep(3)
@@ -403,7 +445,8 @@ class QAOrchestrator:
         self.adb.tap(coords["x"], coords["y"])
         self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
         self._current_screen_type = ""
-        return self._verify_find_and_tap_outcome(step, tap_source="Vision")
+        verified = self._verify_find_and_tap_outcome(step, tap_source="Vision")
+        return True if verified else self._TAP_OK_VERIFY_FAIL
 
     def _match_fixed_target(self, target: str) -> tuple[int, int] | None:
         """FIXED_TAP_TARGETS에서 target과 부분 매칭되는 고정 좌표 반환."""
@@ -500,6 +543,19 @@ class QAOrchestrator:
 
         logger.warning("Screen did not stabilize within %.1fs — proceeding with last capture.", timeout)
         return prev_path
+
+    def _cleanup_step_files(self) -> None:
+        """스텝 완료 후 screenshots_dir, debug_dir 의 png 파일 일괄 삭제."""
+        count = 0
+        for d in (self.config.paths.screenshots_dir, self.config.paths.debug_dir):
+            for f in d.glob("*.png"):
+                try:
+                    f.unlink()
+                    count += 1
+                except Exception:
+                    pass
+        if count:
+            logger.info(f"🧹 스텝 완료 — 임시 파일 {count}개 삭제")
 
     def _capture_runtime_screenshot(self, prefix: str) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]

@@ -157,23 +157,27 @@ class ADBController:
             logger.error(f"Swipe failed: {e}")
             return False
     
-    def screenshot(self, save_path: Optional[Path] = None) -> bytes:
-        """스크린샷 캡처"""
-        try:
-            result = subprocess.run(
-                self._adb_cmd(["exec-out", "screencap", "-p"]),
-                capture_output=True,
-                timeout=10
-            )
-            
-            if save_path:
-                save_path.write_bytes(result.stdout)
-                logger.info(f"Screenshot saved: {save_path}")
-            
-            return result.stdout
-        except Exception as e:
-            logger.error(f"Screenshot failed: {e}")
-            raise
+    def screenshot(self, save_path: Optional[Path] = None, retries: int = 3) -> bytes:
+        """스크린샷 캡처 (타임아웃 시 재시도)"""
+        last_err = None
+        for attempt in range(retries):
+            try:
+                result = subprocess.run(
+                    self._adb_cmd(["exec-out", "screencap", "-p"]),
+                    capture_output=True,
+                    timeout=15
+                )
+                if save_path:
+                    save_path.write_bytes(result.stdout)
+                return result.stdout
+            except subprocess.TimeoutExpired as e:
+                last_err = e
+                logger.warning(f"Screenshot timeout (attempt {attempt + 1}/{retries})")
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Screenshot failed: {e}")
+                raise
+        raise last_err
     
     def get_current_activity(self) -> str:
         """현재 Activity 확인"""
@@ -501,4 +505,4 @@ class ADBController:
             chunk += 1
             if self._rec_stop.is_set():
                 break
-        
+
