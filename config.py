@@ -13,6 +13,7 @@ class PathConfig:
     apks_dir: Path = project_root / "apks"
     templates_dir: Path = project_root / "templates"
     cache_db: Path = project_root / "element_cache.db"
+    common_cache_db: Path = project_root / "common_tap_cache.db"
 
     def __post_init__(self):
         """디렉토리 자동 생성"""

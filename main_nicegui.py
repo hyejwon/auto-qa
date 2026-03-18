@@ -8,6 +8,18 @@ from datetime import datetime
 
 from nicegui import ui, app, events, run
 
+from opentelemetry.sdk.trace import TracerProvider
+from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
+
+# OpenInference: prompt text + token usage + 이미지 전부 자동 캡처
+_otel_provider = TracerProvider()
+GoogleGenAIInstrumentor().instrument(tracer_provider=_otel_provider)
+logging.getLogger("openinference.instrumentation.google_genai").setLevel(logging.CRITICAL)
+
+# Langfuse 클라이언트 초기화 (tracer_provider 연결 → OpenInference 스팬 자동 수집)
+from langfuse import Langfuse
+_langfuse = Langfuse(tracer_provider=_otel_provider)
+
 from adb_controller import ADBController
 from config import Config
 from planner_node import PlannerNode
@@ -180,8 +192,59 @@ def main_page():
     </style>
     ''')
 
-    ui.markdown('# 📱 QA 자동화 테스트 도구')
+    # ── 헤더 + 디바이스 상태 ──
+    with ui.row().classes('w-full items-center justify-between'):
+        ui.markdown('# 📱 QA 자동화 테스트 도구')
+        device_chip = ui.chip('디바이스 확인 중...', icon='phone_android', color='grey').props('outline')
+
     ui.label('자연어 시나리오를 입력하면 AI가 테스트 플랜을 생성하고 디바이스에서 자동 실행합니다.').classes('text-grey-7')
+
+    def check_device():
+        """ADB 디바이스 연결 상태를 확인하여 chip 업데이트"""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ['adb', 'devices'], capture_output=True, text=True, timeout=5
+            )
+            lines = [ln for ln in result.stdout.split('\n')[1:] if '\t' in ln]
+            connected = [ln.split('\t') for ln in lines]
+            online = [(d, s) for d, s in connected if s.strip() == 'device']
+
+            if online:
+                device_id = online[0][0]
+                model_result = subprocess.run(
+                    ['adb', '-s', device_id, 'shell', 'getprop', 'ro.product.model'],
+                    capture_output=True, text=True, timeout=5
+                )
+                model = model_result.stdout.strip() or device_id
+                device_chip.text = f'{model} ({device_id})'
+                device_chip._props['color'] = 'green'
+                device_chip._props['icon'] = 'phone_android'
+            else:
+                offline = [(d, s) for d, s in connected if s.strip() != 'device']
+                if offline:
+                    device_chip.text = f'디바이스 오프라인 ({offline[0][0]})'
+                    device_chip._props['color'] = 'orange'
+                    device_chip._props['icon'] = 'phone_disabled'
+                else:
+                    device_chip.text = '디바이스 없음'
+                    device_chip._props['color'] = 'red'
+                    device_chip._props['icon'] = 'phone_disabled'
+            device_chip.update()
+        except RuntimeError:
+            pass  # 클라이언트 삭제됨 — 무시
+        except Exception:
+            try:
+                device_chip.text = 'ADB 연결 실패'
+                device_chip._props['color'] = 'red'
+                device_chip._props['icon'] = 'error'
+                device_chip.update()
+            except RuntimeError:
+                pass
+
+    # 초기 체크 + 10초마다 자동 갱신
+    check_device()
+    ui.timer(10.0, check_device)
 
     with ui.tabs().classes('w-full') as tabs:
         tab_apk = ui.tab('📦 APK 관리')
@@ -678,7 +741,10 @@ def main_page():
                             drained = True
                             break
                         log_lines.append(msg)
-                    tpl_log.value = '\n'.join(log_lines)
+                    try:
+                        tpl_log.value = '\n'.join(log_lines)
+                    except (RuntimeError, Exception):
+                        break
                     if drained or not t.is_alive():
                         break
 
@@ -686,13 +752,16 @@ def main_page():
                 t.join(timeout=5)
                 _test_stop_event = None
 
-                if "result" in result_holder:
-                    tpl_summary.content = _format_summary(result_holder["result"])
-                    tpl_status.text = '✅ 실행 완료'
-                else:
-                    err = result_holder.get("error", "알 수 없는 오류")
-                    tpl_summary.content = f"## ❌ 실행 실패\n\n> {err}"
-                    tpl_status.text = '❌ 실행 실패'
+                try:
+                    if "result" in result_holder:
+                        tpl_summary.content = _format_summary(result_holder["result"])
+                        tpl_status.text = '✅ 실행 완료'
+                    else:
+                        err = result_holder.get("error", "알 수 없는 오류")
+                        tpl_summary.content = f"## ❌ 실행 실패\n\n> {err}"
+                        tpl_status.text = '❌ 실행 실패'
+                except (RuntimeError, Exception):
+                    logger.warning("Client disconnected, skipping UI update")
 
                 # 녹화 목록 갱신
                 rec_select.options = _get_recording_choices()

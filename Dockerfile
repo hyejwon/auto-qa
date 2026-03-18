@@ -25,6 +25,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY adb_controller.py \
      config.py \
      element_cache.py \
+     eval_agent.py \
      planner_node.py \
      qa_orchestrator.py \
      test_manager.py \

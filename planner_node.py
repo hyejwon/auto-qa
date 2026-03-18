@@ -7,6 +7,9 @@ import json
 import yaml
 import logging
 from pydantic import BaseModel
+from langfuse import get_client
+
+langfuse = get_client()
 
 logger = logging.getLogger(__name__)
 
@@ -41,40 +44,51 @@ class PlannerNode:
         logger.info(f"Initialized Planner Node: {model}")
     
     def create_test_plan(
-        self, 
+        self,
         natural_language_scenario: str,
         package_name: str = ""
     ) -> TestPlan:
         """
         자연어 시나리오를 구조화된 테스트 플랜으로 변환
-        
+
         Args:
             natural_language_scenario: 자연어로 작성된 테스트 시나리오
             package_name: 앱 패키지명 (옵션)
-        
+
         Returns:
             TestPlan: 구조화된 테스트 플랜
         """
-        prompt = self._build_planner_prompt(natural_language_scenario, package_name)
-        
+        prompt_client = langfuse.get_prompt("create_test_plan", label="production")
+        prompt = prompt_client.compile(
+            scenario=natural_language_scenario,
+            package_name=package_name or "(자동 추출)",
+        )
+
         try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=[prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1
+            with langfuse.start_as_current_observation(
+                as_type="span",
+                name="create_test_plan",
+                input={"scenario": natural_language_scenario, "package": package_name, "prompt": prompt},
+                prompt=prompt_client,
+            ) as span:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=[prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1
+                    )
                 )
-            )
-            
-            plan_data = json.loads(response.text)
-            test_plan = TestPlan(**plan_data)
-            
+
+                plan_data = json.loads(response.text)
+                test_plan = TestPlan(**plan_data)
+                span.update(output=plan_data)
+
             logger.info(f"Test plan created: {test_plan.title}")
             logger.info(f"Total steps: {len(test_plan.steps)}")
-            
+
             return test_plan
-            
+
         except Exception as e:
             logger.error(f"Failed to create test plan: {e}")
             raise

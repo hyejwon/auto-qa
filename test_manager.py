@@ -56,6 +56,8 @@ class TestResult(BaseModel):
     screenshots: List[str] = []
     step_results: List[Dict] = []  # 스텝별 통과 여부
     context: Dict = {}  # read_text 등으로 저장한 값
+    langfuse_trace_id: Optional[str] = None
+    eval_output: Optional[Dict] = None
     
 class TestCaseManager:
     """테스트케이스 관리자"""

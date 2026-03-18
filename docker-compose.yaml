@@ -24,6 +24,8 @@ services:
       - ./recordings:/app/recordings
       - ./apks:/app/apks
       - ./templates:/app/templates
+      - ./common_tap_cache.db:/app/common_tap_cache.db
+      - ./element_cache.db:/app/element_cache.db
       - ${GOOGLE_APPLICATION_CREDENTIALS:-./credentials.json}:/app/credentials.json:ro
 
     env_file:

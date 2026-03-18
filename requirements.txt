@@ -17,6 +17,12 @@ uvicorn[standard]
 # UI
 nicegui
 
+# Observability
+langfuse[opentelemetry]
+# langfuse==3.14.5
+# opentelemetry-sdk
+# openinference-instrumentation-google-genai
+openinference-instrumentation-google-genai
 # 유틸리티
 pydantic==2.12.5 
 python-dotenv==1.1.0

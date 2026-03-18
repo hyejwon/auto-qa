@@ -12,7 +12,9 @@ from google import genai
 from google.genai import types
 
 from adb_controller import ADBController
+from langfuse import get_client
 
+langfuse = get_client()
 
 logger = logging.getLogger(__name__)
 
@@ -490,15 +492,22 @@ target hints: {json.dumps(target_hints, ensure_ascii=False)}
 """.strip()
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=self.temperature,
-                ),
-            )
-            payload = self._parse_llm_selection_payload(response.text)
+            with langfuse.start_as_current_observation(
+                as_type="span",
+                name="choose_unity_button",
+                input={"target": target, "candidates_count": len(buttons)},
+            ) as span:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=self.temperature,
+                    ),
+                )
+                payload = self._parse_llm_selection_payload(response.text)
+                span.update(output=payload)
+
             if not payload:
                 return None
             index = payload.get("index")

@@ -1,14 +1,17 @@
 from google.genai import types
 from google import genai
 from PIL import Image, ImageDraw
+import base64
 import json
 from pathlib import Path
 from typing import Dict, Optional, List
 from datetime import datetime
 import logging
 from pydantic import BaseModel
-from langsmith import wrappers
-from langsmith import traceable
+from langfuse import get_client
+from langfuse.media import LangfuseMedia
+
+langfuse = get_client()
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +55,23 @@ class GeminiVisionAgent:
             project=project,
             location=location
         )
-        self.client = wrappers.wrap_gemini(
-            gemini_client,
-            tracing_extra= {
-                "tags": ["gemini","python"],
-                "metadata":{
-                    "interegration":"google-genai",
-                },
-            },
-        )
+        self.client = gemini_client
         self.model = model
         logger.info(f"Initialized Gemini Vision Agent: {model}")
-    @traceable
+
+    @staticmethod
+    def _image_part(image_path: Path) -> types.Part:
+        """PIL 대신 bytes로 변환하여 OpenInference 호환성 확보"""
+        data = Path(image_path).read_bytes()
+        return types.Part.from_bytes(data=data, mime_type="image/png")
+
+    @staticmethod
+    def _image_b64_url(image_path: Path) -> str:
+        """Langfuse에서 이미지 렌더링용 base64 data URL 생성"""
+        data = Path(image_path).read_bytes()
+        b64 = base64.b64encode(data).decode()
+        return f"data:image/png;base64,{b64}"
+
     def find_element(
         self,
         image_path: Path,
@@ -72,126 +80,114 @@ class GeminiVisionAgent:
     ) -> VisionResult:
         """
         화면에서 특정 UI 요소 찾기
-        
+
         Args:
             image_path: 스크린샷 경로
             target_description: 찾을 요소 설명 (예: "스태미너 충전 아이콘")
             debug_dir: 디버그 이미지 저장 경로
         """
-        prompt = f"""
-        이 게임 화면에서 '{target_description}'을(를) 찾아서 정확한 위치를 알려줘.
+        prompt_client = langfuse.get_prompt("find_element", label="production")
+        prompt = prompt_client.compile(target_description=target_description)
 
-        **중요 규칙:**
-        1. 좌표는 반드시 0.0~1.0 사이의 소수(float)로 반환. 예: 0.5, 0.23, 0.871
-           - 절대 픽셀 좌표(예: 359, 640)나 0~1000 스케일 좌표를 사용하지 마세요.
-           - 이미지 왼쪽 상단이 (0.0, 0.0), 오른쪽 하단이 (1.0, 1.0)입니다.
-        2. bbox는 해당 요소를 정확히 둘러싸야 함
-        3. 요소가 여러 개면 가장 중앙/명확한 것 선택
-        4. 찾을 수 없으면 bbox를 null로 반환
-
-        **반환 형식 (JSON만):**
-        {{
-        "found": true/false,
-        "bbox": [x1, y1, x2, y2] or null,
-        "description": "찾은 요소 설명",
-        "confidence": 0.0~1.0
-        }}
-
-        bbox 예시: [0.12, 0.34, 0.56, 0.78] — 모든 값이 0.0~1.0 사이여야 합니다.
-        """
-        
         try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=[prompt,Image.open(image_path)],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
+            with langfuse.start_as_current_observation(
+                as_type="span",
+                name="find_element",
+                input={"target": target_description, "prompt": prompt},
+                prompt=prompt_client,
+            ) as span:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=[prompt, self._image_part(image_path)],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                    )
                 )
-            )
-            
-            # 응답 파싱
-            data = json.loads(response.text)
-            
-            if not data.get("found"):
-                return VisionResult(
-                    success=False,
-                    description=data.get("description", "요소를 찾을 수 없음"),
+
+                # 응답 파싱
+                data = json.loads(response.text)
+
+                if not data.get("found"):
+                    span.update(output=data)
+                    return VisionResult(
+                        success=False,
+                        description=data.get("description", "요소를 찾을 수 없음"),
+                        confidence=data.get("confidence", 0.0)
+                    )
+
+                box_2d = data.get("box_2d")
+                if not box_2d or len(box_2d) != 4:
+                    raise ValueError(f"Invalid box_2d format: {box_2d}")
+
+                # Gemini 공식 형식: [ymin, xmin, ymax, xmax] 0-1000 → 0-1 변환
+                ymin, xmin, ymax, xmax = box_2d
+                bbox = BoundingBox(
+                    x1=min(xmin, xmax) / 1000,
+                    y1=min(ymin, ymax) / 1000,
+                    x2=max(xmin, xmax) / 1000,
+                    y2=max(ymin, ymax) / 1000,
+                )
+
+                result = VisionResult(
+                    success=True,
+                    bbox=bbox,
+                    description=data.get("description", ""),
                     confidence=data.get("confidence", 0.0)
                 )
-            
-            bbox_list = data.get("bbox")
-            if not bbox_list or len(bbox_list) != 4:
-                raise ValueError(f"Invalid bbox format: {bbox_list}")
-            
-            # 좌표 정규화: x1<x2, y1<y2 보장
-            bx1, by1, bx2, by2 = bbox_list
-            bbox = BoundingBox(
-                x1=min(bx1, bx2),
-                y1=min(by1, by2),
-                x2=max(bx1, bx2),
-                y2=max(by1, by2)
-            )
-            
-            result = VisionResult(
-                success=True,
-                bbox=bbox,
-                description=data.get("description", ""),
-                confidence=data.get("confidence", 0.0)
-            )
-            
-            # 디버그 이미지 생성
-            if debug_dir and bbox:
-                self._draw_bbox(image_path, bbox, debug_dir)
-            
-            return result
-            
+
+                # 디버그 이미지 생성 & bbox 이미지를 output에 포함
+                bbox_debug_path = None
+                if debug_dir and bbox:
+                    bbox_debug_path = self._draw_bbox(image_path, bbox, debug_dir)
+
+                if bbox_debug_path:
+                    bbox_media = LangfuseMedia(
+                        content_type="image/png",
+                        content_bytes=Path(bbox_debug_path).read_bytes(),
+                    )
+                    span.update(output={
+                        "result": data,
+                        "bbox_image": bbox_media,
+                    })
+                else:
+                    span.update(output=data)
+
+                return result
+
         except Exception as e:
             logger.error(f"Vision analysis failed: {e}")
             return VisionResult(
                 success=False,
                 error=str(e)
             )
-    @traceable 
     def analyze_screen_state(self, image_path: Path) -> Dict:
         """
         현재 화면 상태 전반 분석
         """
-        prompt = """
-        이 게임 화면을 분석해줘.
+        prompt_client = langfuse.get_prompt("analyze_screen_state", label="production")
+        prompt = prompt_client.compile()
 
-        screen_type은 반드시 아래 값 중 하나만 사용해:
-        - "title"    : 타이틀/스플래시/로그인 화면 (게스트·Google·Apple 로그인 버튼 등)
-        - "lobby"    : 메인 로비/홈 화면 (햄버거 메뉴, 전투 시작 등 주요 HUD 포함)
-        - "settings" : 설정 팝업 또는 설정 화면 (진동·효과음·이용약관·계정연동 등)
-        - "account"  : 계정 연동 팝업 (Google/Apple 연동·로그아웃·계정삭제 버튼 등)
-        - "shop"     : 상점/구매 화면
-        - "battle"   : 전투/게임플레이 화면
-        - "ranking"  : 랭킹 화면
-        - "unknown"  : 위 항목에 해당하지 않는 경우
-
-        JSON 형식으로 반환:
-        {
-        "screen_type": "위 목록 중 하나",
-        "ui_elements": ["요소1", "요소2", ...],
-        "popups": ["팝업1", ...] or [],
-        "suggested_actions": ["액션1", "액션2", ...]
-        }
-        """
-        
         try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=[Image.open(image_path), prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
+            with langfuse.start_as_current_observation(
+                as_type="span",
+                name="analyze_screen_state",
+                input={"prompt": prompt},
+                prompt=prompt_client,
+            ) as span:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=[self._image_part(image_path), prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
                 )
-            )
-            return json.loads(response.text)
+                data = json.loads(response.text)
+                span.update(output=data)
+            return data
         except Exception as e:
             logger.error(f"Screen analysis failed: {e}")
             return {}
     
-    @traceable
     def read_text(self, image_path: Path, region_description: str) -> Optional[str]:
         """
         화면에서 특정 영역의 텍스트 값을 읽어서 반환
@@ -203,28 +199,25 @@ class GeminiVisionAgent:
         Returns:
             읽은 텍스트 문자열, 찾지 못하면 None
         """
-        prompt = f"""
-        이 게임 화면에서 '{region_description}'에 해당하는 텍스트 값을 읽어줘.
+        prompt_client = langfuse.get_prompt("read_text", label="production")
+        prompt = prompt_client.compile(region_description=region_description)
 
-        **규칙:**
-        1. 해당 영역의 텍스트만 정확히 반환한다.
-        2. 찾을 수 없으면 value를 null로 반환한다.
-
-        **반환 형식 (JSON만):**
-        {{
-        "found": true/false,
-        "value": "읽은 텍스트" or null
-        }}
-        """
         try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=[prompt, Image.open(image_path)],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                ),
-            )
-            data = json.loads(response.text)
+            with langfuse.start_as_current_observation(
+                as_type="span",
+                name="read_text",
+                input={"region": region_description, "prompt": prompt},
+                prompt=prompt_client,
+            ) as span:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=[prompt, self._image_part(image_path)],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                    ),
+                )
+                data = json.loads(response.text)
+                span.update(output=data)
             if not data.get("found"):
                 return None
             return data.get("value")
@@ -233,26 +226,29 @@ class GeminiVisionAgent:
             return None
 
     def _draw_bbox(self, image_path: Path, bbox: BoundingBox,
-                   debug_dir: Path, width: int = 720, height: int = 1280):
-        """BBox 시각화"""
+                   debug_dir: Path) -> Optional[Path]:
+        """BBox 시각화. 성공 시 저장 경로 반환."""
         try:
             img = Image.open(image_path)
+            width, height = img.size
             draw = ImageDraw.Draw(img)
-            
+
             pixel_coords = bbox.to_pixels(width, height)
             draw.rectangle(
-                [pixel_coords["x1"], pixel_coords["y1"], 
+                [pixel_coords["x1"], pixel_coords["y1"],
                  pixel_coords["x2"], pixel_coords["y2"]],
                 outline=(255, 0, 0),
                 width=3
             )
-            
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = debug_dir / f"bbox_{timestamp}.png"
             img.save(output_path)
             logger.info(f"Debug image saved: {output_path}")
+            return output_path
         except Exception as e:
             logger.error(f"Draw bbox failed: {e}")
+            return None
 # if __name__ == "__main__":
 #     project = "percent-vertex-test"
 #     location = "global"

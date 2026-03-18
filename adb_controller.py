@@ -62,6 +62,10 @@ class ADBController:
             return ["adb", "-s", self.device_id] + cmd
         return ["adb"] + cmd
 
+    def shell(self, command: str) -> str:
+        """adb shell 명령 실행"""
+        return self._execute(["shell"] + command.split())
+
     def _get_screen_size(self) -> tuple:
         """연결된 디바이스의 화면 크기 자동 감지"""
         try:
