@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 from google import genai
@@ -108,6 +108,9 @@ class UnityAPIClient:
         self.model = model or os.getenv("UNITY_LLM_MODEL") or "gemini-3-pro-preview"
         self.temperature = temperature
         self.client = None
+
+        parsed = urlparse(self.base_url)
+        self._local_port: int = parsed.port or 37772
 
         if self.project:
             try:
@@ -280,7 +283,7 @@ class UnityAPIClient:
     def call_cheat(self, category: str, name: str) -> bool:
         """SR 치트 API 호출. Unity 서버가 응답 없이 연결을 끊는 경우도 성공으로 처리."""
         if self.adb:
-            self.adb.ensure_forward(local_port=37772, remote_port=37772)
+            self.adb.ensure_forward(local_port=self._local_port, remote_port=37772)
 
         # category에 슬래시(/)가 포함될 수 있으므로 safe='/'로 유지
         encoded_query = f"category={quote(category, safe='/')}&name={quote(name, safe='/')}"
@@ -289,7 +292,6 @@ class UnityAPIClient:
             self.base_url,
             os.getenv("UNITY_API_URL"),
             os.getenv("MCP_SERVER_URL"),
-            "http://host.docker.internal:37772",
             "http://localhost:37772",
             "http://127.0.0.1:37772",
         ):
@@ -375,7 +377,7 @@ class UnityAPIClient:
 
         if self.adb:
             # Unity API is exposed from the device; keep adb forward in place before querying.
-            self.adb.ensure_forward(local_port=37772, remote_port=37772)
+            self.adb.ensure_forward(local_port=self._local_port, remote_port=37772)
 
         try:
             response = requests.get(endpoint, timeout=self.timeout_sec)

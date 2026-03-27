@@ -399,6 +399,50 @@ class ADBController:
             logger.error(f"App close failed: {e}")
             return False
 
+    # ─── Google 계정 ───────────────────────────────────────────────
+
+    def get_google_accounts(self) -> list[str]:
+        """디바이스에 등록된 Google 계정 목록 반환."""
+        try:
+            output = self._execute([
+                "shell", "dumpsys", "account"
+            ])
+            accounts = []
+            for line in output.splitlines():
+                line = line.strip()
+                if "Account {" in line and "com.google" in line:
+                    # Account {name=foo@gmail.com, type=com.google}
+                    name_part = [p for p in line.split(",") if "name=" in p]
+                    if name_part:
+                        email = name_part[0].split("name=")[-1].strip()
+                        accounts.append(email)
+            logger.info(f"Google accounts found: {accounts}")
+            return accounts
+        except Exception as e:
+            logger.error(f"get_google_accounts failed: {e}")
+            return []
+
+    def ensure_google_account(self, email: str) -> bool:
+        """
+        지정한 Google 계정이 디바이스에 등록되어 있는지 확인한다.
+        등록되어 있으면 True, 없으면 False를 반환하고 경고 로그를 출력한다.
+
+        사용법:
+            if not adb.ensure_google_account("qa@example.com"):
+                raise RuntimeError("테스트 전 디바이스에 Google 계정을 수동으로 등록하세요.")
+        """
+        accounts = self.get_google_accounts()
+        matched = any(email.lower() in a.lower() for a in accounts)
+        if matched:
+            logger.info(f"Google account verified: {email}")
+        else:
+            logger.warning(
+                f"Google account '{email}' NOT found on device. "
+                f"Registered accounts: {accounts}. "
+                "디바이스 설정 > 계정 > Google에서 수동으로 계정을 추가한 뒤 다시 실행하세요."
+            )
+        return matched
+
     # ─── 화면 녹화 ────────────────────────────────────────────────
 
     @property

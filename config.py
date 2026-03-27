@@ -27,7 +27,7 @@ class GeminiConfig:
     """Gemini API 설정"""
     project: str = "percent-vertex-test"
     location: str = "global"
-    model: str = "gemini-3.1-pro-preview"
+    model: str = "gemini-3.1-flash-lite-preview"
     temperature: float = 0.1
     max_retries: int = 3
 

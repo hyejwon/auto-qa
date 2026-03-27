@@ -21,6 +21,9 @@ class ActionType(str, Enum):
     CLOSE_APP = "close_app"
     READ_TEXT = "read_text"
     SKIP_TUTORIAL = "skip_tutorial"
+    INSTALL_APP = "install_app"
+    UNINSTALL_APP = "uninstall_app"
+    INPUT_TEXT = "input_text"
 
 
 class TestStep(BaseModel):

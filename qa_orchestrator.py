@@ -1,3 +1,4 @@
+import os
 import threading
 from pathlib import Path
 from datetime import datetime
@@ -45,7 +46,7 @@ class QAOrchestrator:
             location=config.gemini.location,
             model=config.gemini.model,
             temperature=config.gemini.temperature,
-            base_url="http://host.docker.internal:37772"
+            base_url=os.getenv("UNITY_API_URL", "http://127.0.0.1:37772")
         )
         self.vision = GeminiVisionAgent(
             project=config.gemini.project,
@@ -129,6 +130,17 @@ class QAOrchestrator:
 
             self._current_package = testcase.package or ""
             self._current_screen_type = ""
+            self._stop_event = stop_event  # _wait_for_screen_stable 에서 참조
+
+            # preconditions: google_account:<email> 형식 처리
+            for precond in testcase.preconditions:
+                if precond.startswith("google_account:"):
+                    email = precond.split(":", 1)[1].strip()
+                    if not self.adb.ensure_google_account(email):
+                        raise RuntimeError(
+                            f"Precondition 실패: Google 계정 '{email}'이 디바이스에 없습니다. "
+                            "설정 > 계정 > Google에서 수동 등록 후 재실행하세요."
+                        )
 
             result = TestResult(
                 test_id=testcase.id,
@@ -137,11 +149,6 @@ class QAOrchestrator:
                 start_time=datetime.now()
             )
             try:
-                if testcase.package:
-                    logger.info(f"▶ 앱 실행 중: {testcase.package}")
-                    self.adb.launch_app(testcase.package)
-                    self._wait_for_screen_stable()
-
                 for idx, step in enumerate(testcase.steps):
                     if stop_event and stop_event.is_set():
                         logger.warning("⏹️ 사용자 중단 — 테스트를 중지합니다.")
@@ -315,7 +322,41 @@ class QAOrchestrator:
                 return self._read_text_step(screenshot_path, step, result), 1.0
 
             elif step.action == ActionType.SKIP_TUTORIAL:
-                return self.unity.skip_tutorial(package=self._current_package), 1.0
+                pkg = self._current_package or step.target or ""
+                return self.unity.skip_tutorial(package=pkg), 1.0
+
+            elif step.action == ActionType.INSTALL_APP:
+                apk_filename = step.params.get("apk") or step.target
+                if not apk_filename:
+                    logger.error("install_app: apk 파일명이 없습니다. params.apk 또는 target에 지정하세요.")
+                    return False, 1.0
+                apk_path = self.config.paths.apks_dir / apk_filename
+                ok, msg = self.adb.install_apk(apk_path)
+                logger.info(f"│  {msg}")
+                if ok:
+                    time.sleep(2)
+                return ok, 1.0
+
+            elif step.action == ActionType.UNINSTALL_APP:
+                package = step.params.get("package") or step.target or self._current_package
+                if not package:
+                    logger.error("uninstall_app: package가 없습니다. params.package 또는 target에 지정하세요.")
+                    return False, 1.0
+                ok, msg = self.adb.uninstall_app(package)
+                logger.info(f"│  {msg}")
+                if ok:
+                    self._current_screen_type = ""
+                return ok, 1.0
+
+            elif step.action == ActionType.INPUT_TEXT:
+                text = step.params.get("text", "")
+                if not text:
+                    logger.warning("input_text: text가 비어 있습니다.")
+                    return False, 1.0
+                escaped = text.replace(" ", "%s").replace("'", "\\'")
+                self.adb._execute(["shell", "input", "text", escaped])
+                time.sleep(0.5)
+                return True, 1.0
 
             else:
                 logger.warning(f"Unknown action type: {step.action}")
@@ -545,6 +586,9 @@ class QAOrchestrator:
         deadline = time.time() + timeout
 
         while time.time() < deadline:
+            if getattr(self, '_stop_event', None) and self._stop_event.is_set():
+                logger.warning("Screen stable wait interrupted by stop event.")
+                return prev_path
             time.sleep(interval)
             curr_path = self._capture_runtime_screenshot(prefix="stable_check")
 
