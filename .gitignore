@@ -19,3 +19,5 @@ credentials/
 credentials.json
 .DS_Store
 cooptd.apk
+frontend/node_modules/
+frontend/dist/
