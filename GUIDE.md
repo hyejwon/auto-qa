@@ -734,7 +734,10 @@ auto-qa/
 배포 폴더/
 ├── auto-qa.exe
 ├── .env                  # 환경 변수 설정
-└── credentials.json      # GCP 인증 파일
+├── credentials.json      # GCP 인증 파일
+├──apks/                  # 실행 할 game apk 목록
+│   └── a.apk
+│   └── b.apk
 ```
 
 실행 후 브라우저에서 `http://localhost:8000` 접속:
