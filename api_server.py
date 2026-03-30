@@ -12,11 +12,22 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-# PyInstaller exe의 경우 실행 파일 옆 .env를 우선 로드
+from dotenv import load_dotenv
+# 1. 기존 코드 (유지): 실행 파일 옆 .env 우선 로드
 _exe_dir = Path(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)).parent
 load_dotenv(_exe_dir / ".env")
 load_dotenv()  # 일반 실행 시 fallback
 
+# 2. [핵심 추가]: 구글 인증 파일 환경 변수 강제 설정 ⭐
+# .env에 GOOGLE_APPLICATION_CREDENTIALS="credentials.json" 이라고 되어 있어도 
+# 라이브러리가 못 읽는 경우가 많아 아래처럼 직접 꽂아줘야 합니다.
+_cred_path = _exe_dir / "credentials.json"
+if _cred_path.exists():
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_cred_path)
+    print(f"[*] 구글 인증 파일 로드 성공: {_cred_path}")
+else:
+    print(f"[!] 경고: {_cred_path} 파일을 찾을 수 없습니다. (Vision API 에러 가능성)")
+    
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -37,9 +48,18 @@ from adb_controller import ADBController
 from planner_node import PlannerNode
 from qa_orchestrator import QAOrchestrator
 from test_manager import TestCase
+import os
+import sys
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+cfg = Config()
+
+apk_directory = cfg.paths.apks_dir 
+
+logger.info(f"[*] 현재 베이스 경로 (EXE 위치): {cfg.paths.project_root}")
+logger.info(f"[*] APK 폴더 경로: {apk_directory}")
+
 
 app = FastAPI(title="auto-qa API", version="1.0.0")
 
@@ -49,8 +69,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-cfg = Config()
 app.mount("/recordings", StaticFiles(directory=str(cfg.paths.recordings_dir)), name="recordings")
 
 # ─────────────────────────────────────────────
@@ -179,16 +197,17 @@ def list_apks():
 
 @app.post("/api/apk/install")
 def install_apk(req: InstallApkRequest):
-    apk_path = cfg.paths.apks_dir / req.filename
+    # [수정] 전역 변수 apk_directory(Path객체) 사용
+    apk_path = apk_directory / req.filename
     if not apk_path.exists():
-        raise HTTPException(status_code=404, detail=f"APK not found: {req.filename}")
+        raise HTTPException(status_code=404, detail=f"APK not found: {apk_path}")
     try:
         adb = ADBController()
-        _, msg = adb.install_apk(apk_path)
+        # Path 객체를 문자열로 변환하여 전달
+        _, msg = adb.install_apk(str(apk_path))
         return {"success": True, "message": msg}
     except Exception as e:
         return {"success": False, "message": str(e)}
-
 
 # ─────────────────────────────────────────────
 # 패키지 API
@@ -199,13 +218,17 @@ def list_packages():
 
 @app.get("/api/package-apk-map")
 def get_package_apk_map():
-    map_path = Path(__file__).parent / "package_apk_map.json"
+    # [수정] .exe 내부(bundle_root)에 포함된 json 파일을 찾도록 수정
+    # 만약 빌드 시 --add-data에 포함시키지 않았다면 exe 옆(project_root)을 보게 하세요.
+    map_path = cfg.paths.bundle_root / "package_apk_map.json"
     try:
         import json
         with open(map_path, encoding="utf-8") as f:
             return {"map": json.load(f)}
     except Exception:
         return {"map": {}}
+    
+
 
 @app.post("/api/app/uninstall")
 def uninstall_app(req: UninstallRequest):
@@ -456,9 +479,11 @@ async def ws_logs(websocket: WebSocket, session_id: str):
 
 
 # ─────────────────────────────────────────────
-# SPA 정적 파일 서빙 (API 라우트 이후에 등록)
+# 4. SPA 정적 파일 서빙 (가장 중요 ⭐)
 # ─────────────────────────────────────────────
-_dist = Path(__file__).parent / "frontend" / "dist"
+# [수정] frontend/dist는 빌드 시 내부에 포함되므로 bundle_root를 참조해야 함
+_dist = cfg.paths.bundle_root / "frontend" / "dist"
+
 if _dist.exists():
     app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="assets")
 
@@ -472,11 +497,11 @@ if _dist.exists():
         if candidate.is_file():
             return FileResponse(str(candidate))
         return FileResponse(str(_dist / "index.html"))
-
-
+else:
+    logger.error(f"Frontend dist not found at: {_dist}")
 # ─────────────────────────────────────────────
 # 엔트리포인트
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
