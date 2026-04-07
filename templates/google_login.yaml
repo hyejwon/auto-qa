@@ -1,0 +1,33 @@
+title: google 로그인
+description: 'Google 로그인 버튼 → 약관 동의 → QA 계정 선택 → 로그인 완료'
+package: ''
+steps:
+- action: find_and_tap
+  target: Google 로그인 버튼
+  params:
+    expect_visible: 약관 알림 팝업
+  description: Google 로그인 버튼 클릭
+  timeout: 15
+  retry: 2
+- action: find_and_tap
+  target: 약관 알림 팝업 내 동의합니다 영역
+  params:
+    expect_visible: 계정 선택 팝업
+  description: 약관 동의 클릭
+  timeout: 10
+  retry: 2
+- action: verify
+  target: qa_google_01@111percent.net
+  description: QA 계정이 목록에 있는지 확인
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: qa_google_01@111percent.net
+  params:
+    wait_seconds: 5
+  description: QA 계정 선택 및 로그인 완료 대기
+  timeout: 20
+  retry: 2
+expected_results:
+- Google 계정 로그인이 정상 완료되어야 한다.
+- 로그인 후 관련 팝업이 모두 닫혀야 한다.

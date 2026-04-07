@@ -1,0 +1,125 @@
+{
+  "name": "크레이지아레나_게스트",
+  "steps": [],
+  "nodes": [
+    {
+      "id": "tmpl_1775539049435_10",
+      "type": "template",
+      "position": {
+        "x": 558.1048682459977,
+        "y": 194.27863601993567
+      },
+      "data": {
+        "label": "account",
+        "node_type": "template",
+        "steps": [
+          {
+            "action": "find_and_tap",
+            "target": "동의합니다",
+            "params": {
+              "expect_hidden": "약관 동의 팝업"
+            },
+            "description": "약관 동의 버튼 클릭",
+            "timeout": 10,
+            "retry": 2
+          },
+          {
+            "action": "verify",
+            "target": "약관 동의 팝업이 닫힌 상태",
+            "description": "약관 팝업이 정상 닫혔는지 확인",
+            "timeout": 10,
+            "retry": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "tmpl_1775539070278_11",
+      "type": "template",
+      "position": {
+        "x": 237.87564823092362,
+        "y": 56.841542556230465
+      },
+      "data": {
+        "label": "guest_login",
+        "node_type": "template",
+        "steps": [
+          {
+            "action": "find_and_tap",
+            "target": "Guest login 버튼",
+            "params": {
+              "expect_visible": "게스트 로그인 데이터 유실 안내 팝업"
+            },
+            "description": "Guest login 버튼을 클릭한다.",
+            "timeout": 15,
+            "retry": 2
+          },
+          {
+            "action": "find_and_tap",
+            "target": "아니오 버튼",
+            "params": {
+              "expect_hidden": "게스트 로그인 데이터 유실 안내 팝업"
+            },
+            "description": "데이터 유실 안내 팝업 내 아니오 버튼을 클릭한다.",
+            "timeout": 10,
+            "retry": 2
+          },
+          {
+            "action": "find_and_tap",
+            "target": "Guest login 버튼",
+            "params": {
+              "expect_visible": "게스트 로그인 데이터 유실 안내 팝업"
+            },
+            "description": "다시 Guest login 버튼을 클릭한다.",
+            "timeout": 10,
+            "retry": 2
+          },
+          {
+            "action": "find_and_tap",
+            "target": "예 버튼",
+            "params": {
+              "expect_hidden": "게스트 로그인 데이터 유실 안내 팝업",
+              "wait_seconds": 10
+            },
+            "description": "데이터 유실 안내 팝업 내 예 버튼을 클릭한다.",
+            "timeout": 15,
+            "retry": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "tmpl_1775539212531_12",
+      "type": "template",
+      "position": {
+        "x": -123.56821125172856,
+        "y": 165.30308534359165
+      },
+      "data": {
+        "label": "first_launch_setup",
+        "node_type": "template",
+        "steps": [
+          {
+            "action": "install_app",
+            "target": "cooptd.apk",
+            "timeout": 10,
+            "retry": 2
+          },
+          {
+            "action": "launch_app",
+            "target": "com.percent.aos.cooptd",
+            "timeout": 10,
+            "retry": 2
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__tmpl_1775539070278_11-tmpl_1775539049435_10",
+      "source": "tmpl_1775539070278_11",
+      "target": "tmpl_1775539049435_10"
+    }
+  ]
+}

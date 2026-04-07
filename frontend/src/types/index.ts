@@ -1,3 +1,13 @@
+export interface PreflightCheck {
+  name: string
+  status: 'ok' | 'warn' | 'fail' | 'unknown'
+  detail: string
+}
+
+export interface PreflightResult {
+  checks: PreflightCheck[]
+}
+
 export interface DeviceInfo {
   status: 'connected' | 'disconnected' | 'error'
   device_id: string | null
@@ -34,6 +44,8 @@ export interface StepResult {
   step: number
   label: string
   passed: boolean
+  failure_reason?: string
+  vision_confidence?: number
 }
 
 export interface TestResult {
@@ -49,6 +61,26 @@ export interface WsMessage {
   type: 'log' | 'result' | 'error' | 'done' | 'ping'
   message?: string
   data?: TestResult
+}
+
+export interface PipelineData {
+  name: string
+  steps: Step[]
+  nodes: {
+    id: string
+    type?: string
+    position: { x: number; y: number }
+    data: {
+      label: string
+      node_type?: 'template' | 'step'
+      action?: string
+      target?: string
+      description?: string
+      seconds?: number
+      steps?: Step[]
+    }
+  }[]
+  edges: { id: string; source: string; target: string }[]
 }
 
 export const ACTION_CHOICES = [

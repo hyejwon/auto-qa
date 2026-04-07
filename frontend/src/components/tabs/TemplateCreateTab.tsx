@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Wand2, Save, Loader2 } from 'lucide-react'
 import { planApi, templateApi, packageApi } from '../../api/client'
+import { StableTextarea } from '../StableInput'
 import { SAMPLE_SCENARIOS } from '../../types'
 
 export default function TemplateCreateTab() {
@@ -82,9 +83,9 @@ export default function TemplateCreateTab() {
       {/* 시나리오 입력 */}
       <div>
         <label className="block text-xs text-gray-400 mb-1">테스트 시나리오 (자연어)</label>
-        <textarea
+        <StableTextarea
           value={scenario}
-          onChange={(e) => setScenario(e.target.value)}
+          onValueChange={setScenario}
           rows={10}
           placeholder="앱을 실행한다.&#10;→ 구글 로그인 버튼을 클릭한다.&#10;→ ..."
           className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:border-blue-500 placeholder-gray-600"
@@ -120,9 +121,9 @@ export default function TemplateCreateTab() {
       {yamlOutput && (
         <div>
           <label className="block text-xs text-gray-400 mb-1">생성된 테스트 플랜 (YAML)</label>
-          <textarea
+          <StableTextarea
             value={yamlOutput}
-            onChange={(e) => setYamlOutput(e.target.value)}
+            onValueChange={setYamlOutput}
             rows={22}
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono resize-y focus:outline-none focus:border-blue-500"
           />

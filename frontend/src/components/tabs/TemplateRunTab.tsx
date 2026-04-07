@@ -16,8 +16,13 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { Play, Square, Save, Plus, Trash2, GripVertical, RefreshCw, Loader2 } from 'lucide-react'
 import { templateApi, packageApi, testApi, apkApi } from '../../api/client'
+import { StableInput } from '../StableInput'
 import type { Step, TestResult } from '../../types'
 import { ACTION_CHOICES, TARGET_ACTIONS } from '../../types'
+
+function isRecordingLog(message: string) {
+  return message.includes('녹화 시작') || message.includes('녹화 완료')
+}
 
 function StepCard({
   id,
@@ -115,18 +120,18 @@ function StepCard({
               {apks.map((f) => <option key={f} value={f}>{f}</option>)}
             </select>
           ) : (
-            <input
+            <StableInput
               value={step.target || ''}
-              onChange={(e) => onChange({ ...step, target: e.target.value })}
+              onValueChange={(value) => onChange({ ...step, target: value })}
               disabled={!hasTarget}
               placeholder="target (UI 요소명)"
               className="flex-1 min-w-[140px] bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 disabled:opacity-40"
             />
           )}
 
-          <input
+          <StableInput
             value={step.description || ''}
-            onChange={(e) => onChange({ ...step, description: e.target.value })}
+            onValueChange={(value) => onChange({ ...step, description: value })}
             placeholder="설명"
             className="flex-1 min-w-[100px] bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
           />
@@ -146,18 +151,18 @@ function StepCard({
             />
           ) : (
             <>
-              <input
+              <StableInput
                 value={step.params?.expect_visible || ''}
-                onChange={(e) =>
-                  onChange({ ...step, params: { ...step.params, expect_visible: e.target.value || null } })
+                onValueChange={(value) =>
+                  onChange({ ...step, params: { ...step.params, expect_visible: value || null } })
                 }
                 placeholder="expect_visible"
                 className="flex-1 min-w-[140px] bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-yellow-500"
               />
-              <input
+              <StableInput
                 value={step.params?.expect_hidden || ''}
-                onChange={(e) =>
-                  onChange({ ...step, params: { ...step.params, expect_hidden: e.target.value || null } })
+                onValueChange={(value) =>
+                  onChange({ ...step, params: { ...step.params, expect_hidden: value || null } })
                 }
                 placeholder="expect_hidden"
                 className="flex-1 min-w-[140px] bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-orange-500"
@@ -262,7 +267,9 @@ export default function TemplateRunTab() {
 
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data)
-      if (msg.type === 'log') setLogs((p) => [...p, msg.message])
+      if (msg.type === 'log') {
+        if (!isRecordingLog(msg.message)) setLogs((p) => [...p, msg.message])
+      }
       else if (msg.type === 'result') { setResult(msg.data); setStatus('✅ 실행 완료') }
       else if (msg.type === 'error') { setStatus(`❌ ${msg.message}`); setRunning(false) }
       else if (msg.type === 'done') { setRunning(false); setStopping(false); setStatus((s) => s.includes('중단') ? '⏹️ 중단됨' : s); ws.close() }
@@ -328,9 +335,9 @@ export default function TemplateRunTab() {
 
         {/* 제목 */}
         <div className="flex gap-2 flex-none">
-          <input
+          <StableInput
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onValueChange={setTitle}
             placeholder="테스트 제목"
             className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
           />
@@ -353,15 +360,15 @@ export default function TemplateRunTab() {
             {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
             저장
           </button>
-          <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm ml-1">
-            <input
-              type="checkbox"
-              checked={record}
-              onChange={(e) => setRecord(e.target.checked)}
-              className="w-4 h-4 accent-red-500"
-            />
-            <span className={record ? 'text-red-400' : 'text-gray-400'}>🔴 녹화</span>
-          </label>
+          <button
+            onClick={() => setRecord((v) => !v)}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs border transition-colors ${
+              record ? 'bg-red-950/50 border-red-700 text-red-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <span>🔴</span>
+            {record ? '녹화 ON' : '녹화'}
+          </button>
           {status && <span className="flex items-center text-xs text-gray-400 truncate">{status}</span>}
         </div>
 
@@ -429,15 +436,6 @@ export default function TemplateRunTab() {
             {result.error_message && (
               <div className="text-xs text-red-400 mb-2">⚠️ {result.error_message}</div>
             )}
-            <div className="max-h-40 overflow-y-auto scrollbar-thin space-y-1">
-              {result.step_results.map((sr) => (
-                <div key={sr.step} className="flex items-center gap-2 text-xs">
-                  <span>{sr.passed ? '✅' : '❌'}</span>
-                  <span className="text-gray-500">Step {sr.step}</span>
-                  <span className="text-gray-300">{sr.label}</span>
-                </div>
-              ))}
-            </div>
           </div>
         )}
       </div>

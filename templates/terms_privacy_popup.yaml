@@ -1,0 +1,18 @@
+title: 계정 연동
+description: '개인정보 처리방침 및 이용약관 동의 팝업 처리 (앱 최초 실행 또는 업데이트 후 노출)'
+package: ''
+steps:
+- action: find_and_tap
+  target: 동의합니다
+  params:
+    expect_hidden: 약관 동의 팝업
+  description: 약관 동의 버튼 클릭
+  timeout: 10
+  retry: 2
+- action: verify
+  target: 약관 동의 팝업이 닫힌 상태
+  description: 약관 팝업이 정상 닫혔는지 확인
+  timeout: 10
+  retry: 2
+expected_results:
+- 약관 동의 팝업이 정상적으로 닫혀야 한다.

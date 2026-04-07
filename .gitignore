@@ -21,4 +21,4 @@ credentials.json
 cooptd.apk
 frontend/node_modules/
 frontend/dist/
-dist/
+dist/auto-qa.exe 

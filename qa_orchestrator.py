@@ -69,6 +69,7 @@ class QAOrchestrator:
         self._resolution = f"{self.adb.width}x{self.adb.height}"
         self._current_package: str = ""
         self._current_screen_type: str = ""
+        self._last_failure_reason: str = ""
 
     def run_natural_language_test(
         self,
@@ -156,6 +157,7 @@ class QAOrchestrator:
                         result.error_message = "사용자에 의해 중단됨"
                         break
 
+                    self._last_failure_reason = ""
                     label = step.description or step.action
                     target_info = f"  → 대상: {step.target}" if step.target else ""
                     logger.info("")
@@ -205,8 +207,11 @@ class QAOrchestrator:
 
                             if not success:
                                 logger.error("└─ ❌ 실패")
+                                if self._last_failure_reason:
+                                    logger.error(f"│    사유: {self._last_failure_reason}")
                                 result.status = "FAIL"
-                                result.error_message = f"Step {idx + 1} 실패: {label}"
+                                reason_suffix = f" — {self._last_failure_reason}" if self._last_failure_reason else ""
+                                result.error_message = f"Step {idx + 1} 실패: {label}{reason_suffix}"
 
                         step_span.update(output={"passed": success, "vision_confidence": confidence})
 
@@ -215,6 +220,7 @@ class QAOrchestrator:
                         "label": label,
                         "passed": success,
                         "vision_confidence": confidence,
+                        "failure_reason": "" if success else self._last_failure_reason,
                     })
 
                     self._cleanup_step_files()
@@ -303,7 +309,10 @@ class QAOrchestrator:
                     launched = self.adb.launch_app(package)
                     if launched:
                         self._wait_for_screen_stable()
+                    else:
+                        self._last_failure_reason = f"앱 실행 실패: {package}"
                     return launched, 1.0
+                self._last_failure_reason = "launch_app: package가 지정되지 않음"
                 return False, 1.0
 
             elif step.action == ActionType.CLOSE_APP:
@@ -364,6 +373,7 @@ class QAOrchestrator:
 
         except Exception as e:
             logger.error(f"Step execution failed: {e}")
+            self._last_failure_reason = str(e)
             return False, 0.0
 
     def _execute_back_step(self, step) -> bool:
@@ -463,6 +473,7 @@ class QAOrchestrator:
         target = step.target
         if not target:
             logger.error("find_and_tap action requires target")
+            self._last_failure_reason = "target이 지정되지 않음"
             return False
 
         # 1. 공통 캐시 조회 (게임 무관, 해상도별)
@@ -474,6 +485,8 @@ class QAOrchestrator:
             self.adb.tap(common.x, common.y)
             self._current_screen_type = ""
             verified = self._verify_find_and_tap_outcome(step, tap_source="CommonCache")
+            if not verified:
+                self._last_failure_reason = f"탭 성공(CommonCache), 화면 검증 실패: '{target}'"
             return True if verified else self._TAP_OK_VERIFY_FAIL
 
         # 2. 게임별 캐시 조회 (패키지 + 화면 + 해상도)
@@ -485,6 +498,8 @@ class QAOrchestrator:
             self.adb.tap(cached.x, cached.y)
             self._current_screen_type = ""
             verified = self._verify_find_and_tap_outcome(step, tap_source="Cache")
+            if not verified:
+                self._last_failure_reason = f"탭 성공(Cache), 화면 검증 실패: '{target}'"
             return True if verified else self._TAP_OK_VERIFY_FAIL
 
         # 3. 캐시 미스 → Vision 탐지 → 캐시 저장
@@ -493,13 +508,15 @@ class QAOrchestrator:
         latest_path = self._wait_for_screen_stable()
         coords = self._resolve_with_vision(latest_path, target)
         if not coords:
+            self._last_failure_reason = f"Vision으로 요소를 찾지 못함: '{target}'"
             return False
         self.adb.tap(coords["x"], coords["y"])
         self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
-        # 공통 요소면 공통 캐시에도 자동 등록 (현재 해상도)
         self._auto_register_common(target, coords["x"], coords["y"])
         self._current_screen_type = ""
         verified = self._verify_find_and_tap_outcome(step, tap_source="Vision")
+        if not verified:
+            self._last_failure_reason = f"탭 성공(Vision), 화면 검증 실패: '{target}'"
         return True if verified else self._TAP_OK_VERIFY_FAIL
 
     def _lookup_cache(self, target: str) -> Optional[CachedElement]:
@@ -638,11 +655,15 @@ class QAOrchestrator:
     def _verify_screen(self, screenshot_path: Path, target: str) -> tuple[bool, float]:
         if not target:
             logger.error("verify action requires target")
+            self._last_failure_reason = "verify target이 지정되지 않음"
             return False, 0.0
         vision_result = self.vision_lite.find_element(
             screenshot_path, target, self.config.paths.debug_dir
         )
         if not vision_result.success or not vision_result.bbox:
+            self._last_failure_reason = (
+                f"화면에서 '{target}'을 찾지 못함 (신뢰도: {vision_result.confidence:.2f})"
+            )
             return False, vision_result.confidence
         return True, vision_result.confidence
 

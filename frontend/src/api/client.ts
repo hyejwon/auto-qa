@@ -1,10 +1,16 @@
 import axios from 'axios'
-import type { DeviceInfo, Template } from '../types'
+import type { DeviceInfo, PipelineData, PreflightResult, Template } from '../types'
 
 const api = axios.create({ baseURL: '/api' })
 
 export const deviceApi = {
   getStatus: () => api.get<DeviceInfo>('/device').then((r) => r.data),
+}
+
+export const preflightApi = {
+  check: () => api.get<PreflightResult>('/preflight').then((r) => r.data),
+  reconnect: () =>
+    api.post<{ success: boolean; device: unknown; log: string[] }>('/device/reconnect').then((r) => r.data),
 }
 
 export const apkApi = {
@@ -49,4 +55,14 @@ export const testApi = {
 
 export const recordingApi = {
   list: () => api.get<{ recordings: string[] }>('/recordings').then((r) => r.data),
+}
+
+export const pipelineApi = {
+  list: () => api.get<{ pipelines: string[] }>('/pipelines').then((r) => r.data),
+  get: (name: string) => api.get<PipelineData>(`/pipelines/${name}`).then((r) => r.data),
+  save: (name: string, nodes: object[], edges: object[]) =>
+    api.post<{ success: boolean; filename?: string }>('/pipelines', { name, nodes, edges }).then((r) => r.data),
+  delete: (name: string) => api.delete(`/pipelines/${name}`).then((r) => r.data),
+  run: (payload: { nodes: object[]; edges: object[]; session_id: string; record: boolean }) =>
+    api.post<{ session_id: string; status: string }>('/pipeline/run', payload).then((r) => r.data),
 }
