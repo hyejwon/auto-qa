@@ -138,7 +138,7 @@ class RunPipelineRequest(BaseModel):
 # 디바이스 API
 # ─────────────────────────────────────────────
 def _get_all_devices() -> list[dict]:
-    result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
+    result = subprocess.run(["adb", "devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
     devices = []
     for ln in result.stdout.split("\n")[1:]:
         if "\t" not in ln:
@@ -146,7 +146,7 @@ def _get_all_devices() -> list[dict]:
         device_id, status = ln.split("\t")[0].strip(), ln.split("\t")[1].strip()
         model = subprocess.run(
             ["adb", "-s", device_id, "shell", "getprop", "ro.product.model"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         ).stdout.strip() or device_id
         devices.append({"device_id": device_id, "model": model, "status": status})
     return devices
@@ -179,7 +179,7 @@ def connect_device(body: dict):
     if not address:
         raise HTTPException(status_code=400, detail="address가 필요합니다.")
     try:
-        result = subprocess.run(["adb", "connect", address], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["adb", "connect", address], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         output = result.stdout.strip()
         success = "connected" in output.lower() or "already connected" in output.lower()
         return {"success": success, "message": output}
@@ -193,7 +193,7 @@ def disconnect_device(body: dict):
     if not address:
         raise HTTPException(status_code=400, detail="address가 필요합니다.")
     try:
-        result = subprocess.run(["adb", "disconnect", address], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["adb", "disconnect", address], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         return {"success": True, "message": result.stdout.strip()}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -207,7 +207,7 @@ def device_reconnect():
 
     # 1. ADB 서버 재시작
     try:
-        r = subprocess.run(["adb", "start-server"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run(["adb", "start-server"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         msg = r.stdout.strip() or r.stderr.strip() or "OK"
         log.append(f"✅ adb start-server: {msg}")
     except Exception as e:
@@ -217,7 +217,7 @@ def device_reconnect():
     preferred = os.getenv("ADB_DEVICE", "").strip()
     if preferred and ":" in preferred:
         try:
-            r = subprocess.run(["adb", "connect", preferred], capture_output=True, text=True, timeout=15)
+            r = subprocess.run(["adb", "connect", preferred], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             out = r.stdout.strip()
             success = "connected" in out.lower() or "already connected" in out.lower()
             log.append(f"{'✅' if success else '⚠️'} adb connect {preferred}: {out}")
@@ -377,7 +377,7 @@ def _adb_shell(device_id: str, args: list[str], timeout: int = 8) -> str:
     try:
         result = subprocess.run(
             ["adb", "-s", device_id] + args,
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
         )
         return result.stdout + result.stderr
     except Exception:
@@ -454,7 +454,7 @@ def preflight_check():
             try:
                 if sys.platform == "darwin":
                     r = subprocess.run(["networksetup", "-getairportnetwork", "en0"],
-                                       capture_output=True, text=True, timeout=5)
+                                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
                     host_ssid_match = _re.search(r'Current Wi-Fi Network:\s*(.+)', r.stdout)
                     host_ssid = host_ssid_match.group(1).strip() if host_ssid_match else ""
                     if host_ssid:
