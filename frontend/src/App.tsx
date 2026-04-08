@@ -2,15 +2,15 @@ import { useState } from 'react'
 import AgentSelector from './components/AgentSelector'
 import DeviceStatus from './components/DeviceStatus'
 import PreflightPanel from './components/PreflightPanel'
-import ModuleEditorTab from './components/tabs/ModuleEditorTab'
+import ManagementTab from './components/tabs/ManagementTab'
 import PipelineTab from './components/tabs/PipelineTab'
 import RecordingsTab from './components/tabs/RecordingsTab'
 import type { AgentInfo } from './types'
 
-type Tab = 'modules' | 'pipeline' | 'recordings'
+type Tab = 'management' | 'pipeline' | 'recordings'
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'modules', label: '📦 공통 모듈' },
+  { id: 'management', label: '🛠️ 관리탭' },
   { id: 'pipeline', label: '🔗 파이프라인' },
   { id: 'recordings', label: '🎬 녹화 영상' },
 ]
@@ -52,8 +52,8 @@ export default function App() {
 
       {/* 탭 콘텐츠 */}
       <main className="flex-1 p-6 overflow-auto">
-        <div className={activeTab === 'modules' ? '' : 'hidden'}>
-          <ModuleEditorTab agent={selectedAgent} />
+        <div className={activeTab === 'management' ? '' : 'hidden'}>
+          <ManagementTab agent={selectedAgent} />
         </div>
         <div className={activeTab === 'pipeline' ? '' : 'hidden'}>
           <PipelineTab agent={selectedAgent} />

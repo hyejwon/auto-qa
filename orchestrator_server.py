@@ -114,6 +114,12 @@ async def _proxy_post(agent_name: str, path: str, body: dict):
         r = await client.post(url, json=body)
         return r.json()
 
+async def _proxy_delete(agent_name: str, path: str):
+    url = _agent_url(agent_name) + path
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.delete(url)
+        return r.json()
+
 @app.get("/api/agents/{agent_name}/device")
 async def proxy_get_device(agent_name: str):
     return await _proxy_get(agent_name, "/api/device")
@@ -185,6 +191,18 @@ async def proxy_screen_latest(agent_name: str):
 @app.get("/api/agents/{agent_name}/recordings")
 async def proxy_recordings(agent_name: str):
     return await _proxy_get(agent_name, "/api/recordings")
+
+@app.get("/api/agents/{agent_name}/package-apk-map")
+async def proxy_get_package_apk_map(agent_name: str):
+    return await _proxy_get(agent_name, "/api/package-apk-map")
+
+@app.post("/api/agents/{agent_name}/package-apk-map")
+async def proxy_add_package_apk_map(agent_name: str, body: dict):
+    return await _proxy_post(agent_name, "/api/package-apk-map", body)
+
+@app.delete("/api/agents/{agent_name}/package-apk-map/{package:path}")
+async def proxy_delete_package_apk_map(agent_name: str, package: str):
+    return await _proxy_delete(agent_name, f"/api/package-apk-map/{package}")
 
 
 # ─────────────────────────────────────────────

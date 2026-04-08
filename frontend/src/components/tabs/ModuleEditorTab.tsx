@@ -229,7 +229,7 @@ export default function ModuleEditorTab({ agent }: Props) {
   }
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-145px)]">
+    <div className="flex gap-4 min-h-[720px]">
 
       {/* ── 왼쪽: 모듈 목록 ── */}
       <div className="flex flex-col gap-2 w-52 flex-none">

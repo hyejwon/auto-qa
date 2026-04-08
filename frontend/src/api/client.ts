@@ -37,7 +37,12 @@ export const apkApi = {
 export const packageApi = {
   list: (agentName: string) =>
     api.get<{ packages: string[] }>(agentPath(agentName, '/packages')).then((r) => r.data),
-  getApkMap: () => api.get<{ map: Record<string, string> }>('/package-apk-map').then((r) => r.data),
+  getApkMap: (agentName: string) =>
+    api.get<{ map: Record<string, string> }>(agentPath(agentName, '/package-apk-map')).then((r) => r.data),
+  addApkMap: (agentName: string, package_name: string, apk: string) =>
+    api.post<{ success: boolean; map: Record<string, string> }>(agentPath(agentName, '/package-apk-map'), { package: package_name, apk }).then((r) => r.data),
+  deleteApkMap: (agentName: string, package_name: string) =>
+    api.delete<{ success: boolean; map: Record<string, string> }>(agentPath(agentName, `/package-apk-map/${encodeURIComponent(package_name)}`)).then((r) => r.data),
   uninstall: (agentName: string, pkg: string) =>
     api
       .post<{ success: boolean; message: string }>(agentPath(agentName, '/app/uninstall'), { package: pkg })

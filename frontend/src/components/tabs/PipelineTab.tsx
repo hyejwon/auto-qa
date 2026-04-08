@@ -323,8 +323,15 @@ export default function PipelineTab({ agent }: Props) {
     templateApi.list().then((r) => setTemplates(r.templates))
     pipelineApi.list().then((r) => setSavedPipelines(r.pipelines))
     if (agent) {
-      packageApi.list(agent.name).then((r) => setPackages(r.packages))
-      apkApi.list(agent.name).then((r) => setApks(r.apks))
+      Promise.all([
+        packageApi.list(agent.name),
+        apkApi.list(agent.name),
+        packageApi.getApkMap(agent.name),
+      ]).then(([pRes, aRes, mapRes]) => {
+        const mapPkgs = Object.keys(mapRes.map ?? {})
+        setPackages([...new Set([...pRes.packages, ...mapPkgs])])
+        setApks(aRes.apks)
+      })
     }
   }, [agent?.name])
 

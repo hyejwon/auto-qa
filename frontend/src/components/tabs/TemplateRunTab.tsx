@@ -208,13 +208,16 @@ export default function TemplateRunTab({ agent }: Props) {
   const syncIds = (s: Step[]) => s.map((_, i) => `step-${i}-${Date.now()}`)
 
   const loadLists = async () => {
-    const [tRes, pRes, aRes] = await Promise.all([
+    const [tRes, pRes, aRes, mapRes] = await Promise.all([
       templateApi.list(),
       agent ? packageApi.list(agent.name) : Promise.resolve({ packages: [] }),
       agent ? apkApi.list(agent.name) : Promise.resolve({ apks: [] }),
+      agent ? packageApi.getApkMap(agent.name) : Promise.resolve({ map: {} }),
     ])
     setTemplates(tRes.templates)
-    setPackages(pRes.packages)
+    // 설치된 패키지 + apkMap 등록 패키지 합치기 (중복 제거)
+    const mapPkgs = Object.keys(mapRes.map ?? {})
+    setPackages([...new Set([...pRes.packages, ...mapPkgs])])
     setApks(aRes.apks)
   }
 

@@ -298,6 +298,34 @@ def get_package_apk_map():
     except Exception:
         return {"map": {}}
 
+class PackageApkMapEntry(BaseModel):
+    package: str
+    apk: str
+
+@app.post("/api/package-apk-map")
+def add_package_apk_map(entry: PackageApkMapEntry):
+    import json
+    map_path = cfg.paths.bundle_root / "package_apk_map.json"
+    try:
+        data = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
+        data[entry.package] = entry.apk
+        map_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"success": True, "map": data}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+@app.delete("/api/package-apk-map/{package:path}")
+def delete_package_apk_map(package: str):
+    import json
+    map_path = cfg.paths.bundle_root / "package_apk_map.json"
+    try:
+        data = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
+        data.pop(package, None)
+        map_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"success": True, "map": data}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 @app.post("/api/app/uninstall")
 def uninstall_app(req: UninstallRequest):
     try:
