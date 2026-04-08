@@ -1,0 +1,26 @@
+title: google login 협타디
+description: ''
+package: ''
+steps:
+- action: install_app
+  target: 협타.apk
+- action: launch_app
+  target: com.percent.aos.cooptd
+- action: find_and_tap
+  target: google 로그인
+- action: find_and_tap
+  target: 동의합니다
+- action: find_and_tap
+  target: hyejwon94@gmail
+- action: skip_tutorial
+- action: wait
+- action: find_and_tap
+  target: 건너뛰기
+- action: find_and_tap
+  target: 예
+  description: 정말로 건너뛰겠습니까 ? 화면
+- action: find_and_tap
+  target: 좌측 하단 뒤로가기 버튼
+- action: find_and_tap
+  target: 화면 중앙 누르기
+preconditions: []

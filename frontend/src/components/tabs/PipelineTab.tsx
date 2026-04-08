@@ -359,14 +359,15 @@ export default function PipelineTab({ agent }: Props) {
   // 화면 미러링
   useEffect(() => {
     if (mirrorIntervalRef.current) clearInterval(mirrorIntervalRef.current)
-    if (!mirrorOn) { setScreenSrc(''); return }
-    const endpoint = running ? '/api/screen/latest' : '/api/screen/snapshot'
+    if (!mirrorOn || !agent) { setScreenSrc(''); return }
+    const agentBase = `/api/agents/${encodeURIComponent(agent.name)}`
+    const endpoint = running ? `${agentBase}/screen/latest` : `${agentBase}/screen/snapshot`
     const interval = running ? 1000 : 1500
     const refresh = () => setScreenSrc(`${endpoint}?t=${Date.now()}`)
     refresh()
     mirrorIntervalRef.current = setInterval(refresh, interval)
     return () => { if (mirrorIntervalRef.current) clearInterval(mirrorIntervalRef.current) }
-  }, [mirrorOn, running])
+  }, [mirrorOn, running, agent])
 
   // ── 노드 삭제
   const handleDeleteNode = useCallback((id: string) => {

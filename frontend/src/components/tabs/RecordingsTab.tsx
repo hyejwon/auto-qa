@@ -1,17 +1,29 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw, Download, Video } from 'lucide-react'
 import { recordingApi } from '../../api/client'
+import type { AgentInfo } from '../../types'
 
-export default function RecordingsTab() {
+interface Props { agent: AgentInfo | null }
+
+export default function RecordingsTab({ agent }: Props) {
   const [recordings, setRecordings] = useState<string[]>([])
   const [selected, setSelected] = useState('')
 
   const load = async () => {
-    const res = await recordingApi.list()
-    setRecordings(res.recordings)
+    if (!agent) { setRecordings([]); return }
+    try {
+      const res = await recordingApi.list(agent.name)
+      setRecordings(Array.isArray(res.recordings) ? res.recordings : [])
+    } catch {
+      setRecordings([])
+    }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [agent?.name])
+
+  // 에이전트 직접 접근 URL (녹화 파일은 에이전트 PC에 저장됨)
+  const fileUrl = (filename: string) =>
+    agent ? `http://${agent.ip}:${agent.port}/recordings/${filename}` : ''
 
   return (
     <div className="space-y-4 max-w-3xl">
@@ -40,14 +52,14 @@ export default function RecordingsTab() {
         <div className="space-y-3">
           <video
             key={selected}
-            src={`/recordings/${selected}`}
+            src={fileUrl(selected)}
             controls
             className="w-full rounded-lg border border-gray-700 bg-black"
             style={{ maxHeight: 420 }}
           />
           <div className="flex items-center gap-3">
             <a
-              href={`/recordings/${selected}`}
+              href={fileUrl(selected)}
               download={selected}
               className="flex items-center gap-2 px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm font-medium transition-colors"
             >
@@ -60,7 +72,7 @@ export default function RecordingsTab() {
       ) : (
         <div className="flex flex-col items-center justify-center py-16 text-gray-600">
           <Video size={40} className="mb-3" />
-          <p className="text-sm">녹화 파일을 선택하세요</p>
+          <p className="text-sm">{agent ? '녹화 파일을 선택하세요' : '에이전트를 먼저 선택하세요'}</p>
         </div>
       )}
     </div>

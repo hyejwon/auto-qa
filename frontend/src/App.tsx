@@ -59,7 +59,7 @@ export default function App() {
           <PipelineTab agent={selectedAgent} />
         </div>
         <div className={activeTab === 'recordings' ? '' : 'hidden'}>
-          <RecordingsTab />
+          <RecordingsTab agent={selectedAgent} />
         </div>
       </main>
     </div>

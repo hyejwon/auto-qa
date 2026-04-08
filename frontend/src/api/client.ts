@@ -56,7 +56,9 @@ export const testApi = {
 }
 
 export const pipelineApi = {
-  list: () => api.get<{ pipelines: string[] }>('/pipelines').then((r) => r.data),
+  list: () => api.get<{ pipelines: string[] }>('/pipelines').then((r) => ({
+    pipelines: Array.isArray(r.data?.pipelines) ? r.data.pipelines : [],
+  })),
   get: (name: string) => api.get<PipelineData>(`/pipelines/${name}`).then((r) => r.data),
   save: (name: string, nodes: object[], edges: object[]) =>
     api.post<{ success: boolean; filename?: string }>('/pipelines', { name, nodes, edges }).then((r) => r.data),
@@ -69,7 +71,9 @@ export const pipelineApi = {
 
 // ── 오케스트레이터 직접 API ──────────────────────────────────────
 export const templateApi = {
-  list: () => api.get<{ templates: string[] }>('/templates').then((r) => r.data),
+  list: () => api.get<{ templates: string[] }>('/templates').then((r) => ({
+    templates: Array.isArray(r.data?.templates) ? r.data.templates : [],
+  })),
   get: (name: string) => api.get<{ template: Template }>(`/templates/${name}`).then((r) => r.data),
   save: (name: string, content: string, scenario = '') =>
     api
@@ -86,7 +90,10 @@ export const planApi = {
 }
 
 export const recordingApi = {
-  list: () => api.get<{ recordings: string[] }>('/recordings').then((r) => r.data),
+  list: (agentName: string) =>
+    api.get<{ recordings: string[] }>(agentPath(agentName, '/recordings')).then((r) => ({
+      recordings: Array.isArray(r.data?.recordings) ? r.data.recordings : [],
+    })),
 }
 
 // ── WebSocket URL 헬퍼 ───────────────────────────────────────────
