@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react'
 import { Wand2, Save, Loader2 } from 'lucide-react'
 import { planApi, templateApi, packageApi } from '../../api/client'
 import { StableTextarea } from '../StableInput'
+import type { AgentInfo } from '../../types'
 import { SAMPLE_SCENARIOS } from '../../types'
 
-export default function TemplateCreateTab() {
+interface Props { agent: AgentInfo | null }
+
+export default function TemplateCreateTab({ agent }: Props) {
   const [packages, setPackages] = useState<string[]>([])
   const [selectedPkg, setSelectedPkg] = useState('com.percent.aos.cooptd')
   const [scenario, setScenario] = useState('')
@@ -14,8 +17,8 @@ export default function TemplateCreateTab() {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    packageApi.list().then((r) => setPackages(r.packages))
-  }, [])
+    if (agent) packageApi.list(agent.name).then((r) => setPackages(r.packages))
+  }, [agent?.name])
 
   const handleGenerate = async () => {
     if (!scenario.trim()) return setStatus('⚠️ 시나리오를 입력해주세요.')

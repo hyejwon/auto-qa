@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Package, Trash2, RefreshCw, Download } from 'lucide-react'
 import { apkApi, packageApi } from '../../api/client'
+import type { AgentInfo } from '../../types'
 
-export default function ApkTab() {
+interface Props { agent: AgentInfo | null }
+
+export default function ApkTab({ agent }: Props) {
   const [apks, setApks] = useState<string[]>([])
   const [packages, setPackages] = useState<string[]>([])
   const [selectedApk, setSelectedApk] = useState('')
@@ -13,27 +16,30 @@ export default function ApkTab() {
   const [uninstalling, setUninstalling] = useState(false)
 
   const loadData = async () => {
-    const [apkRes, pkgRes] = await Promise.all([apkApi.list(), packageApi.list()])
+    if (!agent) return
+    const [apkRes, pkgRes] = await Promise.all([apkApi.list(agent.name), packageApi.list(agent.name)])
     setApks(apkRes.apks)
     setPackages(pkgRes.packages)
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { loadData() }, [agent?.name])
 
   const handleInstall = async () => {
+    if (!agent) return setInstallMsg('⚠️ 에이전트를 먼저 선택해주세요.')
     if (!selectedApk) return setInstallMsg('⚠️ APK 파일을 선택해주세요.')
     setInstalling(true)
     setInstallMsg(`📦 설치 중: ${selectedApk} ...`)
-    const res = await apkApi.install(selectedApk)
+    const res = await apkApi.install(agent.name, selectedApk)
     setInstallMsg(res.success ? `✅ ${res.message}` : `❌ ${res.message}`)
     setInstalling(false)
   }
 
   const handleUninstall = async () => {
+    if (!agent) return setUninstallMsg('⚠️ 에이전트를 먼저 선택해주세요.')
     if (!selectedPkg) return setUninstallMsg('⚠️ 패키지를 선택해주세요.')
     setUninstalling(true)
     setUninstallMsg(`🗑️ 삭제 중: ${selectedPkg} ...`)
-    const res = await packageApi.uninstall(selectedPkg)
+    const res = await packageApi.uninstall(agent.name, selectedPkg)
     setUninstallMsg(res.success ? `✅ ${res.message}` : `❌ ${res.message}`)
     setUninstalling(false)
   }
