@@ -51,14 +51,14 @@ export default function App() {
       </nav>
 
       {/* 탭 콘텐츠 */}
-      <main className="flex-1 p-6 overflow-auto">
-        <div className={activeTab === 'management' ? '' : 'hidden'}>
+      <main className="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">
+        <div className={`flex-1 min-h-0 ${activeTab === 'management' ? 'flex flex-col' : 'hidden'}`}>
           <ManagementTab agent={selectedAgent} />
         </div>
-        <div className={activeTab === 'pipeline' ? '' : 'hidden'}>
+        <div className={`flex-1 min-h-0 ${activeTab === 'pipeline' ? 'flex flex-col' : 'hidden'}`}>
           <PipelineTab agent={selectedAgent} />
         </div>
-        <div className={activeTab === 'recordings' ? '' : 'hidden'}>
+        <div className={`flex-1 min-h-0 ${activeTab === 'recordings' ? 'flex flex-col' : 'hidden'}`}>
           <RecordingsTab agent={selectedAgent} />
         </div>
       </main>

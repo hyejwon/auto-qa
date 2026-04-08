@@ -46,7 +46,7 @@ export default function ApkTab({ agent }: Props) {
   }
 
   return (
-    <section className="rounded-2xl border border-gray-800 bg-gray-900/70 p-5">
+    <section className="rounded-2xl border border-gray-800 bg-gray-900/70 p-5 flex flex-col h-full">
       <div className="flex items-start justify-between gap-4 mb-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -66,7 +66,7 @@ export default function ApkTab({ agent }: Props) {
         </button>
       </div>
 
-      <div className="mb-4 rounded-lg border border-gray-700 overflow-hidden">
+      <div className="flex-1 min-h-0 mb-4 rounded-lg border border-gray-700 overflow-y-auto">
         {Object.keys(apkMap).length === 0 ? (
           <p className="text-xs text-gray-600 text-center py-4">등록된 매핑이 없습니다.</p>
         ) : (

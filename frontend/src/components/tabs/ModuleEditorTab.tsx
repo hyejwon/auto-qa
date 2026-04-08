@@ -14,7 +14,7 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Save, Plus, Trash2, GripVertical, RefreshCw, Loader2, FilePlus } from 'lucide-react'
+import { Save, Plus, Trash2, GripVertical, RefreshCw, Loader2, FilePlus, Layers } from 'lucide-react'
 import { templateApi, packageApi, apkApi } from '../../api/client'
 import type { AgentInfo } from '../../types'
 import { StableInput } from '../StableInput'
@@ -229,15 +229,33 @@ export default function ModuleEditorTab({ agent }: Props) {
   }
 
   return (
-    <div className="flex gap-4 min-h-[720px]">
+    <section className="rounded-2xl border border-gray-800 bg-gray-900/70 p-5 flex flex-col h-full">
+      {/* ── 섹션 헤더 ── */}
+      <div className="flex items-start justify-between gap-4 mb-5">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Layers size={18} className="text-blue-400" />
+            <h2 className="text-base font-semibold">공통 모듈 관리</h2>
+          </div>
+          <p className="text-xs text-gray-500">
+            파이프라인에서 재사용할 공통 모듈을 생성하고 편집합니다.
+          </p>
+        </div>
+        <button
+          onClick={loadLists}
+          className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white transition-colors"
+          title="새로고침"
+        >
+          <RefreshCw size={16} />
+        </button>
+      </div>
+
+      <div className="flex gap-4 flex-1 min-h-0">
 
       {/* ── 왼쪽: 모듈 목록 ── */}
       <div className="flex flex-col gap-2 w-52 flex-none">
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-gray-400 font-medium">공통 모듈</span>
-          <button onClick={loadLists} className="p-0.5 text-gray-600 hover:text-gray-400">
-            <RefreshCw size={12} />
-          </button>
+        <div className="flex items-center">
+          <span className="text-xs text-gray-400 font-medium">모듈 목록</span>
         </div>
 
         {/* 새 모듈 생성 */}
@@ -356,5 +374,6 @@ export default function ModuleEditorTab({ agent }: Props) {
         )}
       </div>
     </div>
+    </section>
   )
 }
