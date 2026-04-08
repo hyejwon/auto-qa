@@ -154,6 +154,38 @@ async def proxy_packages(agent_name: str):
 async def proxy_apks(agent_name: str):
     return await _proxy_get(agent_name, "/api/apks")
 
+@app.post("/api/agents/{agent_name}/apk/install")
+async def proxy_install_apk(agent_name: str, body: dict):
+    return await _proxy_post(agent_name, "/api/apk/install", body)
+
+@app.post("/api/agents/{agent_name}/app/uninstall")
+async def proxy_uninstall_app(agent_name: str, body: dict):
+    return await _proxy_post(agent_name, "/api/app/uninstall", body)
+
+@app.post("/api/agents/{agent_name}/device/reconnect")
+async def proxy_reconnect(agent_name: str):
+    return await _proxy_post(agent_name, "/api/device/reconnect", {})
+
+@app.post("/api/agents/{agent_name}/devices/connect")
+async def proxy_connect_device(agent_name: str, body: dict):
+    return await _proxy_post(agent_name, "/api/devices/connect", body)
+
+@app.post("/api/agents/{agent_name}/devices/disconnect")
+async def proxy_disconnect_device(agent_name: str, body: dict):
+    return await _proxy_post(agent_name, "/api/devices/disconnect", body)
+
+@app.get("/api/agents/{agent_name}/screen/latest")
+async def proxy_screen_latest(agent_name: str):
+    url = _agent_url(agent_name) + "/api/screen/latest"
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(url)
+    from fastapi.responses import Response
+    return Response(content=r.content, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+@app.get("/api/agents/{agent_name}/recordings")
+async def proxy_recordings(agent_name: str):
+    return await _proxy_get(agent_name, "/api/recordings")
+
 
 # ─────────────────────────────────────────────
 # 템플릿 API
