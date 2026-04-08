@@ -1,14 +1,20 @@
 import { useEffect, useState } from 'react'
 import { Smartphone, SmartphoneNfc, AlertCircle, RefreshCw } from 'lucide-react'
 import { deviceApi } from '../api/client'
-import type { DeviceInfo } from '../types'
+import type { AgentInfo, DeviceInfo } from '../types'
 
-export default function DeviceStatus() {
+interface Props {
+  agent: AgentInfo | null
+  children?: React.ReactNode
+}
+
+export default function DeviceStatus({ agent, children }: Props) {
   const [device, setDevice] = useState<DeviceInfo | null>(null)
 
   const check = async () => {
+    if (!agent) { setDevice(null); return }
     try {
-      const data = await deviceApi.getStatus()
+      const data = await deviceApi.getStatus(agent.name)
       setDevice(data)
     } catch {
       setDevice({ status: 'error', device_id: null, model: null })
@@ -19,9 +25,10 @@ export default function DeviceStatus() {
     check()
     const id = setInterval(check, 10000)
     return () => clearInterval(id)
-  }, [])
+  }, [agent?.name])
 
   const badge = () => {
+    if (!agent) return <span className="text-gray-500 text-sm">에이전트 미선택</span>
     if (!device) return <span className="text-gray-400 text-sm">확인 중...</span>
     if (device.status === 'connected')
       return (
@@ -60,6 +67,7 @@ export default function DeviceStatus() {
         >
           <RefreshCw size={14} />
         </button>
+        {children}
       </div>
     </header>
   )

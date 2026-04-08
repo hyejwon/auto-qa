@@ -15,9 +15,9 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Play, Square, Save, Plus, Trash2, GripVertical, RefreshCw, Loader2 } from 'lucide-react'
-import { templateApi, packageApi, testApi, apkApi } from '../../api/client'
+import { templateApi, packageApi, testApi, apkApi, agentWsUrl } from '../../api/client'
 import { StableInput } from '../StableInput'
-import type { Step, TestResult } from '../../types'
+import type { AgentInfo, Step, TestResult } from '../../types'
 import { ACTION_CHOICES, TARGET_ACTIONS } from '../../types'
 
 function isRecordingLog(message: string) {
@@ -182,7 +182,9 @@ function StepCard({
   )
 }
 
-export default function TemplateRunTab() {
+interface Props { agent: AgentInfo | null }
+
+export default function TemplateRunTab({ agent }: Props) {
   const [templates, setTemplates] = useState<string[]>([])
   const [packages, setPackages] = useState<string[]>([])
   const [apks, setApks] = useState<string[]>([])
@@ -206,13 +208,17 @@ export default function TemplateRunTab() {
   const syncIds = (s: Step[]) => s.map((_, i) => `step-${i}-${Date.now()}`)
 
   const loadLists = async () => {
-    const [tRes, pRes, aRes] = await Promise.all([templateApi.list(), packageApi.list(), apkApi.list()])
+    const [tRes, pRes, aRes] = await Promise.all([
+      templateApi.list(),
+      agent ? packageApi.list(agent.name) : Promise.resolve({ packages: [] }),
+      agent ? apkApi.list(agent.name) : Promise.resolve({ apks: [] }),
+    ])
     setTemplates(tRes.templates)
     setPackages(pRes.packages)
     setApks(aRes.apks)
   }
 
-  useEffect(() => { loadLists() }, [])
+  useEffect(() => { loadLists() }, [agent?.name])
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [logs])
 
   const handleLoad = async () => {
@@ -252,6 +258,7 @@ export default function TemplateRunTab() {
   }
 
   const handleRun = async () => {
+    if (!agent) return setStatus('⚠️ 에이전트를 먼저 선택해주세요.')
     if (!steps.length) return setStatus('⚠️ 먼저 템플릿을 로드해주세요.')
     setRunning(true)
     setLogs([])
@@ -261,8 +268,7 @@ export default function TemplateRunTab() {
     const sid = `sess_${Date.now()}`
     sessionId.current = sid
 
-    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${wsProto}://${window.location.host}/ws/logs/${sid}`)
+    const ws = new WebSocket(agentWsUrl(agent, sid))
     wsRef.current = ws
 
     ws.onmessage = (ev) => {
@@ -277,14 +283,15 @@ export default function TemplateRunTab() {
     ws.onerror = () => { setStatus('❌ WebSocket 연결 오류'); setRunning(false) }
 
     const pkg = steps.find((s) => s.action === 'launch_app' && s.target)?.target ?? ''
-    await testApi.run({ title: title || '템플릿 실행', package: pkg, steps, session_id: sid, record })
+    await testApi.run(agent.name, { title: title || '템플릿 실행', package: pkg, steps, session_id: sid, record })
   }
 
   const handleStop = async () => {
+    if (!agent) return
     setStopping(true)
     setStatus('⏹️ 중단 중...')
     setLogs((p) => [...p, '⏹️ 중단 요청 중...'])
-    await testApi.stop(sessionId.current)
+    await testApi.stop(agent.name, sessionId.current)
     setStopping(false)
     // WebSocket은 백엔드가 done 메시지 보낼 때 자동으로 닫힘
   }

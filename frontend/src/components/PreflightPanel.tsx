@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle, AlertTriangle, XCircle, HelpCircle, RefreshCw, ChevronDown, ChevronUp, PlugZap, Loader2 } from 'lucide-react'
 import { preflightApi } from '../api/client'
-import type { PreflightCheck } from '../types'
+import type { AgentInfo, PreflightCheck } from '../types'
 
 const STATUS_CONFIG = {
   ok:      { icon: CheckCircle,   color: 'text-emerald-400', bg: 'bg-emerald-900/30', border: 'border-emerald-700' },
@@ -35,7 +35,11 @@ function CheckRow({ check }: { check: PreflightCheck }) {
   )
 }
 
-export default function PreflightPanel() {
+interface Props {
+  agent: AgentInfo
+}
+
+export default function PreflightPanel({ agent }: Props) {
   const [checks, setChecks] = useState<PreflightCheck[]>([])
   const [loading, setLoading] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
@@ -46,50 +50,47 @@ export default function PreflightPanel() {
   const run = async () => {
     setLoading(true)
     try {
-      const res = await preflightApi.check()
+      const res = await preflightApi.check(agent.name)
       setChecks(res.checks)
       setLastChecked(new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
       if (res.checks.some((c) => c.status === 'fail' || c.status === 'warn')) setExpanded(true)
     } catch {
-      setChecks([{ name: '점검 실패', status: 'fail', detail: '서버 응답 없음' }])
+      setChecks([{ name: '점검 실패', status: 'fail', detail: '에이전트 응답 없음' }])
     } finally {
       setLoading(false)
     }
   }
 
-  // 앱 시작 시 ADB 미연결이면 자동 복구 시도
   const autoReconnect = async () => {
     setReconnecting(true)
     setReconnectLog([])
     try {
-      const res = await preflightApi.reconnect()
+      const res = await preflightApi.reconnect(agent.name)
       setReconnectLog(res.log)
-      // 복구 후 preflight 재점검
       await run()
     } catch {
-      setReconnectLog(['❌ 서버 응답 없음'])
+      setReconnectLog(['❌ 에이전트 응답 없음'])
     } finally {
       setReconnecting(false)
     }
   }
 
   useEffect(() => {
+    setChecks([])
     const init = async () => {
       setLoading(true)
       try {
-        const res = await preflightApi.check()
+        const res = await preflightApi.check(agent.name)
         setChecks(res.checks)
         setLastChecked(new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
         const adbFail = res.checks.find((c) => c.name === 'ADB 연결' && c.status === 'fail')
         if (adbFail) {
-          // ADB 미연결 → 자동 복구 시도
           setExpanded(true)
           setReconnecting(true)
           setReconnectLog(['🔄 ADB 미연결 감지 — 자동 복구 시도 중...'])
-          const r = await preflightApi.reconnect()
+          const r = await preflightApi.reconnect(agent.name)
           setReconnectLog(r.log)
-          // 복구 후 재점검
-          const res2 = await preflightApi.check()
+          const res2 = await preflightApi.check(agent.name)
           setChecks(res2.checks)
           setLastChecked(new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
           setReconnecting(false)
@@ -97,7 +98,7 @@ export default function PreflightPanel() {
           setExpanded(true)
         }
       } catch {
-        setChecks([{ name: '점검 실패', status: 'fail', detail: '서버 응답 없음' }])
+        setChecks([{ name: '점검 실패', status: 'fail', detail: '에이전트 응답 없음' }])
       } finally {
         setLoading(false)
         setReconnecting(false)
@@ -106,7 +107,7 @@ export default function PreflightPanel() {
     init()
     const id = setInterval(run, 30000)
     return () => clearInterval(id)
-  }, [])
+  }, [agent.name])
 
   const adbFailed = checks.some((c) => c.name === 'ADB 연결' && c.status === 'fail')
   const failCount = checks.filter((c) => c.status === 'fail').length

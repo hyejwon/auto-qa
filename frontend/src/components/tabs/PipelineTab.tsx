@@ -17,9 +17,9 @@ import '@xyflow/react/dist/style.css'
 import {
   Play, Square, Save, RefreshCw, Loader2, X, Plus, Monitor, MonitorOff,
 } from 'lucide-react'
-import { templateApi, pipelineApi, testApi, packageApi, apkApi } from '../../api/client'
+import { templateApi, pipelineApi, testApi, packageApi, apkApi, agentWsUrl } from '../../api/client'
 import { StableInput } from '../StableInput'
-import type { Step, TestResult } from '../../types'
+import type { AgentInfo, Step, TestResult } from '../../types'
 import { ACTION_CHOICES, TARGET_ACTIONS } from '../../types'
 
 // ─── Context: packages / apks를 노드에 전달 ───────────────────
@@ -293,7 +293,9 @@ const StepNode = memo(({ id, data, selected }: NodeProps<TNode>) => {
 const nodeTypes = { template: TemplateNode, step: StepNode }
 
 // ─── 메인 탭 ──────────────────────────────────────────────────
-export default function PipelineTab() {
+interface Props { agent: AgentInfo | null }
+
+export default function PipelineTab({ agent }: Props) {
   const [templates, setTemplates] = useState<string[]>([])
   const [packages, setPackages] = useState<string[]>([])
   const [apks, setApks] = useState<string[]>([])
@@ -320,9 +322,11 @@ export default function PipelineTab() {
   useEffect(() => {
     templateApi.list().then((r) => setTemplates(r.templates))
     pipelineApi.list().then((r) => setSavedPipelines(r.pipelines))
-    packageApi.list().then((r) => setPackages(r.packages))
-    apkApi.list().then((r) => setApks(r.apks))
-  }, [])
+    if (agent) {
+      packageApi.list(agent.name).then((r) => setPackages(r.packages))
+      apkApi.list(agent.name).then((r) => setApks(r.apks))
+    }
+  }, [agent?.name])
 
   useEffect(() => { nodesRef.current = nodes }, [nodes])
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [logs])
@@ -482,6 +486,7 @@ export default function PipelineTab() {
 
   // ── 실행
   const handleRun = async () => {
+    if (!agent) return setStatus('⚠️ 에이전트를 먼저 선택해주세요.')
     if (nodes.length === 0) return setStatus('⚠️ 노드를 추가해주세요.')
     setRunning(true)
     setLogs([])
@@ -492,8 +497,7 @@ export default function PipelineTab() {
     const sid = `pipe_${Date.now()}`
     sessionId.current = sid
 
-    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${wsProto}://${window.location.host}/ws/logs/${sid}`)
+    const ws = new WebSocket(agentWsUrl(agent, sid))
     wsRef.current = ws
 
     ws.onmessage = (ev) => {
@@ -520,14 +524,15 @@ export default function PipelineTab() {
       data: serializeNodeData(data),
     }))
     const serialEdges = edges.map(({ id, source, target }) => ({ id, source, target }))
-    await pipelineApi.run({ nodes: serialNodes, edges: serialEdges, session_id: sid, record })
+    await pipelineApi.run(agent.name, { nodes: serialNodes, edges: serialEdges, session_id: sid, record })
   }
 
   // ── 중단
   const handleStop = async () => {
+    if (!agent) return
     setStopping(true)
     setStatus('⏹️ 중단 중...')
-    await testApi.stop(sessionId.current)
+    await testApi.stop(agent.name, sessionId.current)
   }
 
   return (

@@ -1,31 +1,73 @@
 import axios from 'axios'
-import type { DeviceInfo, PipelineData, PreflightResult, Template } from '../types'
+import type { AgentInfo, DeviceInfo, PipelineData, PreflightResult, Template } from '../types'
 
 const api = axios.create({ baseURL: '/api' })
 
+// ── 에이전트 관리 (오케스트레이터) ──────────────────────────────
+export const agentsApi = {
+  list: () => api.get<{ agents: AgentInfo[] }>('/agents').then((r) => r.data),
+}
+
+// ── 에이전트별 API (agentName 필수) ─────────────────────────────
+const agentPath = (name: string, path: string) => `/agents/${encodeURIComponent(name)}${path}`
+
 export const deviceApi = {
-  getStatus: () => api.get<DeviceInfo>('/device').then((r) => r.data),
+  getStatus: (agentName: string) =>
+    api.get<DeviceInfo>(agentPath(agentName, '/device')).then((r) => r.data),
 }
 
 export const preflightApi = {
-  check: () => api.get<PreflightResult>('/preflight').then((r) => r.data),
-  reconnect: () =>
-    api.post<{ success: boolean; device: unknown; log: string[] }>('/device/reconnect').then((r) => r.data),
+  check: (agentName: string) =>
+    api.get<PreflightResult>(agentPath(agentName, '/preflight')).then((r) => r.data),
+  reconnect: (agentName: string) =>
+    api
+      .post<{ success: boolean; device: unknown; log: string[] }>(agentPath(agentName, '/device/reconnect'))
+      .then((r) => r.data),
 }
 
 export const apkApi = {
-  list: () => api.get<{ apks: string[] }>('/apks').then((r) => r.data),
-  install: (filename: string) =>
-    api.post<{ success: boolean; message: string }>('/apk/install', { filename }).then((r) => r.data),
+  list: (agentName: string) =>
+    api.get<{ apks: string[] }>(agentPath(agentName, '/apks')).then((r) => r.data),
+  install: (agentName: string, filename: string) =>
+    api
+      .post<{ success: boolean; message: string }>(agentPath(agentName, '/apk/install'), { filename })
+      .then((r) => r.data),
 }
 
 export const packageApi = {
-  list: () => api.get<{ packages: string[] }>('/packages').then((r) => r.data),
+  list: (agentName: string) =>
+    api.get<{ packages: string[] }>(agentPath(agentName, '/packages')).then((r) => r.data),
   getApkMap: () => api.get<{ map: Record<string, string> }>('/package-apk-map').then((r) => r.data),
-  uninstall: (pkg: string) =>
-    api.post<{ success: boolean; message: string }>('/app/uninstall', { package: pkg }).then((r) => r.data),
+  uninstall: (agentName: string, pkg: string) =>
+    api
+      .post<{ success: boolean; message: string }>(agentPath(agentName, '/app/uninstall'), { package: pkg })
+      .then((r) => r.data),
 }
 
+export const testApi = {
+  run: (agentName: string, payload: { title: string; package: string; steps: object[]; session_id: string; record: boolean }) =>
+    api
+      .post<{ session_id: string; status: string }>(agentPath(agentName, '/test/run'), payload)
+      .then((r) => r.data),
+  stop: (agentName: string, session_id: string) =>
+    api
+      .post<{ success: boolean; message: string }>(agentPath(agentName, '/test/stop'), { session_id })
+      .then((r) => r.data),
+}
+
+export const pipelineApi = {
+  list: () => api.get<{ pipelines: string[] }>('/pipelines').then((r) => r.data),
+  get: (name: string) => api.get<PipelineData>(`/pipelines/${name}`).then((r) => r.data),
+  save: (name: string, nodes: object[], edges: object[]) =>
+    api.post<{ success: boolean; filename?: string }>('/pipelines', { name, nodes, edges }).then((r) => r.data),
+  delete: (name: string) => api.delete(`/pipelines/${name}`).then((r) => r.data),
+  run: (agentName: string, payload: { nodes: object[]; edges: object[]; session_id: string; record: boolean }) =>
+    api
+      .post<{ session_id: string; status: string }>(agentPath(agentName, '/pipeline/run'), payload)
+      .then((r) => r.data),
+}
+
+// ── 오케스트레이터 직접 API ──────────────────────────────────────
 export const templateApi = {
   list: () => api.get<{ templates: string[] }>('/templates').then((r) => r.data),
   get: (name: string) => api.get<{ template: Template }>(`/templates/${name}`).then((r) => r.data),
@@ -39,30 +81,16 @@ export const templateApi = {
 export const planApi = {
   generate: (scenario: string, pkg: string) =>
     api
-      .post<{ title: string; steps_count: number; yaml: string }>('/plan/generate', {
-        scenario,
-        package: pkg,
-      })
+      .post<{ title: string; steps_count: number; yaml: string }>('/plan/generate', { scenario, package: pkg })
       .then((r) => r.data),
-}
-
-export const testApi = {
-  run: (payload: { title: string; package: string; steps: object[]; session_id: string; record: boolean }) =>
-    api.post<{ session_id: string; status: string }>('/test/run', payload).then((r) => r.data),
-  stop: (session_id: string) =>
-    api.post<{ success: boolean; message: string }>('/test/stop', { session_id }).then((r) => r.data),
 }
 
 export const recordingApi = {
   list: () => api.get<{ recordings: string[] }>('/recordings').then((r) => r.data),
 }
 
-export const pipelineApi = {
-  list: () => api.get<{ pipelines: string[] }>('/pipelines').then((r) => r.data),
-  get: (name: string) => api.get<PipelineData>(`/pipelines/${name}`).then((r) => r.data),
-  save: (name: string, nodes: object[], edges: object[]) =>
-    api.post<{ success: boolean; filename?: string }>('/pipelines', { name, nodes, edges }).then((r) => r.data),
-  delete: (name: string) => api.delete(`/pipelines/${name}`).then((r) => r.data),
-  run: (payload: { nodes: object[]; edges: object[]; session_id: string; record: boolean }) =>
-    api.post<{ session_id: string; status: string }>('/pipeline/run', payload).then((r) => r.data),
+// ── WebSocket URL 헬퍼 ───────────────────────────────────────────
+export function agentWsUrl(agent: AgentInfo, sessionId: string): string {
+  // 에이전트에 직접 WebSocket 연결 (사내망 HTTP)
+  return `ws://${agent.ip}:${agent.port}/ws/logs/${sessionId}`
 }

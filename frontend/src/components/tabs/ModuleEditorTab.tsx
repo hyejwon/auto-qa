@@ -16,6 +16,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { Save, Plus, Trash2, GripVertical, RefreshCw, Loader2, FilePlus } from 'lucide-react'
 import { templateApi, packageApi, apkApi } from '../../api/client'
+import type { AgentInfo } from '../../types'
 import { StableInput } from '../StableInput'
 import type { Step } from '../../types'
 import { ACTION_CHOICES, TARGET_ACTIONS } from '../../types'
@@ -109,7 +110,9 @@ function StepCard({
 }
 
 // ─── 메인 탭 ─────────────────────────────────────────────────
-export default function ModuleEditorTab() {
+interface Props { agent: AgentInfo | null }
+
+export default function ModuleEditorTab({ agent }: Props) {
   const [modules, setModules] = useState<string[]>([])
   const [packages, setPackages] = useState<string[]>([])
   const [apks, setApks] = useState<string[]>([])
@@ -125,13 +128,17 @@ export default function ModuleEditorTab() {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   const loadLists = async () => {
-    const [tRes, pRes, aRes] = await Promise.all([templateApi.list(), packageApi.list(), apkApi.list()])
+    const [tRes, pRes, aRes] = await Promise.all([
+      templateApi.list(),
+      agent ? packageApi.list(agent.name) : Promise.resolve({ packages: [] }),
+      agent ? apkApi.list(agent.name) : Promise.resolve({ apks: [] }),
+    ])
     setModules(tRes.templates)
     setPackages(pRes.packages)
     setApks(aRes.apks)
   }
 
-  useEffect(() => { loadLists() }, [])
+  useEffect(() => { loadLists() }, [agent?.name])
 
   const handleSelect = async (name: string) => {
     if (!name) return

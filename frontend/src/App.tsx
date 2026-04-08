@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import AgentSelector from './components/AgentSelector'
 import DeviceStatus from './components/DeviceStatus'
 import PreflightPanel from './components/PreflightPanel'
 import ModuleEditorTab from './components/tabs/ModuleEditorTab'
 import PipelineTab from './components/tabs/PipelineTab'
 import RecordingsTab from './components/tabs/RecordingsTab'
+import type { AgentInfo } from './types'
 
 type Tab = 'modules' | 'pipeline' | 'recordings'
 
@@ -15,11 +17,21 @@ const TABS: { id: Tab; label: string }[] = [
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('pipeline')
+  const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null)
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-950">
-      <DeviceStatus />
-      <PreflightPanel />
+      <DeviceStatus agent={selectedAgent}>
+        <AgentSelector selected={selectedAgent} onSelect={setSelectedAgent} />
+      </DeviceStatus>
+
+      {selectedAgent ? (
+        <PreflightPanel agent={selectedAgent} />
+      ) : (
+        <div className="bg-gray-900 border-b border-gray-800 px-6 py-2 text-xs text-gray-500">
+          에이전트를 선택하면 사전 점검이 시작됩니다.
+        </div>
+      )}
 
       {/* 탭 네비게이션 */}
       <nav className="flex border-b border-gray-800 bg-gray-900 px-4">
@@ -38,11 +50,17 @@ export default function App() {
         ))}
       </nav>
 
-      {/* 탭 콘텐츠 — 언마운트 방지: hidden으로 숨김 */}
+      {/* 탭 콘텐츠 */}
       <main className="flex-1 p-6 overflow-auto">
-        <div className={activeTab === 'modules' ? '' : 'hidden'}><ModuleEditorTab /></div>
-        <div className={activeTab === 'pipeline' ? '' : 'hidden'}><PipelineTab /></div>
-        <div className={activeTab === 'recordings' ? '' : 'hidden'}><RecordingsTab /></div>
+        <div className={activeTab === 'modules' ? '' : 'hidden'}>
+          <ModuleEditorTab agent={selectedAgent} />
+        </div>
+        <div className={activeTab === 'pipeline' ? '' : 'hidden'}>
+          <PipelineTab agent={selectedAgent} />
+        </div>
+        <div className={activeTab === 'recordings' ? '' : 'hidden'}>
+          <RecordingsTab />
+        </div>
       </main>
     </div>
   )

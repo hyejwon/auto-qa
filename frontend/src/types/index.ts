@@ -1,3 +1,10 @@
+export interface AgentInfo {
+  name: string
+  ip: string
+  port: number
+  online: boolean
+}
+
 export interface PreflightCheck {
   name: string
   status: 'ok' | 'warn' | 'fail' | 'unknown'
