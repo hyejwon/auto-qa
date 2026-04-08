@@ -476,34 +476,36 @@ class QAOrchestrator:
             self._last_failure_reason = "target이 지정되지 않음"
             return False
 
-        # 1. 공통 캐시 조회 (게임 무관, 해상도별)
-        common = self.common_cache.get(target, self._resolution)
-        if common:
-            logger.info("CommonTap HIT for '%s' @ %s → (%d, %d).",
-                        target, self._resolution, common.x, common.y)
-            self._wait_for_screen_stable()
-            self.adb.tap(common.x, common.y)
-            self._current_screen_type = ""
-            verified = self._verify_find_and_tap_outcome(step, tap_source="CommonCache")
-            if not verified:
-                self._last_failure_reason = f"탭 성공(CommonCache), 화면 검증 실패: '{target}'"
-            return True if verified else self._TAP_OK_VERIFY_FAIL
+        # TO-DO 데이터 쌓이면 그때 db 연결 
+        # # 1. 공통 캐시 조회 (게임 무관, 해상도별)
+        # common = self.common_cache.get(target, self._resolution)
+        # if common:
+        #     logger.info("CommonTap HIT for '%s' @ %s → (%d, %d).",
+        #                 target, self._resolution, common.x, common.y)
+        #     self._wait_for_screen_stable()
+        #     self.adb.tap(common.x, common.y)
+        #     self._current_screen_type = ""
+        #     verified = self._verify_find_and_tap_outcome(step, tap_source="CommonCache")
+        #     if not verified:
+        #         self._last_failure_reason = f"탭 성공(CommonCache), 화면 검증 실패: '{target}'"
+        #     return True if verified else self._TAP_OK_VERIFY_FAIL
 
-        # 2. 게임별 캐시 조회 (패키지 + 화면 + 해상도)
-        cached = self._lookup_cache(target)
-        if cached:
-            logger.info("Cache HIT for '%s' @ %s → (%d, %d).",
-                        target, self._resolution, cached.x, cached.y)
-            self._wait_for_screen_stable()
-            self.adb.tap(cached.x, cached.y)
-            self._current_screen_type = ""
-            verified = self._verify_find_and_tap_outcome(step, tap_source="Cache")
-            if not verified:
-                self._last_failure_reason = f"탭 성공(Cache), 화면 검증 실패: '{target}'"
-            return True if verified else self._TAP_OK_VERIFY_FAIL
+        # # 2. 게임별 캐시 조회 (패키지 + 화면 + 해상도)
+        # cached = self._lookup_cache(target)
+        # if cached:
+        #     logger.info("Cache HIT for '%s' @ %s → (%d, %d).",
+        #                 target, self._resolution, cached.x, cached.y)
+        #     self._wait_for_screen_stable()
+        #     self.adb.tap(cached.x, cached.y)
+        #     self._current_screen_type = ""
+        #     verified = self._verify_find_and_tap_outcome(step, tap_source="Cache")
+        #     if not verified:
+        #         self._last_failure_reason = f"탭 성공(Cache), 화면 검증 실패: '{target}'"
+        #     return True if verified else self._TAP_OK_VERIFY_FAIL
 
         # 3. 캐시 미스 → Vision 탐지 → 캐시 저장
-        logger.info("Cache MISS for '%s' @ %s → Vision fallback.", target, self._resolution)
+        # logger.info("Cache MISS for '%s' @ %s → Vision fallback.", target, self._resolution)
+        logger.info(f"vision target:{target}")
         time.sleep(3)
         latest_path = self._wait_for_screen_stable()
         coords = self._resolve_with_vision(latest_path, target)
