@@ -544,7 +544,7 @@ export default function PipelineTab({ agent }: Props) {
   }
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-145px)]">
+    <div className="flex gap-4 h-full">
 
       {/* ── 왼쪽 패널 ── */}
       <div className="flex flex-col gap-3 w-52 flex-none overflow-y-auto scrollbar-thin">
