@@ -17,6 +17,7 @@ export default function AgentSelector({ selected, onSelect }: Props) {
     setLoading(true)
     try {
       const res = await agentsApi.list()
+      if (!Array.isArray(res.agents)) return  // HTML 등 예상 외 응답 무시
       setAgents(res.agents)
       // 선택된 에이전트가 오프라인이 되면 해제
       if (selected) {
@@ -42,7 +43,7 @@ export default function AgentSelector({ selected, onSelect }: Props) {
 
   const onlineAgents = agents.filter((a) => a.online)
 
-  if (agents.length === 0) return null  // 오케스트레이터 없으면 숨김
+  if (!agents || agents.length === 0) return null  // 오케스트레이터 없으면 숨김
 
   return (
     <div className="relative">

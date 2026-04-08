@@ -748,6 +748,71 @@ def health():
     return {"status": "ok", "agent": AGENT_NAME}
 
 
+# 단독 실행 모드 — 자기 자신을 에이전트로 반환
+@app.get("/api/agents")
+def list_agents_self():
+    return {
+        "agents": [{"name": AGENT_NAME, "ip": _get_local_ip(), "port": AGENT_PORT, "online": True}]
+    }
+
+
+# ─────────────────────────────────────────────
+# React SPA 서빙 (단독 실행 모드)
+# ─────────────────────────────────────────────
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+_dist = cfg.paths.bundle_root / "frontend" / "dist"
+
+if _dist.exists():
+    app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="assets")
+    app.mount("/recordings", StaticFiles(directory=str(cfg.paths.recordings_dir)), name="recordings")
+
+    @app.get("/")
+    async def serve_root():
+        return FileResponse(str(_dist / "index.html"))
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        candidate = _dist / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_dist / "index.html"))
+
+
+# 단독 실행 모드 호환 — 오케스트레이터 없을 때 자기 자신을 에이전트로 반환
+@app.get("/api/agents")
+def list_agents_self():
+    local_ip = _get_local_ip()
+    return {
+        "agents": [{"name": AGENT_NAME, "ip": local_ip, "port": AGENT_PORT, "online": True}]
+    }
+
+
+# ─────────────────────────────────────────────
+# React SPA 서빙 (오케스트레이터 없이 단독 실행 시)
+# ─────────────────────────────────────────────
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+_dist = cfg.paths.bundle_root / "frontend" / "dist"
+
+if _dist.exists():
+    app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="assets")
+    app.mount("/recordings", StaticFiles(directory=str(cfg.paths.recordings_dir)), name="recordings")
+
+    @app.get("/")
+    async def serve_root():
+        return FileResponse(str(_dist / "index.html"))
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        candidate = _dist / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_dist / "index.html"))
+
+
 # ─────────────────────────────────────────────
 # 엔트리포인트
 # ─────────────────────────────────────────────
