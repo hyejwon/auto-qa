@@ -151,35 +151,24 @@ npm run build   # frontend/dist/ 생성
 
 ## 4. Docker 실행
 
+서버 배포는 오케스트레이터 전용 설정만 사용합니다.
+
 ### 빌드 & 실행
 
 ```bash
-docker compose up --build -d
+cd frontend
+npm install
+npm run build
+cd ..
+
+docker build -t qa-auto-orchestrator:latest .
+docker compose up -d
 ```
 
 ### 로그 확인
 
 ```bash
-docker logs qa-app --tail 50 -f
-```
-
-### Docker에서 ADB 사용
-
-Docker 컨테이너는 호스트의 ADB 서버에 연결합니다. **호스트에서 ADB 서버가 실행 중이어야** 합니다:
-
-```bash
-# 호스트에서 ADB 서버 시작
-adb start-server
-
-# 디바이스 연결 확인
-adb devices
-```
-
-`.env`에 아래 설정을 추가합니다:
-
-```env
-ANDROID_ADB_SERVER_ADDRESS=host.docker.internal
-ANDROID_ADB_SERVER_PORT=5037
+docker logs qa-orchestrator --tail 50 -f
 ```
 
 ### 주요 볼륨 마운트
@@ -187,10 +176,9 @@ ANDROID_ADB_SERVER_PORT=5037
 | 호스트 경로 | 컨테이너 경로 | 설명 |
 |:---|:---|:---|
 | `./templates` | `/app/templates` | 테스트 템플릿 YAML |
+| `./pipelines` | `/app/pipelines` | 파이프라인 JSON |
 | `./test_results` | `/app/test_results` | 실행 결과 JSON |
-| `./screenshots` | `/app/screenshots` | 스텝별 스크린샷 |
 | `./recordings` | `/app/recordings` | 화면 녹화 영상 |
-| `./apks` | `/app/apks` | 설치용 APK 파일 |
 
 ---
 
@@ -735,7 +723,7 @@ auto-qa/
 ├── auto-qa.exe
 ├── .env                  # 환경 변수 설정
 ├── credentials.json      # GCP 인증 파일
-├──apks/                  # 실행 할 game apk 목록
+├──apks/                  # 실행 할 game apk 목록 
 │   └── a.apk
 │   └── b.apk
 ```

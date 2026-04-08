@@ -74,16 +74,16 @@ EOF
 
 ### docker-compose 파일 복사
 
-GitHub 저장소에서 `docker-compose.orchestrator.yml`을 서버에 복사:
+GitHub 저장소에서 `docker-compose.yaml`을 서버에 복사:
 
 ```bash
-scp docker-compose.orchestrator.yml user@서버IP:/opt/qa-auto/
+scp docker-compose.yaml user@서버IP:/opt/qa-auto/
 ```
 
 또는 직접 생성:
 
 ```bash
-cat > /opt/qa-auto/docker-compose.orchestrator.yml << 'EOF'
+cat > /opt/qa-auto/docker-compose.yaml << 'EOF'
 version: '3.8'
 services:
   orchestrator:
@@ -153,7 +153,7 @@ GitHub Actions (ubuntu-latest)
 ```bash
 # 로컬에서 이미지 빌드 후 서버 전송
 cd frontend && npm run build && cd ..
-docker build -f Dockerfile.orchestrator -t qa-auto-orchestrator:latest .
+docker build -t qa-auto-orchestrator:latest .
 docker save qa-auto-orchestrator:latest | gzip > qa-auto-orchestrator.tar.gz
 scp qa-auto-orchestrator.tar.gz user@서버IP:/opt/qa-auto/
 
@@ -161,7 +161,7 @@ scp qa-auto-orchestrator.tar.gz user@서버IP:/opt/qa-auto/
 ssh user@서버IP
 cd /opt/qa-auto
 docker load < qa-auto-orchestrator.tar.gz
-docker compose -f docker-compose.orchestrator.yml up -d --no-build
+docker compose up -d --no-build
 ```
 
 ### 서버 상태 확인

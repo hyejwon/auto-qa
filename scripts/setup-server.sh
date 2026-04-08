@@ -65,4 +65,4 @@ echo "  3. SSH 공개키 등록: cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
 echo ""
 echo "  수동 실행 (GitHub Actions 전 테스트용):"
 echo "    cd /opt/qa-auto"
-echo "    docker compose -f docker-compose.orchestrator.yml up -d"
+echo "    docker compose up -d"

@@ -15,9 +15,6 @@ fastapi[standard]
 uvicorn[standard]
 httpx
 
-# UI
-nicegui
-
 # Observability
 langfuse[opentelemetry]
 # langfuse==3.14.5
