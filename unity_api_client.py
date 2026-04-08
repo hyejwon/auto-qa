@@ -10,6 +10,7 @@ from urllib.parse import quote, urlparse
 import requests
 from google import genai
 from google.genai import types
+from llm_client import build_genai_client
 
 from adb_controller import ADBController
 from langfuse import get_client
@@ -112,15 +113,10 @@ class UnityAPIClient:
         parsed = urlparse(self.base_url)
         self._local_port: int = parsed.port or 37772
 
-        if self.project:
-            try:
-                self.client = genai.Client(
-                    vertexai=True,
-                    project=self.project,
-                    location=self.location,
-                )
-            except Exception as exc:
-                logger.warning("Failed to initialize Gemini client for Unity selection: %s", exc)
+        try:
+            self.client = build_genai_client()
+        except Exception as exc:
+            logger.warning("Failed to initialize Gemini client for Unity selection: %s", exc)
 
     @staticmethod
     def _normalize_text(value: str) -> str:

@@ -39,11 +39,13 @@ class PathConfig:
 @dataclass
 class GeminiConfig:
     """Gemini API 설정"""
-    project: str = "percent-vertex-test"
-    location: str = "global"
     model: str = "gemini-3.1-flash-lite-preview"
     temperature: float = 0.1
     max_retries: int = 3
+    gateway_url: str = "https://llm-gateway.111percent.net/llm/google"
+    # 하위 호환: Vertex AI 직접 연결 시 사용 (gateway 없을 때)
+    project: str = ""
+    location: str = "global"
 
 class Config:
     """전체 설정 통합"""

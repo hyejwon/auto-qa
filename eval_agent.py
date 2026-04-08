@@ -20,6 +20,7 @@ from typing import Optional
 from langfuse import get_client
 from google import genai
 from dotenv import load_dotenv
+from llm_client import build_genai_client
 load_dotenv()   
 # ── 설정 ─────────────────────────────────────────────────────────────────────
  
@@ -43,12 +44,7 @@ VISION_WEIGHT  = 0.4
 langfuse = get_client()
 
 
-# genai.configure(api_key=GEMINI_API_KEY)
-gemini = genai.Client(
-            vertexai=True,
-            project="percent-vertex-test",
-            location= "global"
-        )
+gemini = build_genai_client()
  
 # ── Judge 1: 플로우 완료율 (LLM 호출 1회) ────────────────────────────────────
  

@@ -1,5 +1,6 @@
 from google.genai import types
 from google import genai
+from llm_client import build_genai_client
 from PIL import Image, ImageDraw
 import base64
 import json
@@ -48,14 +49,9 @@ class VisionResult(BaseModel):
 class GeminiVisionAgent:
     """Gemini Vision API 에이전트"""
     
-    def __init__(self, project: str, location: str = "global", 
+    def __init__(self, project: str = "", location: str = "global",
                  model: str = "gemini-2.0-flash-exp"):
-        gemini_client= genai.Client(
-            vertexai=True,
-            project=project,
-            location=location
-        )
-        self.client = gemini_client
+        self.client = build_genai_client()
         self.model = model
         logger.info(f"Initialized Gemini Vision Agent: {model}")
 
