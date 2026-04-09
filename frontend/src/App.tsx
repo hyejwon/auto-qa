@@ -20,7 +20,7 @@ export default function App() {
   const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null)
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-950">
+    <div className="h-screen overflow-hidden flex flex-col bg-gray-950">
       <DeviceStatus agent={selectedAgent}>
         <AgentSelector selected={selectedAgent} onSelect={setSelectedAgent} />
       </DeviceStatus>
