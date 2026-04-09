@@ -290,7 +290,7 @@ def list_packages():
 
 @app.get("/api/package-apk-map")
 def get_package_apk_map():
-    map_path = cfg.paths.bundle_root / "package_apk_map.json"
+    map_path = cfg.paths.exe_root / "package_apk_map.json"
     try:
         import json
         with open(map_path, encoding="utf-8") as f:
@@ -305,7 +305,7 @@ class PackageApkMapEntry(BaseModel):
 @app.post("/api/package-apk-map")
 def add_package_apk_map(entry: PackageApkMapEntry):
     import json
-    map_path = cfg.paths.bundle_root / "package_apk_map.json"
+    map_path = cfg.paths.exe_root / "package_apk_map.json"
     try:
         data = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
         data[entry.package] = entry.apk
@@ -317,7 +317,7 @@ def add_package_apk_map(entry: PackageApkMapEntry):
 @app.delete("/api/package-apk-map/{package:path}")
 def delete_package_apk_map(package: str):
     import json
-    map_path = cfg.paths.bundle_root / "package_apk_map.json"
+    map_path = cfg.paths.exe_root / "package_apk_map.json"
     try:
         data = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
         data.pop(package, None)

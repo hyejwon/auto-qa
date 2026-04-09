@@ -56,7 +56,6 @@ jobs:
           pyinstaller --onefile --name qa-auto `
             --add-data "frontend/dist;frontend/dist" `
             --add-data "templates;templates" `
-            --add-data "package_apk_map.json;." `
             --hidden-import uvicorn.logging `
             --hidden-import uvicorn.loops.auto `
             --hidden-import uvicorn.protocols.http.auto `
@@ -76,6 +75,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release
           Copy-Item dist\qa-auto.exe release\
           Copy-Item .env.agent.example release\.env.example
+          Copy-Item package_apk_map.json release\package_apk_map.json
           Compress-Archive -Path release\* -DestinationPath qa-auto-agent-${{ steps.version.outputs.sha }}.zip
 
       - name: Upload to GitHub Releases
