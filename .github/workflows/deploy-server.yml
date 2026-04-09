@@ -9,8 +9,8 @@ on:
       - 'planner_node.py'
       - 'llm_client.py'
       - 'requirements.txt'
-      - 'Dockerfile.orchestrator'
-      - 'docker-compose.orchestrator.yml'
+      - 'Dockerfile'
+      - 'docker-compose.yaml'
       - 'frontend/**'
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -f Dockerfile.orchestrator -t qa-auto-orchestrator:latest .
+          docker build -t qa-auto-orchestrator:latest .
           docker save qa-auto-orchestrator:latest | gzip > qa-auto-orchestrator.tar.gz
 
       - name: Copy image to server
@@ -53,6 +53,6 @@ jobs:
           script: |
             cd /opt/qa-auto
             docker load < qa-auto-orchestrator.tar.gz
-            docker compose -f docker-compose.orchestrator.yml up -d --no-build
+            docker compose up -d --no-build
             docker image prune -f
             echo "✅ 배포 완료: $(date)"
