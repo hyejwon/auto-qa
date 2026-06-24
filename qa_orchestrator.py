@@ -1,13 +1,15 @@
 import os
 import threading
+import json
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 import time
 import logging
 
-from PIL import Image, ImageChops
-from langfuse import get_client
+from PIL import Image, ImageChops, ImageDraw
+from langfuse_disabled import get_client
 
 from config import Config
 from adb_controller import ADBController
@@ -70,6 +72,7 @@ class QAOrchestrator:
         self._current_package: str = ""
         self._current_screen_type: str = ""
         self._last_failure_reason: str = ""
+        self._package_apk_map: dict[str, str] = {}
 
     def run_natural_language_test(
         self,
@@ -129,6 +132,7 @@ class QAOrchestrator:
             logger.info(f"  패키지: {testcase.package}  |  스텝 수: {total}")
             logger.info("━" * 52)
 
+            self._package_apk_map = self._load_package_apk_map()
             self._current_package = testcase.package or ""
             self._current_screen_type = ""
             self._stop_event = stop_event  # _wait_for_screen_stable 에서 참조
@@ -339,7 +343,9 @@ class QAOrchestrator:
                 if not apk_filename:
                     logger.error("install_app: apk 파일명이 없습니다. params.apk 또는 target에 지정하세요.")
                     return False, 1.0
-                apk_path = self.config.paths.apks_dir / apk_filename
+                apk_path = self._resolve_apk_path(str(apk_filename))
+                if not apk_path.exists():
+                    self._last_failure_reason = f"APK 파일 없음: {apk_path}"
                 ok, msg = self.adb.install_apk(apk_path)
                 logger.info(f"│  {msg}")
                 if ok:
@@ -375,6 +381,45 @@ class QAOrchestrator:
             logger.error(f"Step execution failed: {e}")
             self._last_failure_reason = str(e)
             return False, 0.0
+
+    def _load_package_apk_map(self) -> dict[str, str]:
+        for base in [self.config.paths.project_root, self.config.paths.bundle_root]:
+            map_path = base / "package_apk_map.json"
+            if not map_path.exists():
+                continue
+            try:
+                data = json.loads(map_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
+            except Exception as e:
+                logger.warning("package_apk_map.json 로드 실패(%s): %s", map_path, e)
+        return {}
+
+    def _resolve_apk_path(self, apk_filename: str) -> Path:
+        apks_dir = self.config.paths.apks_dir
+        direct = apks_dir / apk_filename
+        if direct.exists():
+            return direct
+
+        normalized_name = unicodedata.normalize("NFC", apk_filename)
+        for existing in apks_dir.glob("*.apk"):
+            if unicodedata.normalize("NFC", existing.name) == normalized_name:
+                logger.info("│  APK 파일명 정규화: %s → %s", apk_filename, existing.name)
+                return existing
+
+        mapped_apk = self._package_apk_map.get(self._current_package)
+        if mapped_apk:
+            mapped_path = apks_dir / mapped_apk
+            if mapped_path.exists():
+                logger.info(
+                    "│  APK 매핑 적용: %s 대신 %s (%s)",
+                    apk_filename,
+                    mapped_apk,
+                    self._current_package,
+                )
+                return mapped_path
+
+        return direct
 
     def _execute_back_step(self, step) -> bool:
         """뒤로가기 + 선택적 화면 검증을 원자적으로 수행"""
@@ -510,7 +555,8 @@ class QAOrchestrator:
         latest_path = self._wait_for_screen_stable()
         coords = self._resolve_with_vision(latest_path, target)
         if not coords:
-            self._last_failure_reason = f"Vision으로 요소를 찾지 못함: '{target}'"
+            if not self._last_failure_reason:
+                self._last_failure_reason = f"Vision으로 요소를 찾지 못함: '{target}'"
             return False
         self.adb.tap(coords["x"], coords["y"])
         self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
@@ -519,6 +565,10 @@ class QAOrchestrator:
         verified = self._verify_find_and_tap_outcome(step, tap_source="Vision")
         if not verified:
             self._last_failure_reason = f"탭 성공(Vision), 화면 검증 실패: '{target}'"
+        self._save_tap_debug(
+            latest_path, target, coords,
+            getattr(self, "_last_vision_confidence", 0.0), verified,
+        )
         return True if verified else self._TAP_OK_VERIFY_FAIL
 
     def _lookup_cache(self, target: str) -> Optional[CachedElement]:
@@ -556,9 +606,76 @@ class QAOrchestrator:
             screenshot_path, target, self.config.paths.debug_dir
         )
         if not vision_result.success or not vision_result.bbox:
-            logger.error("Element not found by Vision: %s", target)
+            if vision_result.error:
+                self._last_failure_reason = f"Vision API 오류: {vision_result.error}"
+                logger.error("Vision API error for %s: %s", target, vision_result.error)
+            else:
+                self._last_failure_reason = (
+                    f"Vision으로 요소를 찾지 못함: '{target}' "
+                    f"(신뢰도: {vision_result.confidence:.2f})"
+                )
+                logger.error("Element not found by Vision: %s", target)
+            self._last_vision_confidence = 0.0
             return None
+        self._last_vision_confidence = vision_result.confidence
         return vision_result.bbox.to_pixels(self.adb.width, self.adb.height)
+
+    def _save_tap_debug(self, screenshot_path: Path, target: str, coords: dict,
+                        confidence: float, verified: bool) -> None:
+        """find_and_tap 디버그 아티팩트 저장 — 버튼을 제대로 눌렀는지 추적용.
+
+        - screenshots_debug/taps/{ts}_{target}_{PASS|FAIL}.png : bbox + 실제 탭 지점 표시
+        - screenshots_debug/find_and_tap_debug.jsonl           : 스텝별 한 줄 요약 로그
+        """
+        try:
+            debug_dir = self.config.paths.debug_dir
+            taps_dir = debug_dir / "taps"
+            taps_dir.mkdir(parents=True, exist_ok=True)
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            status = "PASS" if verified else "FAIL"
+            safe_target = "".join(
+                c if c.isalnum() or c in "._- " else "_" for c in (target or "")
+            ).strip().replace(" ", "_")[:40] or "none"
+            img_path = taps_dir / f"{ts}_{safe_target}_{status}.png"
+
+            # 주석 이미지: bbox 사각형 + 실제 탭 지점 크로스헤어 + 라벨
+            img = Image.open(screenshot_path).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            color = (0, 200, 0) if verified else (255, 40, 40)
+            x1, y1 = coords["x1"], coords["y1"]
+            x2, y2 = coords["x2"], coords["y2"]
+            cx, cy = coords["x"], coords["y"]
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
+            r = 16
+            draw.line([cx - r, cy, cx + r, cy], fill=color, width=3)
+            draw.line([cx, cy - r, cx, cy + r], fill=color, width=3)
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=3)
+            label = f"{target} | tap=({cx},{cy}) conf={confidence:.2f} {status}"
+            draw.text((max(x1, 5), max(y1 - 16, 2)), label, fill=color)
+            img.save(img_path)
+
+            record = {
+                "timestamp": ts,
+                "target": target,
+                "tap": {"x": cx, "y": cy},
+                "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                "confidence": round(float(confidence), 3),
+                "resolution": self._resolution,
+                "package": self._current_package,
+                "verified": verified,
+                "failure_reason": "" if verified else self._last_failure_reason,
+                "debug_image": str(img_path),
+                "source_screenshot": str(screenshot_path),
+            }
+            with open(debug_dir / "find_and_tap_debug.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+            logger.info("┌─ find_and_tap 디버그 저장: %s", img_path.name)
+            logger.info("│  target='%s' tap=(%d,%d) conf=%.2f → %s",
+                        target, cx, cy, confidence, status)
+        except Exception as e:
+            logger.warning("find_and_tap 디버그 저장 실패: %s", e)
 
     def _verify_find_and_tap_outcome(self, step, tap_source: str) -> bool:
         params = step.params or {}
