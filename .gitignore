@@ -20,5 +20,11 @@ credentials.json
 .DS_Store
 cooptd.apk
 frontend/node_modules/
-frontend/dist/
-dist/auto-qa.exe 
+# frontend/dist/ 는 비개발자 배포(git clone 후 Python만으로 실행)를 위해 커밋합니다.
+# 프론트 수정 시 개발자가 `npm run build` 후 dist 변경분을 함께 커밋하세요.
+dist/auto-qa.exe
+
+# 로컬 런타임 데이터 / 도구 (커밋 금지)
+*.db
+google-cloud-sdk/
+google-cloud-cli-*.tar.gz

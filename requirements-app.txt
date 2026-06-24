@@ -1,0 +1,19 @@
+# qa-auto 단일 노드 앱 의존성 (각 사용자 PC용)
+# api_server.py(백엔드+UI 서빙+로컬 디바이스 제어) 실행에 필요한 최소 패키지.
+# 무거운 패키지(langchain, langgraph, mcp, aiplatform, langfuse, gradio)는
+# 실제 실행 경로에서 import 되지 않으므로 제외 — 설치 시간/오류 최소화.
+
+# LLM (사내 gateway 경유 Vision/플래너/판단)
+google-genai==1.57.0
+
+# 웹 서버 + WebSocket
+fastapi[standard]
+uvicorn[standard]
+httpx
+
+# 공통 유틸
+pydantic==2.12.5
+python-dotenv==1.1.0
+PyYAML==6.0.3
+pillow==10.4.0
+requests==2.32.5
