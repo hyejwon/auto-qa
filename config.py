@@ -39,7 +39,7 @@ class PathConfig:
 @dataclass
 class GeminiConfig:
     """Gemini API 설정"""
-    model: str = "gemini-3.1-flash-lite-preview"
+    model: str = "gemini-3.1-flash-lite"
     temperature: float = 0.1
     max_retries: int = 3
     gateway_url: str = "https://llm-gateway.111percent.net/llm/google"

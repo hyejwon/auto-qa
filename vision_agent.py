@@ -1,18 +1,17 @@
 from google.genai import types
-from google import genai
 from llm_client import build_genai_client
+from prompts import (
+    FIND_ELEMENT_PROMPT,
+    ANALYZE_SCREEN_STATE_PROMPT,
+    READ_TEXT_PROMPT,
+)
 from PIL import Image, ImageDraw
-import base64
 import json
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from datetime import datetime
 import logging
 from pydantic import BaseModel
-from langfuse import get_client
-from langfuse.media import LangfuseMedia
-
-langfuse = get_client()
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ class GeminiVisionAgent:
     """Gemini Vision API 에이전트"""
     
     def __init__(self, project: str = "", location: str = "global",
-                 model: str = "gemini-2.0-flash-exp"):
+                 model: str = "gemini-3.1-flash-lite"):
         self.client = build_genai_client()
         self.model = model
         logger.info(f"Initialized Gemini Vision Agent: {model}")
@@ -60,13 +59,6 @@ class GeminiVisionAgent:
         """PIL 대신 bytes로 변환하여 OpenInference 호환성 확보"""
         data = Path(image_path).read_bytes()
         return types.Part.from_bytes(data=data, mime_type="image/png")
-
-    @staticmethod
-    def _image_b64_url(image_path: Path) -> str:
-        """Langfuse에서 이미지 렌더링용 base64 data URL 생성"""
-        data = Path(image_path).read_bytes()
-        b64 = base64.b64encode(data).decode()
-        return f"data:image/png;base64,{b64}"
 
     def find_element(
         self,
@@ -82,73 +74,50 @@ class GeminiVisionAgent:
             target_description: 찾을 요소 설명 (예: "스태미너 충전 아이콘")
             debug_dir: 디버그 이미지 저장 경로
         """
-        prompt_client = langfuse.get_prompt("find_element", label="production")
-        prompt = prompt_client.compile(target_description=target_description)
+        prompt = FIND_ELEMENT_PROMPT.format(target_description=target_description)
 
         try:
-            with langfuse.start_as_current_observation(
-                as_type="span",
-                name="find_element",
-                input={"target": target_description, "prompt": prompt},
-                prompt=prompt_client,
-            ) as span:
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=[prompt, self._image_part(image_path)],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                    )
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, self._image_part(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
                 )
+            )
 
-                # 응답 파싱
-                data = json.loads(response.text)
+            data = json.loads(response.text)
 
-                if not data.get("found"):
-                    span.update(output=data)
-                    return VisionResult(
-                        success=False,
-                        description=data.get("description", "요소를 찾을 수 없음"),
-                        confidence=data.get("confidence", 0.0)
-                    )
-
-                box_2d = data.get("box_2d")
-                if not box_2d or len(box_2d) != 4:
-                    raise ValueError(f"Invalid box_2d format: {box_2d}")
-
-                # Gemini 공식 형식: [ymin, xmin, ymax, xmax] 0-1000 → 0-1 변환
-                ymin, xmin, ymax, xmax = box_2d
-                bbox = BoundingBox(
-                    x1=min(xmin, xmax) / 1000,
-                    y1=min(ymin, ymax) / 1000,
-                    x2=max(xmin, xmax) / 1000,
-                    y2=max(ymin, ymax) / 1000,
-                )
-
-                result = VisionResult(
-                    success=True,
-                    bbox=bbox,
-                    description=data.get("description", ""),
+            if not data.get("found"):
+                return VisionResult(
+                    success=False,
+                    description=data.get("description", "요소를 찾을 수 없음"),
                     confidence=data.get("confidence", 0.0)
                 )
 
-                # 디버그 이미지 생성 & bbox 이미지를 output에 포함
-                bbox_debug_path = None
-                if debug_dir and bbox:
-                    bbox_debug_path = self._draw_bbox(image_path, bbox, debug_dir)
+            box_2d = data.get("box_2d")
+            if not box_2d or len(box_2d) != 4:
+                raise ValueError(f"Invalid box_2d format: {box_2d}")
 
-                if bbox_debug_path:
-                    bbox_media = LangfuseMedia(
-                        content_type="image/png",
-                        content_bytes=Path(bbox_debug_path).read_bytes(),
-                    )
-                    span.update(output={
-                        "result": data,
-                        "bbox_image": bbox_media,
-                    })
-                else:
-                    span.update(output=data)
+            # Gemini 공식 형식: [ymin, xmin, ymax, xmax] 0-1000 → 0-1 변환
+            ymin, xmin, ymax, xmax = box_2d
+            bbox = BoundingBox(
+                x1=min(xmin, xmax) / 1000,
+                y1=min(ymin, ymax) / 1000,
+                x2=max(xmin, xmax) / 1000,
+                y2=max(ymin, ymax) / 1000,
+            )
 
-                return result
+            result = VisionResult(
+                success=True,
+                bbox=bbox,
+                description=data.get("description", ""),
+                confidence=data.get("confidence", 0.0)
+            )
+
+            if debug_dir and bbox:
+                self._draw_bbox(image_path, bbox, debug_dir)
+
+            return result
 
         except Exception as e:
             logger.error(f"Vision analysis failed: {e}")
@@ -160,25 +129,17 @@ class GeminiVisionAgent:
         """
         현재 화면 상태 전반 분석
         """
-        prompt_client = langfuse.get_prompt("analyze_screen_state", label="production")
-        prompt = prompt_client.compile()
+        prompt = ANALYZE_SCREEN_STATE_PROMPT
 
         try:
-            with langfuse.start_as_current_observation(
-                as_type="span",
-                name="analyze_screen_state",
-                input={"prompt": prompt},
-                prompt=prompt_client,
-            ) as span:
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=[self._image_part(image_path), prompt],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    )
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[self._image_part(image_path), prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
                 )
-                data = json.loads(response.text)
-                span.update(output=data)
+            )
+            data = json.loads(response.text)
             return data
         except Exception as e:
             logger.error(f"Screen analysis failed: {e}")
@@ -195,25 +156,17 @@ class GeminiVisionAgent:
         Returns:
             읽은 텍스트 문자열, 찾지 못하면 None
         """
-        prompt_client = langfuse.get_prompt("read_text", label="production")
-        prompt = prompt_client.compile(region_description=region_description)
+        prompt = READ_TEXT_PROMPT.format(region_description=region_description)
 
         try:
-            with langfuse.start_as_current_observation(
-                as_type="span",
-                name="read_text",
-                input={"region": region_description, "prompt": prompt},
-                prompt=prompt_client,
-            ) as span:
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=[prompt, self._image_part(image_path)],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                    ),
-                )
-                data = json.loads(response.text)
-                span.update(output=data)
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, self._image_part(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(response.text)
             if not data.get("found"):
                 return None
             return data.get("value")
@@ -245,18 +198,19 @@ class GeminiVisionAgent:
         except Exception as e:
             logger.error(f"Draw bbox failed: {e}")
             return None
+        
 # if __name__ == "__main__":
-#     project = "percent-vertex-test"
-#     location = "global"
-#     gemini_client= genai.Client(
-#             vertexai=True,
-#             project=project,
-#             location=location
-#         )
+    # project = "percent-vertex-test"
+    # location = "global"
+    # gemini_client= genai.Client(
+    #         vertexai=True,
+    #         project=project,
+    #         location=location
+    #     )
     
-#     client = wrappers.wrap_gemini(gemini_client)
-#     response = client.models.generate_content(
-#             model="gemini-2.5-flash",
-#             contents="Why is the sky blue?",
-#         )
-#     print(response.text) 
+    # client = wrappers.wrap_gemini(gemini_client)
+    # response = client.models.generate_content(
+    #         model="gemini-2.5-flash",
+    #         contents="Why is the sky blue?",
+    #     )
+    # print(response.text) 
