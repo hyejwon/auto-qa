@@ -34,15 +34,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from opentelemetry.sdk.trace import TracerProvider
-from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
-_otel_provider = TracerProvider()
-GoogleGenAIInstrumentor().instrument(tracer_provider=_otel_provider)
-logging.getLogger("openinference.instrumentation.google_genai").setLevel(logging.CRITICAL)
-
-from langfuse import Langfuse
-_langfuse = Langfuse(tracer_provider=_otel_provider)
-
 from config import Config
 from adb_controller import ADBController
 from planner_node import PlannerNode
@@ -71,6 +62,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _no_cache_api(request, call_next):
+    """/api/* 응답은 절대 캐시하지 않도록 강제.
+
+    프록시/전환/에러 상황에서 API 경로가 HTML(index.html) 등으로 응답된 게
+    브라우저에 캐시되면, 이후 정상 JSON 대신 캐시된 HTML이 반환되어
+    프론트가 깨지는(검정 화면) 문제가 생긴다. 이를 원천 차단한다.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 app.mount("/recordings", StaticFiles(directory=str(cfg.paths.recordings_dir)), name="recordings")
 
 # ─────────────────────────────────────────────
@@ -100,6 +109,10 @@ class InstallApkRequest(BaseModel):
 
 class UninstallRequest(BaseModel):
     package: str
+
+class PackageApkMapEntry(BaseModel):
+    package: str
+    apk: str
 
 class GeneratePlanRequest(BaseModel):
     scenario: str
@@ -257,9 +270,8 @@ def install_apk(req: InstallApkRequest):
         raise HTTPException(status_code=404, detail=f"APK not found: {apk_path}")
     try:
         adb = ADBController()
-        # Path 객체를 문자열로 변환하여 전달
-        _, msg = adb.install_apk(str(apk_path))
-        return {"success": True, "message": msg}
+        ok, msg = adb.install_apk(apk_path)
+        return {"success": ok, "message": msg}
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -301,16 +313,42 @@ def list_packages():
 
 @app.get("/api/package-apk-map")
 def get_package_apk_map():
-    # [수정] .exe 내부(bundle_root)에 포함된 json 파일을 찾도록 수정
-    # 만약 빌드 시 --add-data에 포함시키지 않았다면 exe 옆(project_root)을 보게 하세요.
-    map_path = cfg.paths.bundle_root / "package_apk_map.json"
+    import json
+    for map_path in [
+        cfg.paths.project_root / "package_apk_map.json",
+        cfg.paths.bundle_root / "package_apk_map.json",
+    ]:
+        try:
+            if map_path.exists():
+                with open(map_path, encoding="utf-8") as f:
+                    return {"map": json.load(f)}
+        except Exception:
+            pass
+    return {"map": {}}
+
+@app.post("/api/package-apk-map")
+def add_package_apk_map(entry: PackageApkMapEntry):
+    import json
+    map_path = cfg.paths.project_root / "package_apk_map.json"
     try:
-        import json
-        with open(map_path, encoding="utf-8") as f:
-            return {"map": json.load(f)}
-    except Exception:
-        return {"map": {}}
-    
+        data = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
+        data[entry.package] = entry.apk
+        map_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"success": True, "map": data}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+@app.delete("/api/package-apk-map/{package:path}")
+def delete_package_apk_map(package: str):
+    import json
+    map_path = cfg.paths.project_root / "package_apk_map.json"
+    try:
+        data = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
+        data.pop(package, None)
+        map_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"success": True, "map": data}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 @app.post("/api/app/uninstall")
