@@ -8,7 +8,7 @@ import json
 import yaml
 import logging
 from pydantic import BaseModel
-from langfuse import get_client
+from langfuse_disabled import get_client
 
 langfuse = get_client()
 
@@ -55,18 +55,13 @@ class PlannerNode:
         Returns:
             TestPlan: 구조화된 테스트 플랜
         """
-        prompt_client = langfuse.get_prompt("create_test_plan", label="production")
-        prompt = prompt_client.compile(
-            scenario=natural_language_scenario,
-            package_name=package_name or "(자동 추출)",
-        )
+        prompt = self._build_planner_prompt(natural_language_scenario, package_name or "(자동 추출)")
 
         try:
             with langfuse.start_as_current_observation(
                 as_type="span",
                 name="create_test_plan",
                 input={"scenario": natural_language_scenario, "package": package_name, "prompt": prompt},
-                prompt=prompt_client,
             ) as span:
                 response = self.client.models.generate_content(
                     model=self.model,

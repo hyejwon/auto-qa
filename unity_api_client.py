@@ -13,7 +13,7 @@ from google.genai import types
 from llm_client import build_genai_client
 
 from adb_controller import ADBController
-from langfuse import get_client
+from langfuse_disabled import get_client
 
 langfuse = get_client()
 

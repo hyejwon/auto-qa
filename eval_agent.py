@@ -9,38 +9,22 @@ eval_agent.py — QA Eval 파이프라인 최종본
   → LLM Judge가 confidence 낮은 스텝 참고하여 더 정확한 판단 가능
  
 의존성:
-    pip install langfuse google-generativeai
+    pip install google-generativeai
 """
  
 import json
-import os
 from datetime import datetime
 from typing import Optional
  
-from langfuse import get_client
+from langfuse_disabled import get_client
 from google import genai
 from dotenv import load_dotenv
 from llm_client import build_genai_client
 load_dotenv()   
-# ── 설정 ─────────────────────────────────────────────────────────────────────
- 
-LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
-LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
-LANGFUSE_HOST       = os.getenv("LANGFUSE_HOST", "http://host.docker.internal:3000")
-GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY", "")
- 
 PASS_THRESHOLD = 0.7
 FLOW_WEIGHT    = 0.6
 VISION_WEIGHT  = 0.4
  
-# ── 초기화 ────────────────────────────────────────────────────────────────────
- 
-# langfuse = Langfuse(
-#     public_key=LANGFUSE_PUBLIC_KEY,
-#     secret_key=LANGFUSE_SECRET_KEY,
-#     host=LANGFUSE_HOST,
-# )
-
 langfuse = get_client()
 
 
@@ -59,13 +43,28 @@ def judge_flow_completion(result: dict, flow_span) -> dict:
         for s in result["step_results"]
     )
 
-    prompt_client = langfuse.get_prompt("judge_flow_completion", label="production")
-    prompt = prompt_client.compile(
-        title=result["title"],
-        status=result["status"],
-        steps_summary=steps_summary,
-    )
-    flow_span.update(input={"prompt": prompt}, prompt=prompt_client)
+    prompt = f"""당신은 모바일 게임 QA 전문가입니다.
+아래는 테스트 시나리오 실행 결과입니다.
+
+시나리오 제목: {result["title"]}
+전체 상태: {result["status"]}
+실행 스텝 (vision_confidence는 UI 요소 탐지 신뢰도):
+{steps_summary}
+
+채점 기준:
+- 1.0 : 모든 스텝 완료, vision_confidence 전반적으로 높음
+- 0.7~0.9 : 핵심 플로우 완료, 일부 스텝 실패 또는 confidence 낮음
+- 0.4~0.6 : 핵심 플로우 중 중요 스텝 실패
+- 0.0~0.3 : 시나리오 목적 달성 불가 수준
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "score": 0.0~1.0,
+  "reason": "판단 근거 1~2문장",
+  "failed_steps": [실패한 스텝 번호 리스트],
+  "severity": "CRITICAL|WARNING|OK"
+}}"""
+    flow_span.update(input={"prompt": prompt})
 
     response = gemini.models.generate_content(model="gemini-2.5-flash", contents=prompt)
     text = response.text.strip()
@@ -159,26 +158,6 @@ def run_eval(result: dict) -> dict:
 
         eval_span.update(output=eval_output)
 
-        # Langfuse evaluation scores 등록
-        trace_id = eval_span.trace_id
-        langfuse.create_score(
-            trace_id=trace_id,
-            name="final_score",
-            value=final_score,
-            comment=flow_result.get("reason", ""),
-        )
-        langfuse.create_score(
-            trace_id=trace_id,
-            name="flow_score",
-            value=flow_result["score"],
-            comment=f"severity: {flow_result.get('severity', 'OK')}",
-        )
-        langfuse.create_score(
-            trace_id=trace_id,
-            name="vision_score",
-            value=vision_result["score"],
-        )
-
     return eval_output
  
  
@@ -194,16 +173,13 @@ def send_slack_alert(eval_output: dict, webhook_url: str):
             for s in low_conf
         ) if low_conf else "  • 없음"
     )
-    trace_url = f"{LANGFUSE_HOST}/trace/{eval_output['langfuse_trace_id']}"
- 
     message = {
         "text": (
             f":warning: *QA Eval 경고* — {eval_output['title']}\n"
             f">종합 점수: *{eval_output['final_score']}* (기준: {PASS_THRESHOLD})\n"
             f">심각도: *{eval_output['flow']['severity']}*\n"
             f">판단 근거: {eval_output['flow']['reason']}\n"
-            f">낮은 confidence 스텝:\n{low_conf_text}\n"
-            f">Langfuse: {trace_url}"
+            f">낮은 confidence 스텝:\n{low_conf_text}"
         )
     }
     req = urllib.request.Request(
