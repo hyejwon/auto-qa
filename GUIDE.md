@@ -4,6 +4,40 @@ AI 기반 모바일 QA 자동화 도구입니다. 자연어 시나리오를 입�
 
 ---
 
+## 빠른 로컬 실행
+
+비개발자는 커밋된 `frontend/dist`를 사용하므로 Node.js 없이 Python 서버만 실행하면 됩니다.
+
+```bash
+git clone <repo-url>
+cd auto-qa
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-app.txt
+
+cp .env.example .env
+# .env에서 ADB_DEVICE, LLM_GATEWAY_TOKEN 등 로컬 값 수정
+
+adb devices
+python api_server.py
+```
+
+브라우저에서 `http://localhost:8000`으로 접속합니다.
+
+프론트엔드를 수정하는 개발자는 아래 명령으로 `frontend/dist`를 갱신한 뒤 함께 커밋합니다.
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+커밋 금지 대상: `.env`, `credentials.json`, `apks/`, `screenshots/`, `screenshots_debug/`, `test_results/`, `reports/`, `recordings/`, `*.db`.
+
+---
+
 ## 목차
 
 1. [아키텍처](#1-아키텍처)
@@ -430,14 +464,46 @@ Gemini Vision으로 현재 화면에 target이 존재하는지 확인합니다.
     duration: 300
 ```
 
-### `skip_tutorial` — 튜토리얼 스킵
+### `tutorial_pass` — 튜토리얼 패스
 
 ```yaml
-- action: skip_tutorial
-  target: com.example.app
+- action: tutorial_pass
+  target: com.percent.aos.cooptd
 ```
 
-Unity SR 치트 API를 호출하여 튜토리얼을 건너뜁니다.
+Unity QA helper API로 튜토리얼/훈련소 클리어 처리를 호출합니다. SR Debugger 화면 진입이나 이미지 인식은 사용하지 않습니다.
+
+단독 API:
+
+```bash
+curl -X POST http://localhost:8000/api/unity/tutorial-pass \
+  -H 'Content-Type: application/json' \
+  -d '{"package": "com.percent.aos.cooptd"}'
+```
+
+`skip_tutorial`은 기존 테스트케이스 호환을 위한 alias로 유지됩니다.
+
+### `enter_sr_debugger` — SR Debugger UI 진입
+
+SR API가 폐지된 빌드에서는 HTTP API를 사용하지 않고, 앱 화면의 숨겨진 진입 제스처를 ADB tap으로 수행합니다.
+
+```yaml
+- action: enter_sr_debugger
+  target: com.percent.aos.cooptd
+  params:
+    verify_target: "SRDebugger"
+    max_attempts: 2
+    strategies:
+      - name: fixed_30_30_fast_double_tap
+        coordinate_space: unity_pixels
+        x: 30
+        y: 30
+        count: 2
+        interval_sec: 0.03
+        post_wait_sec: 1.0
+```
+
+`coordinate_space: unity_ratio` 또는 `unity_pixels`를 쓰면 Unity 좌표계처럼 Y축 원점이 하단이라고 보고 `screen_y = height - unity_y`로 변환합니다. 예를 들어 720x1280 화면에서 `unity_pixels x=30, y=30`은 ADB 탭 좌표 `(30,1250)`으로 실행됩니다. `strategies`를 생략하면 `(30,30)` Unity 픽셀 기준 빠른 2회 탭을 먼저 시도하고, 좌하단 버전 영역/좌상단/우상단 연타를 fallback으로 시도합니다. `verify_target`은 SR Debugger 진입 후 화면에 보이는 텍스트나 UI 설명으로 조정할 수 있습니다.
 
 ---
 
@@ -723,6 +789,8 @@ auto-qa/
 ├── auto-qa.exe
 ├── .env                  # 환경 변수 설정
 ├── credentials.json      # GCP 인증 파일
+├── platform-tools/       # adb.exe 포함 (또는 adb.exe가 PATH에 등록되어 있어야 함)
+│   └── adb.exe
 ├──apks/                  # 실행 할 game apk 목록 
 │   └── a.apk
 │   └── b.apk

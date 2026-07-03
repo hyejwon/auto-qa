@@ -59,6 +59,18 @@ INSTALLED_PACKAGES = [
 ]
 
 
+def _test_result_summary(result) -> dict:
+    return {
+        "status": result.status,
+        "title": result.title,
+        "steps_passed": result.steps_passed,
+        "steps_executed": result.steps_executed,
+        "error_message": result.error_message,
+        "step_results": result.step_results or [],
+        "eval_output": result.eval_output,
+    }
+
+
 # ─────────────────────────────────────────────
 # Pydantic 모델
 # ─────────────────────────────────────────────
@@ -262,8 +274,8 @@ def install_apk(req: InstallApkRequest):
         raise HTTPException(status_code=404, detail=f"APK not found: {apk_path}")
     try:
         adb = ADBController()
-        _, msg = adb.install_apk(str(apk_path))
-        return {"success": True, "message": msg}
+        ok, msg = adb.install_apk(apk_path)
+        return {"success": ok, "message": msg}
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -501,8 +513,10 @@ async def run_test(req: RunTestRequest):
     stop_event = threading.Event()
     _test_stop_events[session_id] = stop_event
     loop = asyncio.get_event_loop()
-    q: asyncio.Queue = asyncio.Queue()
-    _ws_queues[session_id] = q
+    q = _ws_queues.get(session_id)
+    if q is None:
+        q = asyncio.Queue()
+        _ws_queues[session_id] = q
 
     steps = req.steps
     for step in steps:
@@ -541,11 +555,7 @@ async def run_test(req: RunTestRequest):
         try:
             orchestrator = QAOrchestrator(cfg)
             result = orchestrator.run_test(session_id, stop_event, testcase_override=testcase)
-            summary = {
-                "status": result.status, "title": result.title,
-                "steps_passed": result.steps_passed, "steps_executed": result.steps_executed,
-                "error_message": result.error_message, "step_results": result.step_results or [],
-            }
+            summary = _test_result_summary(result)
             asyncio.run_coroutine_threadsafe(q.put({"type": "result", "data": summary}), loop)
         except Exception as e:
             logger.exception("run_test thread failed")
@@ -610,8 +620,10 @@ async def run_pipeline(req: RunPipelineRequest):
     stop_event = threading.Event()
     _test_stop_events[session_id] = stop_event
     loop = asyncio.get_event_loop()
-    q: asyncio.Queue = asyncio.Queue()
-    _ws_queues[session_id] = q
+    q = _ws_queues.get(session_id)
+    if q is None:
+        q = asyncio.Queue()
+        _ws_queues[session_id] = q
 
     if req.steps:
         all_steps = req.steps
@@ -696,14 +708,11 @@ async def run_pipeline(req: RunPipelineRequest):
                 adb_rec = None
         try:
             asyncio.run_coroutine_threadsafe(
-                q.put({"type": "log", "message": f"━ 파이프라인: {' → '.join(phase_labels) if phase_labels else testcase.title}"}), loop)
+                q.put({"type": "log", "message": f"━ 파이프라인: {' → '.join(phase_labels) if phase_labels else testcase.title}"}), loop
+            )
             orchestrator = QAOrchestrator(cfg)
             result = orchestrator.run_test(session_id, stop_event, testcase_override=testcase)
-            summary = {
-                "status": result.status, "title": result.title,
-                "steps_passed": result.steps_passed, "steps_executed": result.steps_executed,
-                "error_message": result.error_message, "step_results": result.step_results or [],
-            }
+            summary = _test_result_summary(result)
             asyncio.run_coroutine_threadsafe(q.put({"type": "result", "data": summary}), loop)
         except Exception as e:
             logger.exception("run_pipeline thread failed")
@@ -742,16 +751,11 @@ def list_recordings():
 @app.websocket("/ws/logs/{session_id}")
 async def ws_logs(websocket: WebSocket, session_id: str):
     await websocket.accept()
-    for _ in range(50):
-        if session_id in _ws_queues:
-            break
-        await asyncio.sleep(0.1)
-
     q = _ws_queues.get(session_id)
-    if not q:
-        await websocket.send_json({"type": "error", "message": "세션을 찾을 수 없습니다."})
-        await websocket.close()
-        return
+    if q is None:
+        q = asyncio.Queue()
+        _ws_queues[session_id] = q
+        await websocket.send_json({"type": "waiting", "message": "세션 시작을 기다리는 중입니다."})
 
     try:
         while True:

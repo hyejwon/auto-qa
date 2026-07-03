@@ -21,6 +21,8 @@ class ActionType(str, Enum):
     CLOSE_APP = "close_app"
     READ_TEXT = "read_text"
     SKIP_TUTORIAL = "skip_tutorial"
+    TUTORIAL_PASS = "tutorial_pass"
+    ENTER_SR_DEBUGGER = "enter_sr_debugger"
     INSTALL_APP = "install_app"
     UNINSTALL_APP = "uninstall_app"
     INPUT_TEXT = "input_text"

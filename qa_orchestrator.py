@@ -19,6 +19,7 @@ from planner_node import PlannerNode
 from unity_api_client import UnityAPIClient
 from element_cache import ElementCache, CommonTapCache, CachedElement
 from eval_agent import evaluate_result_dict
+from sr_debugger import SRDebuggerController
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -50,6 +51,7 @@ class QAOrchestrator:
             temperature=config.gemini.temperature,
             base_url=os.getenv("UNITY_API_URL", "http://127.0.0.1:37772")
         )
+        self.sr_debugger = SRDebuggerController(adb=self.adb, config=config)
         self.vision = GeminiVisionAgent(
             project=config.gemini.project,
             location=config.gemini.location,
@@ -251,7 +253,6 @@ class QAOrchestrator:
                     f"  |  {duration:.1f}초"
                 )
                 logger.info("━" * 52)
-                self.test_manager.save_result(result, self.config.paths.results_dir)
 
                 try:
                     eval_output = evaluate_result_dict(result.model_dump())
@@ -262,6 +263,8 @@ class QAOrchestrator:
                     )
                 except Exception as e:
                     logger.warning(f"Eval 실행 실패 (테스트 결과에는 영향 없음): {e}")
+
+                self.test_manager.save_result(result, self.config.paths.results_dir)
 
                 test_span.update(output={
                     "status": result.status,
@@ -334,9 +337,22 @@ class QAOrchestrator:
             elif step.action == ActionType.READ_TEXT:
                 return self._read_text_step(screenshot_path, step, result), 1.0
 
-            elif step.action == ActionType.SKIP_TUTORIAL:
-                pkg = self._current_package or step.target or ""
+            elif step.action in (ActionType.SKIP_TUTORIAL, ActionType.TUTORIAL_PASS):
+                params = step.params or {}
+                pkg = params.get("package") or self._current_package or step.target or ""
                 return self.unity.skip_tutorial(package=pkg), 1.0
+
+            elif step.action == ActionType.ENTER_SR_DEBUGGER:
+                params = step.params or {}
+                result = self.sr_debugger.enter(
+                    package=params.get("package") or step.target or self._current_package,
+                    strategies=params.get("strategies") or [],
+                    verify_target=params.get("verify_target") or "SRDebugger",
+                    max_attempts=int(params.get("max_attempts", 2)),
+                )
+                if not result.get("success"):
+                    self._last_failure_reason = result.get("message") or result.get("status") or "SR Debugger 진입 실패"
+                return bool(result.get("success")), 1.0
 
             elif step.action == ActionType.INSTALL_APP:
                 apk_filename = step.params.get("apk") or step.target

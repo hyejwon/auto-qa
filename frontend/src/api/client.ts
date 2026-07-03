@@ -1,108 +1,121 @@
 import axios from 'axios'
-import type { AgentInfo, DeviceInfo, PipelineData, PreflightResult, Template } from '../types'
+import type { DeviceInfo, PreflightResult, TapDebug, Template, TestResult } from '../types'
 
 const api = axios.create({ baseURL: '/api' })
 
-// ── 에이전트 관리 (오케스트레이터) ──────────────────────────────
-export const agentsApi = {
-  list: () => api.get<{ agents: AgentInfo[] }>('/agents').then((r) => r.data),
-}
-
-// ── 에이전트별 API (agentName 필수) ─────────────────────────────
-const agentPath = (name: string, path: string) => `/agents/${encodeURIComponent(name)}${path}`
-
+// ── 디바이스 / ADB 연결 체크 ────────────────────────────────────
 export const deviceApi = {
-  getStatus: (agentName: string) =>
-    api.get<DeviceInfo>(agentPath(agentName, '/device')).then((r) => r.data),
+  getStatus: () => api.get<DeviceInfo>('/device').then((r) => r.data),
 }
 
 export const preflightApi = {
-  check: (agentName: string) =>
-    api.get<PreflightResult>(agentPath(agentName, '/preflight')).then((r) => r.data),
-  reconnect: (agentName: string) =>
+  check: () => api.get<PreflightResult>('/preflight').then((r) => r.data),
+  reconnect: () =>
     api
-      .post<{ success: boolean; device: unknown; log: string[] }>(agentPath(agentName, '/device/reconnect'))
+      .post<{ success: boolean; device: DeviceInfo; log: string[] }>('/device/reconnect')
       .then((r) => r.data),
 }
 
-export const apkApi = {
-  list: (agentName: string) =>
-    api.get<{ apks: string[] }>(agentPath(agentName, '/apks')).then((r) => r.data),
-  install: (agentName: string, filename: string) =>
-    api
-      .post<{ success: boolean; message: string }>(agentPath(agentName, '/apk/install'), { filename })
-      .then((r) => r.data),
-}
-
+// ── 게임(패키지) ────────────────────────────────────────────────
 export const packageApi = {
-  list: (agentName: string) =>
-    api.get<{ packages: string[] }>(agentPath(agentName, '/packages')).then((r) => r.data),
-  getApkMap: (agentName: string) =>
-    api.get<{ map: Record<string, string> }>(agentPath(agentName, '/package-apk-map')).then((r) => r.data),
-  addApkMap: (agentName: string, package_name: string, apk: string) =>
-    api.post<{ success: boolean; map: Record<string, string> }>(agentPath(agentName, '/package-apk-map'), { package: package_name, apk }).then((r) => r.data),
-  deleteApkMap: (agentName: string, package_name: string) =>
-    api.delete<{ success: boolean; map: Record<string, string> }>(agentPath(agentName, `/package-apk-map/${encodeURIComponent(package_name)}`)).then((r) => r.data),
-  uninstall: (agentName: string, pkg: string) =>
-    api
-      .post<{ success: boolean; message: string }>(agentPath(agentName, '/app/uninstall'), { package: pkg })
-      .then((r) => r.data),
-}
-
-export const testApi = {
-  run: (agentName: string, payload: { title: string; package: string; steps: object[]; session_id: string; record: boolean }) =>
-    api
-      .post<{ session_id: string; status: string }>(agentPath(agentName, '/test/run'), payload)
-      .then((r) => r.data),
-  stop: (agentName: string, session_id: string) =>
-    api
-      .post<{ success: boolean; message: string }>(agentPath(agentName, '/test/stop'), { session_id })
-      .then((r) => r.data),
-}
-
-export const pipelineApi = {
-  list: () => api.get<{ pipelines: string[] }>('/pipelines').then((r) => ({
-    pipelines: Array.isArray(r.data?.pipelines) ? r.data.pipelines : [],
+  list: () => api.get<{ packages: string[] }>('/packages').then((r) => ({
+    packages: Array.isArray(r.data?.packages) ? r.data.packages : [],
   })),
-  get: (name: string) => api.get<PipelineData>(`/pipelines/${name}`).then((r) => r.data),
-  save: (name: string, nodes: object[], edges: object[]) =>
-    api.post<{ success: boolean; filename?: string }>('/pipelines', { name, nodes, edges }).then((r) => r.data),
-  delete: (name: string) => api.delete(`/pipelines/${name}`).then((r) => r.data),
-  run: (agentName: string, payload: { nodes: object[]; edges: object[]; session_id: string; record: boolean }) =>
+  getApkMap: () => api.get<{ map: Record<string, string> }>('/package-apk-map').then((r) => ({
+    map: r.data?.map ?? {},
+  })),
+  uninstall: (pkg: string) =>
     api
-      .post<{ session_id: string; status: string }>(agentPath(agentName, '/pipeline/run'), payload)
+      .post<{ success: boolean; message: string }>('/app/uninstall', { package: pkg })
       .then((r) => r.data),
 }
 
-// ── 오케스트레이터 직접 API ──────────────────────────────────────
+// ── APK 설치 ────────────────────────────────────────────────────
+export const apkApi = {
+  list: () => api.get<{ apks: string[] }>('/apks').then((r) => ({
+    apks: Array.isArray(r.data?.apks) ? r.data.apks : [],
+  })),
+  install: (filename: string) =>
+    api
+      .post<{ success: boolean; message: string }>('/apk/install', { filename })
+      .then((r) => r.data),
+}
+
+// ── 테스트케이스(템플릿) ─────────────────────────────────────────
 export const templateApi = {
   list: () => api.get<{ templates: string[] }>('/templates').then((r) => ({
     templates: Array.isArray(r.data?.templates) ? r.data.templates : [],
   })),
   get: (name: string) => api.get<{ template: Template }>(`/templates/${name}`).then((r) => r.data),
-  save: (name: string, content: string, scenario = '') =>
+  save: (name: string, content: string) =>
     api
-      .post<{ success: boolean; filename?: string; error?: string }>('/templates', { name, content, scenario })
-      .then((r) => r.data),
-  delete: (name: string) => api.delete(`/templates/${name}`).then((r) => r.data),
-}
-
-export const planApi = {
-  generate: (scenario: string, pkg: string) =>
-    api
-      .post<{ title: string; steps_count: number; yaml: string }>('/plan/generate', { scenario, package: pkg })
+      .post<{ success: boolean; filename?: string; error?: string }>('/templates', { name, content })
       .then((r) => r.data),
 }
 
-export const recordingApi = {
-  list: (agentName: string) =>
-    api.get<{ recordings: string[] }>(agentPath(agentName, '/recordings')).then((r) => ({
-      recordings: Array.isArray(r.data?.recordings) ? r.data.recordings : [],
+// ── 테스트 실행 ─────────────────────────────────────────────────
+export const testApi = {
+  run: (payload: { title: string; package: string; steps: object[]; session_id: string }) =>
+    api
+      .post<{ session_id: string; status: string }>('/test/run', { ...payload, record: false })
+      .then((r) => r.data),
+  stop: (session_id: string) =>
+    api
+      .post<{ success: boolean; message: string }>('/test/stop', { session_id })
+      .then((r) => r.data),
+}
+
+// ── 어댑티브 실행 (일시 비활성화)
+// export const adaptiveApi = {
+//   run: (payload: {
+//     session_id: string
+//     title: string
+//     package: string
+//     steps: object[]
+//     goal: string
+//     max_iterations: number
+//     reset_app_each_iteration: boolean
+//   }) => api.post<{ run: AdaptiveRun }>('/adaptive/test/run', payload).then((r) => r.data.run),
+// }
+
+// ── 디버그 탭 스크린샷 ──────────────────────────────────────────
+export const debugApi = {
+  taps: (since: string) =>
+    api.get<{ taps: TapDebug[] }>('/debug/taps', { params: { since } }).then((r) => ({
+      taps: Array.isArray(r.data?.taps) ? r.data.taps : [],
     })),
 }
 
-// ── WebSocket URL 헬퍼 ───────────────────────────────────────────
-export function agentWsUrl(agent: AgentInfo, sessionId: string): string {
-  // 에이전트에 직접 WebSocket 연결 (사내망 HTTP)
-  return `ws://${agent.ip}:${agent.port}/ws/logs/${sessionId}`
+// ── 리포트 내보내기 ──────────────────────────────────────────────
+export const reportApi = {
+  csv: (payload: { result: TestResult; taps: TapDebug[] }) =>
+    api
+      .post<Blob>('/reports/csv', payload, { responseType: 'blob' })
+      .then((r) => ({
+        blob: r.data,
+        filename: filenameFromDisposition(r.headers['content-disposition']) ?? 'auto-qa-report.csv',
+      })),
+}
+
+// ── WebSocket URL (로컬 단일 노드) ──────────────────────────────
+export function wsUrl(sessionId: string): string {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}/ws/logs/${sessionId}`
+}
+
+function filenameFromDisposition(disposition?: string): string | null {
+  if (!disposition) return null
+  const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8?.[1]) return decodeURIComponent(utf8[1])
+  const plain = disposition.match(/filename="?([^";]+)"?/i)
+  return plain?.[1] ?? null
+}
+
+// find_and_tap 디버그 필터용 타임스탬프 (백엔드 'YYYYMMDD_HHMMSS_mmm' 포맷)
+export function debugSince(d: Date = new Date()): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, '0')
+  return (
+    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_` +
+    `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_000`
+  )
 }

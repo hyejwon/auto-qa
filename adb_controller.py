@@ -2,6 +2,8 @@ import subprocess
 import threading
 import time
 import os
+import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -9,10 +11,43 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _runtime_roots() -> list[Path]:
+    """Return likely resource roots for normal and PyInstaller execution."""
+    if getattr(sys, "frozen", False):
+        roots = [Path(sys.executable).parent]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            roots.append(Path(meipass))
+        return roots
+    return [Path(__file__).parent]
+
+
+def _resolve_adb_executable() -> str:
+    env_path = os.getenv("ADB_PATH", "").strip()
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+
+    adb_name = "adb.exe" if os.name == "nt" else "adb"
+    for root in _runtime_roots():
+        candidates.extend([
+            root / "platform-tools" / adb_name,
+            root / "adb" / adb_name,
+            root / adb_name,
+        ])
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    return shutil.which("adb") or "adb"
+
+
 class ADBController:
     """ADB 명령 래퍼 클래스"""
 
     CHUNK_SECONDS = 180  # screenrecord 최대 제한 (3분)
+    ADB_BIN = _resolve_adb_executable()
 
     def __init__(self):
         self.device_id: Optional[str] = None
@@ -31,7 +66,7 @@ class ADBController:
         """디바이스 연결 확인"""
         try:
             result = subprocess.run(
-                ["adb", "devices"],
+                self._adb_cmd(["devices"]),
                 capture_output=True, text=True, timeout=5
             )
             lines = [line for line in result.stdout.split("\n")[1:] if "\t" in line and "device" in line]
@@ -59,8 +94,8 @@ class ADBController:
 
     def _adb_cmd(self, cmd: list[str]) -> list[str]:
         if self.device_id:
-            return ["adb", "-s", self.device_id] + cmd
-        return ["adb"] + cmd
+            return [self.ADB_BIN, "-s", self.device_id] + cmd
+        return [self.ADB_BIN] + cmd
 
     def shell(self, command: str) -> str:
         """adb shell 명령 실행"""
@@ -343,13 +378,14 @@ class ADBController:
     #         ])  
     #     return 1
     
-    def install_apk(self, apk_path: Path) -> tuple[bool, str]:
+    def install_apk(self, apk_path: Path | str) -> tuple[bool, str]:
         """APK 설치."""
+        apk_path = Path(apk_path)
         if not apk_path.exists():
             return False, f"파일 없음: {apk_path}"
         try:
             proc = subprocess.run(
-                self._adb_cmd(["install", str(apk_path)]),
+                self._adb_cmd(["install", "-r", "-d", str(apk_path)]),
                 capture_output=True,
                 text=True,
                 timeout=180,
@@ -553,4 +589,3 @@ class ADBController:
             chunk += 1
             if self._rec_stop.is_set():
                 break
-

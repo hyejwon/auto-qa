@@ -1,66 +1,58 @@
 import { useState } from 'react'
-import AgentSelector from './components/AgentSelector'
-import DeviceStatus from './components/DeviceStatus'
-import PreflightPanel from './components/PreflightPanel'
-import ManagementTab from './components/tabs/ManagementTab'
-import PipelineTab from './components/tabs/PipelineTab'
-import RecordingsTab from './components/tabs/RecordingsTab'
-import type { AgentInfo } from './types'
-
-type Tab = 'management' | 'pipeline' | 'recordings'
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'management', label: '🛠️ 관리탭' },
-  { id: 'pipeline', label: '🔗 파이프라인' },
-  { id: 'recordings', label: '🎬 녹화 영상' },
-]
+import Stepper, { type WizardStep } from './components/wizard/Stepper'
+import GameSelectStep from './components/wizard/GameSelectStep'
+import RunStep from './components/wizard/RunStep'
+import ReportStep from './components/wizard/ReportStep'
+import type { AdaptiveRun, TestResult } from './types'
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('pipeline')
-  const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null)
+  const [step, setStep] = useState<WizardStep>(1)
+  const [pkg, setPkg] = useState('')
+  const [result, setResult] = useState<TestResult | null>(null)
+  const [since, setSince] = useState('')
+  const [adaptive, setAdaptive] = useState<AdaptiveRun | null>(null)
+
+  const handleComplete = (r: TestResult, s: string, adaptiveRun?: AdaptiveRun) => {
+    setResult(r)
+    setSince(s)
+    setAdaptive(adaptiveRun ?? null)
+    setStep(3)
+  }
 
   return (
     <div className="h-screen overflow-hidden flex flex-col bg-gray-950">
-      <DeviceStatus agent={selectedAgent}>
-        <AgentSelector selected={selectedAgent} onSelect={setSelectedAgent} />
-      </DeviceStatus>
+      <header className="px-6 py-3 border-b border-gray-800 bg-gray-900 flex items-center gap-2">
+        <span className="text-lg">🎮</span>
+        <h1 className="text-sm font-semibold text-gray-100">Auto QA</h1>
+        <span className="text-xs text-gray-500">게임 자동 테스트</span>
+      </header>
 
-      {selectedAgent ? (
-        <PreflightPanel agent={selectedAgent} />
-      ) : (
-        <div className="bg-gray-900 border-b border-gray-800 px-6 py-2 text-xs text-gray-500">
-          에이전트를 선택하면 사전 점검이 시작됩니다.
-        </div>
-      )}
+      <Stepper current={step} onJump={(s) => setStep(s)} />
 
-      {/* 탭 네비게이션 */}
-      <nav className="flex border-b border-gray-800 bg-gray-900 px-4">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === t.id
-                ? 'border-blue-500 text-blue-400'
-                : 'border-transparent text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-
-      {/* 탭 콘텐츠 */}
       <main className="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">
-        <div className={`flex-1 min-h-0 ${activeTab === 'management' ? 'flex flex-col' : 'hidden'}`}>
-          <ManagementTab agent={selectedAgent} />
-        </div>
-        <div className={`flex-1 min-h-0 ${activeTab === 'pipeline' ? 'flex flex-col' : 'hidden'}`}>
-          <PipelineTab agent={selectedAgent} />
-        </div>
-        <div className={`flex-1 min-h-0 ${activeTab === 'recordings' ? 'flex flex-col' : 'hidden'}`}>
-          <RecordingsTab agent={selectedAgent} />
-        </div>
+        {step === 1 && (
+          <GameSelectStep
+            selectedPackage={pkg}
+            onSelect={setPkg}
+            onNext={() => setStep(2)}
+          />
+        )}
+        {step === 2 && (
+          <RunStep
+            selectedPackage={pkg}
+            onBack={() => setStep(1)}
+            onComplete={handleComplete}
+          />
+        )}
+        {step === 3 && result && (
+          <ReportStep
+            result={result}
+            since={since}
+            adaptive={adaptive}
+            onRerun={() => setStep(2)}
+            onRestart={() => { setResult(null); setAdaptive(null); setStep(1) }}
+          />
+        )}
       </main>
     </div>
   )

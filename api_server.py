@@ -18,15 +18,12 @@ _exe_dir = Path(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) 
 load_dotenv(_exe_dir / ".env")
 load_dotenv()  # 일반 실행 시 fallback
 
-# 2. [핵심 추가]: 구글 인증 파일 환경 변수 강제 설정 ⭐
-# .env에 GOOGLE_APPLICATION_CREDENTIALS="credentials.json" 이라고 되어 있어도 
-# 라이브러리가 못 읽는 경우가 많아 아래처럼 직접 꽂아줘야 합니다.
+# 2. 로컬 Google credentials가 있으면 직접 지정한다.
+# 사내 LLM Gateway 사용 시에는 credentials.json이 없어도 정상 경로이므로 경고하지 않는다.
 _cred_path = _exe_dir / "credentials.json"
 if _cred_path.exists():
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(_cred_path)
     print(f"[*] 구글 인증 파일 로드 성공: {_cred_path}")
-else:
-    print(f"[!] 경고: {_cred_path} 파일을 찾을 수 없습니다. (Vision API 에러 가능성)")
     
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +36,19 @@ from adb_controller import ADBController
 from planner_node import PlannerNode
 from qa_orchestrator import QAOrchestrator
 from test_manager import TestCase
+from unity_api_client import UnityAPIClient
+# 어댑티브 QA는 현재 실행 안정성이 낮아 일시 비활성화한다.
+# from adaptive_qa_agent import AdaptiveQARunner, AdaptiveRunRequest
+from csv_reporter import build_test_result_csv
+from sr_debugger import SRDebuggerController, SRDebuggerEnterRequest
+from eval_platform import (
+    EvalCaseCreate,
+    EvalCsvImportRequest,
+    EvalRunRequest,
+    EvaluationStore,
+    build_report,
+    run_eval_suite,
+)
 import os
 import sys
 
@@ -49,6 +59,8 @@ cfg = Config()
 apk_directory = cfg.paths.apks_dir
 _pipelines_dir = cfg.paths.project_root / "pipelines"
 _pipelines_dir.mkdir(parents=True, exist_ok=True)
+_eval_store = EvaluationStore(cfg.paths.project_root / "eval_platform" / "eval_platform.db")
+# _adaptive_runner = AdaptiveQARunner(cfg)
 
 logger.info(f"[*] 현재 베이스 경로 (EXE 위치): {cfg.paths.project_root}")
 logger.info(f"[*] APK 폴더 경로: {apk_directory}")
@@ -81,6 +93,11 @@ async def _no_cache_api(request, call_next):
 
 
 app.mount("/recordings", StaticFiles(directory=str(cfg.paths.recordings_dir)), name="recordings")
+app.mount("/reports", StaticFiles(directory=str(cfg.paths.reports_dir)), name="reports")
+
+# 디버그 탭 검증 스크린샷 (녹화 대신 리소스 간소화용)
+cfg.paths.debug_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/debug", StaticFiles(directory=str(cfg.paths.debug_dir)), name="debug")
 
 # ─────────────────────────────────────────────
 # 상수
@@ -99,6 +116,22 @@ STEP_MARKERS = ("━", "▶ ", "┌─", "│", "└─", "⏹️", "🔴", "  �
 _ws_queues: dict[str, asyncio.Queue] = {}
 _test_stop_events: dict[str, threading.Event] = {}
 _active_adb: dict[str, ADBController] = {}
+
+
+def _test_result_summary(result) -> dict:
+    return {
+        "test_id": result.test_id,
+        "status": result.status,
+        "title": result.title,
+        "start_time": result.start_time.isoformat() if result.start_time else None,
+        "end_time": result.end_time.isoformat() if result.end_time else None,
+        "steps_passed": result.steps_passed,
+        "steps_executed": result.steps_executed,
+        "error_message": result.error_message,
+        "screenshots": result.screenshots or [],
+        "step_results": result.step_results or [],
+        "eval_output": result.eval_output,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -132,6 +165,13 @@ class RunTestRequest(BaseModel):
 
 class StopTestRequest(BaseModel):
     session_id: str
+
+class TutorialPassRequest(BaseModel):
+    package: str
+
+class ReportExportRequest(BaseModel):
+    result: dict
+    taps: list[dict] = []
 
 class SavePipelineRequest(BaseModel):
     name: str
@@ -364,18 +404,47 @@ def uninstall_app(req: UninstallRequest):
 # ─────────────────────────────────────────────
 # 템플릿 API
 # ─────────────────────────────────────────────
+def _template_roots() -> dict[str, Path]:
+    return {
+        "templates": cfg.paths.templates_dir,
+        "game_testcases": cfg.paths.project_root / "game_testcases",
+        "testcases": cfg.paths.testcases_dir,
+    }
+
+
+def _resolve_template_path(name: str) -> Path | None:
+    clean = name.strip().strip("/")
+    roots = _template_roots()
+    if "/" in clean:
+        prefix, stem = clean.split("/", 1)
+        root = roots.get(prefix)
+        if root:
+            path = root / f"{Path(stem).stem}.yaml"
+            return path if path.exists() else None
+    for root in roots.values():
+        path = root / f"{Path(clean).stem}.yaml"
+        if path.exists():
+            return path
+    return None
+
+
 @app.get("/api/templates")
 def list_templates():
     try:
-        files = sorted(cfg.paths.templates_dir.glob("*.yaml"))
-        return {"templates": [f.stem for f in files]}
+        names: list[str] = []
+        for prefix, root in _template_roots().items():
+            if not root.exists():
+                continue
+            for f in sorted(root.glob("*.yaml")):
+                names.append(f"{prefix}/{f.stem}")
+        return {"templates": names}
     except Exception as e:
         return {"templates": [], "error": str(e)}
 
-@app.get("/api/templates/{name}")
+@app.get("/api/templates/{name:path}")
 def get_template(name: str):
-    path = cfg.paths.templates_dir / f"{name}.yaml"
-    if not path.exists():
+    path = _resolve_template_path(name)
+    if not path:
         raise HTTPException(status_code=404, detail=f"Template not found: {name}")
     try:
         with open(path, encoding="utf-8") as f:
@@ -399,10 +468,10 @@ def save_template(req: SaveTemplateRequest):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@app.delete("/api/templates/{name}")
+@app.delete("/api/templates/{name:path}")
 def delete_template(name: str):
-    path = cfg.paths.templates_dir / f"{name}.yaml"
-    if not path.exists():
+    path = _resolve_template_path(name)
+    if not path:
         raise HTTPException(status_code=404, detail=f"Template not found: {name}")
     path.unlink()
     return {"success": True}
@@ -616,6 +685,85 @@ def screen_snapshot():
 
 
 # ─────────────────────────────────────────────
+# 디버그 탭 스크린샷 API
+# ─────────────────────────────────────────────
+@app.get("/api/debug/taps")
+def list_tap_debug(since: str = "", limit: int = 100):
+    """find_and_tap 탭 검증 디버그 이미지 목록 (최근순).
+
+    타임스탬프는 'YYYYMMDD_HHMMSS_mmm' 형식이라 문자열 비교로 정렬/필터가 가능하다.
+    since 이후 기록만 반환하면 방금 실행한 세션의 스샷만 리포트에 표시할 수 있다.
+    """
+    import json as _json
+    jsonl = cfg.paths.debug_dir / "find_and_tap_debug.jsonl"
+    if not jsonl.exists():
+        return {"taps": []}
+    taps: list[dict] = []
+    try:
+        for line in jsonl.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = _json.loads(line)
+            except Exception:
+                continue
+            ts = rec.get("timestamp", "")
+            if since and ts < since:
+                continue
+            name = Path(rec.get("debug_image", "")).name
+            taps.append({
+                "timestamp": ts,
+                "target": rec.get("target"),
+                "confidence": rec.get("confidence"),
+                "verified": rec.get("verified"),
+                "failure_reason": rec.get("failure_reason", ""),
+                "image": f"/debug/taps/{name}" if name else "",
+            })
+    except Exception as e:
+        return {"taps": [], "error": str(e)}
+    taps = taps[-limit:]
+    taps.reverse()
+    return {"taps": taps}
+
+
+@app.post("/api/sr-debugger/enter")
+def enter_sr_debugger(req: SRDebuggerEnterRequest):
+    try:
+        adb = ADBController()
+        controller = SRDebuggerController(adb=adb, config=cfg)
+        return controller.enter(
+            package=req.package,
+            strategies=req.strategies,
+            verify_target=req.verify_target,
+            max_attempts=req.max_attempts,
+        )
+    except Exception as e:
+        logger.exception("enter_sr_debugger failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/unity/tutorial-pass")
+def unity_tutorial_pass(req: TutorialPassRequest):
+    if not req.package.strip():
+        raise HTTPException(status_code=400, detail="package가 필요합니다.")
+    try:
+        adb = ADBController()
+        client = UnityAPIClient(
+            adb_controller=adb,
+            project=cfg.gemini.project,
+            location=cfg.gemini.location,
+            model=cfg.gemini.model,
+            temperature=cfg.gemini.temperature,
+        )
+        success = client.skip_tutorial(req.package.strip())
+        return {"success": success, "package": req.package.strip()}
+    except Exception as e:
+        logger.exception("unity_tutorial_pass failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────
 # 플랜 생성 API
 # ─────────────────────────────────────────────
 @app.post("/api/plan/generate")
@@ -648,8 +796,100 @@ def generate_plan(req: GeneratePlanRequest):
 
 
 # ─────────────────────────────────────────────
+# Evaluation Platform API
+# ─────────────────────────────────────────────
+@app.get("/api/eval/cases")
+def eval_list_cases():
+    return {"cases": _eval_store.list_cases()}
+
+
+@app.post("/api/eval/cases")
+def eval_upsert_case(req: EvalCaseCreate):
+    try:
+        return {"case": _eval_store.upsert_case(req)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/eval/cases/import-csv")
+def eval_import_csv(req: EvalCsvImportRequest):
+    try:
+        return _eval_store.import_csv(req.csv_text)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/eval/runs")
+def eval_list_runs():
+    return {"runs": _eval_store.list_runs()}
+
+
+@app.post("/api/eval/runs")
+def eval_run(req: EvalRunRequest):
+    try:
+        return {"run": run_eval_suite(_eval_store, req)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("eval_run failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/eval/runs/{run_id}")
+def eval_get_run(run_id: str):
+    try:
+        return {"run": _eval_store.get_run(run_id)}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/eval/runs/{run_id}/report")
+def eval_get_report(run_id: str, baseline_run_id: str = ""):
+    try:
+        run = _eval_store.get_run(run_id)
+        baseline = _eval_store.get_run(baseline_run_id) if baseline_run_id else None
+        return {"run_id": run_id, "report": build_report(run, baseline=baseline)}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/reports/csv")
+def create_result_csv(req: ReportExportRequest):
+    try:
+        csv_path = build_test_result_csv(
+            result=req.result,
+            taps=req.taps,
+            output_dir=cfg.paths.reports_dir,
+        )
+        return FileResponse(
+            path=str(csv_path),
+            media_type="text/csv; charset=utf-8",
+            filename=csv_path.name,
+        )
+    except Exception as e:
+        logger.exception("create_result_csv failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────
 # 테스트 실행 API
 # ─────────────────────────────────────────────
+# 어댑티브 QA는 현재 실행 안정성이 낮아 일시 비활성화한다.
+# @app.post("/api/adaptive/test/run")
+# def run_adaptive_test(req: AdaptiveRunRequest):
+#     if not req.steps:
+#         raise HTTPException(status_code=400, detail="steps가 필요합니다.")
+#     if not req.package:
+#         raise HTTPException(status_code=400, detail="package가 필요합니다.")
+#     try:
+#         return {"run": _adaptive_runner.run(req)}
+#     except Exception as e:
+#         logger.exception("run_adaptive_test failed")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/test/run")
 async def run_test(req: RunTestRequest):
     session_id = req.session_id
@@ -660,8 +900,10 @@ async def run_test(req: RunTestRequest):
     _test_stop_events[session_id] = stop_event
 
     loop = asyncio.get_event_loop()
-    q: asyncio.Queue = asyncio.Queue()
-    _ws_queues[session_id] = q
+    q = _ws_queues.get(session_id)
+    if q is None:
+        q = asyncio.Queue()
+        _ws_queues[session_id] = q
 
     steps = req.steps
     for step in steps:
@@ -713,14 +955,7 @@ async def run_test(req: RunTestRequest):
         try:
             orchestrator = QAOrchestrator(cfg)
             result = orchestrator.run_test(session_id, stop_event, testcase_override=testcase)
-            summary = {
-                "status": result.status,
-                "title": result.title,
-                "steps_passed": result.steps_passed,
-                "steps_executed": result.steps_executed,
-                "error_message": result.error_message,
-                "step_results": result.step_results or [],
-            }
+            summary = _test_result_summary(result)
             asyncio.run_coroutine_threadsafe(
                 q.put({"type": "result", "data": summary}), loop
             )
@@ -831,8 +1066,10 @@ async def run_pipeline(req: RunPipelineRequest):
     _test_stop_events[session_id] = stop_event
 
     loop = asyncio.get_event_loop()
-    q: asyncio.Queue = asyncio.Queue()
-    _ws_queues[session_id] = q
+    q = _ws_queues.get(session_id)
+    if q is None:
+        q = asyncio.Queue()
+        _ws_queues[session_id] = q
 
     # 플랫 스텝 리스트가 직접 제공된 경우 바로 사용
     if req.steps:
@@ -936,14 +1173,7 @@ async def run_pipeline(req: RunPipelineRequest):
             )
             orchestrator = QAOrchestrator(cfg)
             result = orchestrator.run_test(session_id, stop_event, testcase_override=testcase)
-            summary = {
-                "status": result.status,
-                "title": result.title,
-                "steps_passed": result.steps_passed,
-                "steps_executed": result.steps_executed,
-                "error_message": result.error_message,
-                "step_results": result.step_results or [],
-            }
+            summary = _test_result_summary(result)
             asyncio.run_coroutine_threadsafe(q.put({"type": "result", "data": summary}), loop)
         except Exception as e:
             logger.exception("run_pipeline thread failed")
@@ -988,17 +1218,11 @@ def list_recordings():
 @app.websocket("/ws/logs/{session_id}")
 async def ws_logs(websocket: WebSocket, session_id: str):
     await websocket.accept()
-    # 큐가 생성될 때까지 최대 5초 대기
-    for _ in range(50):
-        if session_id in _ws_queues:
-            break
-        await asyncio.sleep(0.1)
-
     q = _ws_queues.get(session_id)
-    if not q:
-        await websocket.send_json({"type": "error", "message": "세션을 찾을 수 없습니다."})
-        await websocket.close()
-        return
+    if q is None:
+        q = asyncio.Queue()
+        _ws_queues[session_id] = q
+        await websocket.send_json({"type": "waiting", "message": "세션 시작을 기다리는 중입니다."})
 
     try:
         while True:

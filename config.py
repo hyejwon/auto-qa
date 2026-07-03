@@ -20,6 +20,7 @@ class PathConfig:
     results_dir: Path = project_root / "test_results"
     testcases_dir: Path = project_root / "testcases"
     recordings_dir: Path = project_root / "recordings"
+    reports_dir: Path = project_root / "reports"
     apks_dir: Path = project_root / "apks"
     cache_db: Path = project_root / "element_cache.db"
     common_cache_db: Path = project_root / "common_tap_cache.db"
@@ -33,7 +34,7 @@ class PathConfig:
         """디렉토리 자동 생성"""
         for path in [self.screenshots_dir, self.debug_dir,
                      self.results_dir, self.testcases_dir, self.recordings_dir,
-                     self.apks_dir, self.templates_dir]:
+                     self.reports_dir, self.apks_dir, self.templates_dir]:
             path.mkdir(parents=True, exist_ok=True)
 
 @dataclass
