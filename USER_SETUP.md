@@ -51,12 +51,13 @@ ADB_DEVICE=127.0.0.1:5555               # LDPlayer 기본. 실디바이스면 ad
 
 ## 3. PC 재부팅 후 다시 시작 (Windows)
 
-Windows 를 재부팅하면 **실행 창(서버)이 닫히고 LDPlayer/디바이스 연결도 끊깁니다.** 재부팅 후에는 아래 순서로 다시 시작하세요.
+Windows 를 재부팅하면 **실행 창(서버)이 닫히고 에뮬레이터/디바이스 연결도 끊깁니다.** 재부팅 후에는 **디바이스를 먼저 연결한 뒤** `run_app.bat` 을 실행하세요.
 
-1. **LDPlayer(에뮬레이터) 를 먼저 실행** — 홈 화면이 완전히 뜰 때까지 기다립니다. (실디바이스면 USB 다시 연결)
+### A. LDPlayer(에뮬레이터) 를 쓰는 경우
+
+1. **LDPlayer 를 먼저 실행** — 홈 화면이 완전히 뜰 때까지 기다립니다.
 2. **`run_app.bat` 더블클릭** — 이미 설치가 끝난 상태라 가상환경·의존성은 건너뛰고 바로 서버가 뜹니다.
-3. 브라우저가 **http://localhost:8000** 으로 자동으로 열립니다.
-4. 상단에 `디바이스 미연결` 이 뜨면 명령창(cmd)에서 다시 연결:
+3. 상단에 `디바이스 미연결` 이 뜨면 명령창(cmd)에서 다시 연결:
 
    ```bash
    adb connect 127.0.0.1:5555
@@ -64,7 +65,28 @@ Windows 를 재부팅하면 **실행 창(서버)이 닫히고 LDPlayer/디바이
 
    그래도 안 되면 `adb kill-server && adb start-server` 후 다시 `adb connect`.
 
-> **순서 주의:** 반드시 LDPlayer 를 먼저 켜고 `run_app.bat` 을 실행하세요. 서버부터 켜면 디바이스가 안 잡힐 수 있습니다.
+### B. 실제 디바이스(USB) 를 쓰는 경우
+
+USB 디바이스는 `adb connect` 가 **필요 없습니다.** (`adb connect` 는 에뮬레이터/Wi-Fi 용)
+
+1. **USB 케이블을 다시 꽂습니다.** (재부팅 중 뽑혔거나 인식이 끊겼을 수 있음)
+2. 디바이스 화면에 **"USB 디버깅을 허용하시겠습니까?"** 팝업이 뜨면 **"이 컴퓨터에서 항상 허용"** 체크 후 **허용** 을 누릅니다.
+3. 명령창(cmd)에서 인식됐는지 확인:
+
+   ```bash
+   adb devices
+   # List of devices attached
+   # ABCD1234   device      ← 이 상태여야 정상 (unauthorized / offline 이면 아래 참고)
+   ```
+
+4. `device` 상태를 확인했으면 **`run_app.bat` 더블클릭.**
+5. 안 잡히면 케이블/포트를 바꿔 꽂거나, `adb kill-server && adb start-server` 후 다시 `adb devices`.
+
+> - `unauthorized` : 디바이스 화면의 USB 디버깅 허용 팝업을 아직 안 눌렀거나 취소한 상태 → 케이블 다시 꽂고 팝업에서 허용.
+> - `offline` : `adb kill-server && adb start-server` 후 재확인.
+> - `.env` 의 `ADB_DEVICE` 값은 `adb devices` 에 나오는 디바이스 ID(예: `ABCD1234`) 로 되어 있어야 합니다. (USB 는 IP:포트가 아님)
+
+> **공통 주의:** 반드시 디바이스(LDPlayer/USB)를 먼저 연결하고 `run_app.bat` 을 실행하세요. 서버부터 켜면 디바이스가 안 잡힐 수 있습니다.
 > 재부팅 후에는 `git pull` 이 필요 없습니다. 코드 변경분을 받고 싶을 때만 아래 4번을 참고하세요.
 
 ---
