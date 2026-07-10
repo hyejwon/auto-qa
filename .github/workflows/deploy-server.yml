@@ -6,7 +6,8 @@ name: Deploy Orchestrator (Linux Server)
 # 같은 서버에 두 스택이 나란히 뜨며, 각 디렉토리의 .env는 최초 1회 수동 생성한다.
 on:
   push:
-    branches: [main, dev]
+    # dev 자동 배포는 서버에 /opt/qa-auto-dev/.env 준비 후 활성화 → branches: [main, dev]
+    branches: [main]
     paths:
       - '*.py'
       - 'requirements.txt'
