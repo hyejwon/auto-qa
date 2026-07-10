@@ -547,8 +547,11 @@ async def run_test(req: RunTestRequest):
                 adb_rec = ADBController()
                 _active_adb[session_id] = adb_rec
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                adb_rec.start_recording(cfg.paths.recordings_dir, ts)
-                asyncio.run_coroutine_threadsafe(q.put({"type": "log", "message": f"🔴 화면 녹화 시작 — {ts}"}), loop)
+                # 병렬 세션 파일명 충돌 방지 — 세션 ID를 녹화 이름에 포함
+                safe_sid = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(session_id))[:24]
+                rec_name = f"{ts}_{safe_sid}"
+                adb_rec.start_recording(cfg.paths.recordings_dir, rec_name)
+                asyncio.run_coroutine_threadsafe(q.put({"type": "log", "message": f"🔴 화면 녹화 시작 — {rec_name}"}), loop)
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(q.put({"type": "log", "message": f"⚠️ 녹화 시작 실패: {e}"}), loop)
                 adb_rec = None
@@ -701,7 +704,8 @@ async def run_pipeline(req: RunPipelineRequest):
                 adb_rec = ADBController()
                 _active_adb[session_id] = adb_rec
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                adb_rec.start_recording(cfg.paths.recordings_dir, ts)
+                safe_sid = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(session_id))[:24]
+                adb_rec.start_recording(cfg.paths.recordings_dir, f"{ts}_{safe_sid}")
                 asyncio.run_coroutine_threadsafe(q.put({"type": "log", "message": "🔴 녹화 시작"}), loop)
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(q.put({"type": "log", "message": f"⚠️ 녹화 시작 실패: {e}"}), loop)

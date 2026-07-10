@@ -52,6 +52,7 @@ class ADBController:
     def __init__(self):
         self.device_id: Optional[str] = None
         self._forwarded_ports: set[tuple[int, int]] = set()
+        self._forward_map: dict[int, int] = {}  # remote_port → 동적 할당된 local_port
         self._verify_connection()
         self.width, self.height = self._get_screen_size()
         # 녹화 상태
@@ -132,6 +133,43 @@ class ADBController:
         except Exception as e:
             logger.error(f"Command failed: {e}")
             raise
+
+    def forward_port(self, remote_port: int) -> Optional[int]:
+        """디바이스별 동적 포트 포워딩 — 호스트 포트를 OS가 할당(tcp:0).
+
+        같은 서버에서 여러 디바이스가 같은 remote_port(예: Unity 37772)를 쓸 때
+        고정 local_port는 서로 덮어쓰므로, 디바이스마다 고유한 호스트 포트를 받아온다.
+        성공 시 할당된 local_port, 실패 시 None.
+        """
+        cached = self._forward_map.get(remote_port)
+        if cached:
+            return cached
+
+        if not self.device_id:
+            logger.warning("adb forward skipped: no device selected")
+            return None
+
+        try:
+            proc = subprocess.run(
+                self._adb_cmd(["forward", "tcp:0", f"tcp:{remote_port}"]),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                logger.warning("adb forward failed: %s", (proc.stderr or "")[:200])
+                return None
+
+            local_port = int(proc.stdout.strip().splitlines()[-1])
+            self._forward_map[remote_port] = local_port
+            logger.info(
+                "adb forward tcp:%d -> tcp:%d configured (%s)",
+                local_port, remote_port, self.device_id,
+            )
+            return local_port
+        except Exception as e:
+            logger.warning("adb forward exception: %s", e)
+            return None
 
     def ensure_forward(self, local_port: int = 37772, remote_port: int = 37772) -> bool:
         """adb forward tcp:<local_port> tcp:<remote_port>"""

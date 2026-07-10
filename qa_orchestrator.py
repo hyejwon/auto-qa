@@ -49,7 +49,8 @@ class QAOrchestrator:
             location=config.gemini.location,
             model=config.gemini.model,
             temperature=config.gemini.temperature,
-            base_url=os.getenv("UNITY_API_URL", "http://127.0.0.1:37772")
+            # 명시적 URL이 없으면 None → UnityAPIClient가 디바이스별 동적 포트로 포워딩
+            base_url=os.getenv("UNITY_API_URL") or None
         )
         self.sr_debugger = SRDebuggerController(adb=self.adb, config=config)
         self.vision = GeminiVisionAgent(
@@ -71,6 +72,10 @@ class QAOrchestrator:
         self.cache = ElementCache(config.paths.cache_db)
         self.common_cache = CommonTapCache(config.paths.common_cache_db)
         self._resolution = f"{self.adb.width}x{self.adb.height}"
+        # 병렬 실행 시 파일명 충돌 방지용 디바이스 태그 (예: 192.168.0.5:5555 → 192.168.0.5_5555)
+        self._file_tag = "".join(
+            c if c.isalnum() or c in "._-" else "_" for c in (self.adb.device_id or "device")
+        )
         self._current_package: str = ""
         self._current_screen_type: str = ""
         self._last_failure_reason: str = ""
@@ -279,7 +284,7 @@ class QAOrchestrator:
     def _execute_step(self, step, result: TestResult) -> tuple[bool, float]:
         """개별 스텝 실행 — (success, vision_confidence) 반환"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        screenshot_path = self.config.paths.screenshots_dir / f"screenshot_{timestamp}.png"
+        screenshot_path = self.config.paths.screenshots_dir / f"screenshot_{self._file_tag}_{timestamp}.png"
         self.adb.screenshot(screenshot_path)
         result.screenshots.append(str(screenshot_path))
 
@@ -653,7 +658,7 @@ class QAOrchestrator:
             safe_target = "".join(
                 c if c.isalnum() or c in "._- " else "_" for c in (target or "")
             ).strip().replace(" ", "_")[:40] or "none"
-            img_path = taps_dir / f"{ts}_{safe_target}_{status}.png"
+            img_path = taps_dir / f"{ts}_{self._file_tag}_{safe_target}_{status}.png"
 
             # 주석 이미지: bbox 사각형 + 실제 탭 지점 크로스헤어 + 라벨
             img = Image.open(screenshot_path).convert("RGB")
@@ -673,6 +678,7 @@ class QAOrchestrator:
 
             record = {
                 "timestamp": ts,
+                "device": self._file_tag,
                 "target": target,
                 "tap": {"x": cx, "y": cy},
                 "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
@@ -783,7 +789,7 @@ class QAOrchestrator:
 
     def _capture_runtime_screenshot(self, prefix: str) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        path = self.config.paths.debug_dir / f"{prefix}_{timestamp}.png"
+        path = self.config.paths.debug_dir / f"{prefix}_{self._file_tag}_{timestamp}.png"
         self.adb.screenshot(path)
         return path
 

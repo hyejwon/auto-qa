@@ -7,6 +7,14 @@ from typing import Optional, List
 logger = logging.getLogger(__name__)
 
 
+def _connect(db_path: Path) -> sqlite3.Connection:
+    """병렬 테스트 대비 커넥션 — WAL + busy_timeout으로 동시 쓰기 락 에러 방지."""
+    conn = sqlite3.connect(db_path, timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 @dataclass
 class CachedElement:
     x: int
@@ -28,7 +36,7 @@ class CommonTapCache:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS common_tap (
                     element_name  TEXT NOT NULL,
@@ -47,7 +55,7 @@ class CommonTapCache:
     def get(self, element: str, resolution: str) -> Optional[CachedElement]:
         """공통 좌표 조회. 부분 매칭 지원 (element가 DB의 element_name에 포함되면 HIT)."""
         normalized = element.strip().replace(" ", "")
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT element_name, x, y, source, confidence FROM common_tap WHERE resolution=?",
                 (resolution,),
@@ -74,7 +82,7 @@ class CommonTapCache:
     def set(self, element: str, resolution: str, x: int, y: int,
             source: str = "vision", confidence: float = 1.0) -> None:
         """공통 좌표 저장."""
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO common_tap (element_name, resolution, x, y, source, confidence)
@@ -91,7 +99,7 @@ class CommonTapCache:
 
     def dump(self, resolution: Optional[str] = None) -> List[dict]:
         """디버그용 조회."""
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if resolution:
                 rows = conn.execute(
@@ -120,7 +128,7 @@ class ElementCache:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             # 해상도별 좌표 캐시 (v2)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS element_cache_v2 (
@@ -160,7 +168,7 @@ class ElementCache:
     def get(self, package: str, screen_type: str, element: str,
             resolution: str = "") -> Optional[CachedElement]:
         """캐시에서 좌표 조회. 없으면 None."""
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT x, y, source, confidence FROM element_cache_v2
@@ -198,7 +206,7 @@ class ElementCache:
         resolution: str = "",
     ) -> None:
         """좌표를 캐시에 저장 (이미 있으면 갱신)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO element_cache_v2
@@ -221,7 +229,7 @@ class ElementCache:
     def invalidate_screen(self, package: str, screen_type: str,
                           resolution: str = "") -> None:
         """특정 화면의 캐시 항목 삭제. resolution 지정 시 해당 해상도만."""
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             if resolution:
                 deleted = conn.execute(
                     "DELETE FROM element_cache_v2 WHERE package_name=? AND screen_type=? AND resolution=?",
@@ -237,7 +245,7 @@ class ElementCache:
 
     def dump(self, package: Optional[str] = None) -> list[dict]:
         """디버그용: 캐시 전체 또는 패키지별 조회."""
-        with sqlite3.connect(self.db_path) as conn:
+        with _connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if package:
                 rows = conn.execute(

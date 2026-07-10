@@ -7,6 +7,7 @@ from prompts import (
 )
 from PIL import Image, ImageDraw
 import json
+import uuid
 from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime
@@ -190,8 +191,9 @@ class GeminiVisionAgent:
                 width=3
             )
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = debug_dir / f"bbox_{timestamp}.png"
+            # 병렬 세션·같은 초 내 중복 호출에도 파일명이 겹치지 않도록 ms + 랜덤 suffix
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            output_path = debug_dir / f"bbox_{timestamp}_{uuid.uuid4().hex[:6]}.png"
             img.save(output_path)
             logger.info(f"Debug image saved: {output_path}")
             return output_path

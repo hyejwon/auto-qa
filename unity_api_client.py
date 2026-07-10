@@ -95,12 +95,10 @@ class UnityAPIClient:
         base_url: Optional[str] = None,
         timeout_sec: float = 10.0,
     ):
-        url = (
-            base_url
-            or os.getenv("UNITY_API_URL")
-            or os.getenv("MCP_SERVER_URL")
-            or "http://127.0.0.1:37772"
-        )
+        explicit_url = base_url or os.getenv("UNITY_API_URL") or os.getenv("MCP_SERVER_URL")
+        # 명시적 URL이 없고 adb가 있으면 디바이스별 동적 포워딩 포트를 쓴다.
+        self._explicit_base = bool(explicit_url)
+        url = explicit_url or "http://127.0.0.1:37772"
         self.adb = adb_controller
         self.base_url = url.rstrip("/")
         self.timeout_sec = timeout_sec
@@ -117,6 +115,20 @@ class UnityAPIClient:
             self.client = build_genai_client()
         except Exception as exc:
             logger.warning("Failed to initialize Gemini client for Unity selection: %s", exc)
+
+    def _resolve_base(self) -> str:
+        """요청에 사용할 base URL 결정 + adb forward 보장.
+
+        명시적 URL(UNITY_API_URL 등)이 없으면 디바이스별 동적 포트를 할당받아
+        같은 호스트에서 여러 디바이스가 병렬로 돌아도 포워딩이 충돌하지 않게 한다.
+        """
+        if self.adb and not self._explicit_base:
+            port = self.adb.forward_port(37772)
+            if port:
+                return f"http://127.0.0.1:{port}"
+        if self.adb and self._explicit_base:
+            self.adb.ensure_forward(local_port=self._local_port, remote_port=37772)
+        return self.base_url
 
     @staticmethod
     def _normalize_text(value: str) -> str:
@@ -278,24 +290,29 @@ class UnityAPIClient:
 
     def call_cheat(self, category: str, name: str) -> bool:
         """SR 치트 API 호출. Unity 서버가 응답 없이 연결을 끊는 경우도 성공으로 처리."""
-        if self.adb:
-            self.adb.ensure_forward(local_port=self._local_port, remote_port=37772)
+        resolved_base = self._resolve_base()
 
         # category에 슬래시(/)가 포함될 수 있으므로 safe='/'로 유지
         encoded_query = f"category={quote(category, safe='/')}&name={quote(name, safe='/')}"
-        candidate_bases: List[str] = []
-        for base in (
-            self.base_url,
-            os.getenv("UNITY_API_URL"),
-            os.getenv("MCP_SERVER_URL"),
-            "http://localhost:37772",
-            "http://127.0.0.1:37772",
-        ):
-            if not isinstance(base, str) or not base.strip():
-                continue
-            normalized = base.rstrip("/")
-            if normalized not in candidate_bases:
-                candidate_bases.append(normalized)
+        if self.adb and not self._explicit_base and resolved_base != self.base_url:
+            # 동적 포워딩 성공 — 고정 37772 후보는 다른 디바이스의 포워딩으로
+            # 요청이 새어 나갈 수 있으므로 할당된 포트만 사용한다.
+            candidate_bases: List[str] = [resolved_base]
+        else:
+            candidate_bases = []
+            for base in (
+                resolved_base,
+                self.base_url,
+                os.getenv("UNITY_API_URL"),
+                os.getenv("MCP_SERVER_URL"),
+                "http://localhost:37772",
+                "http://127.0.0.1:37772",
+            ):
+                if not isinstance(base, str) or not base.strip():
+                    continue
+                normalized = base.rstrip("/")
+                if normalized not in candidate_bases:
+                    candidate_bases.append(normalized)
 
         for base in candidate_bases:
             endpoint = f"{base}/api/sr/call?{encoded_query}"
@@ -369,11 +386,8 @@ class UnityAPIClient:
         
 
     def _fetch_buttons(self) -> List[Dict[str, Any]]:
-        endpoint = f"{self.base_url}/api/findAllButtons"
-
-        if self.adb:
-            # Unity API is exposed from the device; keep adb forward in place before querying.
-            self.adb.ensure_forward(local_port=self._local_port, remote_port=37772)
+        # Unity API is exposed from the device; resolve base + keep adb forward in place.
+        endpoint = f"{self._resolve_base()}/api/findAllButtons"
 
         try:
             response = requests.get(endpoint, timeout=self.timeout_sec)

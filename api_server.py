@@ -941,7 +941,10 @@ async def run_test(req: RunTestRequest):
             try:
                 adb_rec = ADBController()
                 _active_adb[session_id] = adb_rec
-                session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # 병렬 세션 파일명 충돌 방지 — 세션 ID를 녹화 이름에 포함
+                _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _sid = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(session_id))[:24]
+                session_ts = f"{_ts}_{_sid}"
                 adb_rec.start_recording(cfg.paths.recordings_dir, session_ts)
                 asyncio.run_coroutine_threadsafe(
                     q.put({"type": "log", "message": f"🔴 화면 녹화 시작 — 세션: {session_ts}"}), loop
@@ -1162,7 +1165,8 @@ async def run_pipeline(req: RunPipelineRequest):
                 adb_rec = ADBController()
                 _active_adb[session_id] = adb_rec
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                adb_rec.start_recording(cfg.paths.recordings_dir, ts)
+                _sid = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(session_id))[:24]
+                adb_rec.start_recording(cfg.paths.recordings_dir, f"{ts}_{_sid}")
                 asyncio.run_coroutine_threadsafe(q.put({"type": "log", "message": f"🔴 녹화 시작"}), loop)
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(q.put({"type": "log", "message": f"⚠️ 녹화 시작 실패: {e}"}), loop)

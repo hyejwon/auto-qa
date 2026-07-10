@@ -68,7 +68,10 @@ class EvaluationStore:
         self._init_db()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # 병렬 실행 대비: WAL + busy_timeout으로 동시 쓰기 락 에러 방지
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         return conn
 
