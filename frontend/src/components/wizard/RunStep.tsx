@@ -7,6 +7,7 @@ import StepEditor, { newId } from './StepEditor'
 import type { AdaptiveRun, Step, TemplateParam, TestResult } from '../../types'
 
 interface Props {
+  device: string
   selectedPackage: string
   onBack: () => void
   onComplete: (result: TestResult, since: string, adaptive?: AdaptiveRun) => void
@@ -14,7 +15,7 @@ interface Props {
 
 type Mode = 'select' | 'create'
 
-export default function RunStep({ selectedPackage, onBack, onComplete }: Props) {
+export default function RunStep({ device, selectedPackage, onBack, onComplete }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   const [templates, setTemplates] = useState<string[]>([])
   const [selected, setSelected] = useState('')
@@ -133,7 +134,7 @@ export default function RunStep({ selectedPackage, onBack, onComplete }: Props) 
     const resolved = substituteSteps(steps, paramValues)
     const runSteps = resolved.map((s) => (s.action === 'launch_app' && !s.target ? { ...s, target: selectedPackage } : s))
     const pkg = runSteps.find((s) => s.action === 'launch_app' && s.target)?.target ?? selectedPackage
-    await testApi.run({ title: title || '테스트 실행', package: pkg, steps: runSteps, session_id: sid })
+    await testApi.run({ title: title || '테스트 실행', package: pkg, steps: runSteps, session_id: sid, device })
   }
 
   const handleStop = async () => {

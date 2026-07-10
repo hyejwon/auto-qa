@@ -17,4 +17,18 @@ data/
 window_dump.xml
 credentials/
 node_modules/
+# frontend는 빌드 결과물(dist)만 이미지에 포함
 frontend/
+!frontend/dist
+# 빌드 컨텍스트 대용량/불필요 항목
+apks/
+recordings/
+test_results/
+testcases/
+dist/
+tmp/
+state/
+google-cloud-sdk/
+*.tar.gz
+*.db
+*.exe

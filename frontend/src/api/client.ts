@@ -1,15 +1,29 @@
 import axios from 'axios'
-import type { DeviceInfo, PreflightResult, TapDebug, Template, TestResult } from '../types'
+import type { DeviceEntry, DeviceInfo, PreflightResult, TapDebug, Template, TestResult } from '../types'
 
 const api = axios.create({ baseURL: '/api' })
 
 // ── 디바이스 / ADB 연결 체크 ────────────────────────────────────
 export const deviceApi = {
-  getStatus: () => api.get<DeviceInfo>('/device').then((r) => r.data),
+  getStatus: (device?: string) =>
+    api.get<DeviceInfo>('/device', { params: device ? { device } : {} }).then((r) => r.data),
+  list: () =>
+    api.get<{ devices: DeviceEntry[] }>('/devices').then((r) => ({
+      devices: Array.isArray(r.data?.devices) ? r.data.devices : [],
+    })),
+  connect: (address: string) =>
+    api
+      .post<{ success: boolean; message: string; address?: string }>('/devices/connect', { address })
+      .then((r) => r.data),
+  disconnect: (address: string) =>
+    api
+      .post<{ success: boolean; message: string }>('/devices/disconnect', { address })
+      .then((r) => r.data),
 }
 
 export const preflightApi = {
-  check: () => api.get<PreflightResult>('/preflight').then((r) => r.data),
+  check: (device?: string) =>
+    api.get<PreflightResult>('/preflight', { params: device ? { device } : {} }).then((r) => r.data),
   reconnect: () =>
     api
       .post<{ success: boolean; device: DeviceInfo; log: string[] }>('/device/reconnect')
@@ -18,15 +32,16 @@ export const preflightApi = {
 
 // ── 게임(패키지) ────────────────────────────────────────────────
 export const packageApi = {
-  list: () => api.get<{ packages: string[] }>('/packages').then((r) => ({
-    packages: Array.isArray(r.data?.packages) ? r.data.packages : [],
-  })),
+  list: (device?: string) =>
+    api.get<{ packages: string[] }>('/packages', { params: device ? { device } : {} }).then((r) => ({
+      packages: Array.isArray(r.data?.packages) ? r.data.packages : [],
+    })),
   getApkMap: () => api.get<{ map: Record<string, string> }>('/package-apk-map').then((r) => ({
     map: r.data?.map ?? {},
   })),
-  uninstall: (pkg: string) =>
+  uninstall: (pkg: string, device?: string) =>
     api
-      .post<{ success: boolean; message: string }>('/app/uninstall', { package: pkg })
+      .post<{ success: boolean; message: string }>('/app/uninstall', { package: pkg, device: device ?? '' })
       .then((r) => r.data),
 }
 
@@ -35,9 +50,9 @@ export const apkApi = {
   list: () => api.get<{ apks: string[] }>('/apks').then((r) => ({
     apks: Array.isArray(r.data?.apks) ? r.data.apks : [],
   })),
-  install: (filename: string) =>
+  install: (filename: string, device?: string) =>
     api
-      .post<{ success: boolean; message: string }>('/apk/install', { filename })
+      .post<{ success: boolean; message: string }>('/apk/install', { filename, device: device ?? '' })
       .then((r) => r.data),
 }
 
@@ -55,9 +70,9 @@ export const templateApi = {
 
 // ── 테스트 실행 ─────────────────────────────────────────────────
 export const testApi = {
-  run: (payload: { title: string; package: string; steps: object[]; session_id: string }) =>
+  run: (payload: { title: string; package: string; steps: object[]; session_id: string; device?: string }) =>
     api
-      .post<{ session_id: string; status: string }>('/test/run', { ...payload, record: false })
+      .post<{ session_id: string; status: string }>('/test/run', { record: false, device: '', ...payload })
       .then((r) => r.data),
   stop: (session_id: string) =>
     api

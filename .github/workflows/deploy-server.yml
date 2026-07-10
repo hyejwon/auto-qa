@@ -8,14 +8,13 @@ on:
   push:
     branches: [main, dev]
     paths:
-      - 'orchestrator_server.py'
-      - 'config.py'
-      - 'planner_node.py'
-      - 'llm_client.py'
+      - '*.py'
       - 'requirements.txt'
       - 'Dockerfile'
       - 'docker-compose.yaml'
       - 'frontend/**'
+      - 'templates/**'
+      - 'game_testcases/**'
 
 jobs:
   build-and-deploy:

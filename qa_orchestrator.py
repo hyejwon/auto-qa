@@ -40,9 +40,9 @@ class QAOrchestrator:
     STABILITY_TIMEOUT_SEC = 10.0
     STABILITY_THRESHOLD = 0.01
 
-    def __init__(self, config: Config = Config()):
+    def __init__(self, config: Config = Config(), device_id: Optional[str] = None):
         self.config = config
-        self.adb = ADBController()
+        self.adb = ADBController(device_id)
         self.unity = UnityAPIClient(
             adb_controller=self.adb,
             project=config.gemini.project,

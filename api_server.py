@@ -1,5 +1,6 @@
 """FastAPI 백엔드 서버 — auto-qa React 프론트엔드용 REST + WebSocket API"""
 import asyncio
+import json
 import logging
 import os
 import queue
@@ -117,6 +118,124 @@ _ws_queues: dict[str, asyncio.Queue] = {}
 _test_stop_events: dict[str, threading.Event] = {}
 _active_adb: dict[str, ADBController] = {}
 
+# ─────────────────────────────────────────────
+# 디바이스 실행 락 — 같은 폰에 테스트 2개가 동시에 붙는 것 방지
+# ─────────────────────────────────────────────
+_device_locks: dict[str, str] = {}  # device_id → session_id
+_device_locks_guard = threading.Lock()
+
+
+def _acquire_device_lock(device_id: str, session_id: str) -> Optional[str]:
+    """락 획득. 성공 시 None, 실패 시 점유 중인 session_id 반환."""
+    with _device_locks_guard:
+        holder = _device_locks.get(device_id)
+        if holder and holder != session_id:
+            return holder
+        _device_locks[device_id] = session_id
+        return None
+
+
+def _release_device_lock(device_id: str, session_id: str) -> None:
+    with _device_locks_guard:
+        if _device_locks.get(device_id) == session_id:
+            _device_locks.pop(device_id, None)
+
+
+# ─────────────────────────────────────────────
+# 무선 디바이스 레지스트리 + 자동 재연결
+# 등록된 주소(IP:PORT)를 파일로 영속화하고, 끊기면 백그라운드에서 재연결 시도
+# ─────────────────────────────────────────────
+_DEVICE_REGISTRY_PATH = Path(
+    os.getenv("DEVICE_REGISTRY_PATH", str(cfg.paths.project_root / "state" / "devices.json"))
+)
+_registry_guard = threading.Lock()
+RECONNECT_INTERVAL_SEC = int(os.getenv("DEVICE_RECONNECT_INTERVAL", "30"))
+
+
+def _load_device_registry() -> list[str]:
+    try:
+        with _registry_guard:
+            if _DEVICE_REGISTRY_PATH.exists():
+                data = json.loads(_DEVICE_REGISTRY_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return [str(a) for a in data]
+    except Exception as e:
+        logger.warning("디바이스 레지스트리 로드 실패: %s", e)
+    return []
+
+
+def _save_device_registry(addresses: list[str]) -> None:
+    try:
+        with _registry_guard:
+            _DEVICE_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _DEVICE_REGISTRY_PATH.write_text(
+                json.dumps(sorted(set(addresses)), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    except Exception as e:
+        logger.warning("디바이스 레지스트리 저장 실패: %s", e)
+
+
+def _registry_add(address: str) -> None:
+    addrs = _load_device_registry()
+    if address not in addrs:
+        addrs.append(address)
+        _save_device_registry(addrs)
+
+
+def _registry_remove(address: str) -> None:
+    addrs = _load_device_registry()
+    if address in addrs:
+        addrs.remove(address)
+        _save_device_registry(addrs)
+
+
+def _adb_connect(address: str, timeout: int = 10) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["adb", "connect", address],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        )
+        output = (result.stdout or "").strip()
+        ok = "connected" in output.lower() and "cannot" not in output.lower()
+        return ok, output
+    except Exception as e:
+        return False, str(e)
+
+
+def _device_reconnect_loop():
+    """등록된 무선 디바이스가 끊기면 주기적으로 adb connect 재시도."""
+    import time as _time
+    while True:
+        _time.sleep(RECONNECT_INTERVAL_SEC)
+        try:
+            registered = _load_device_registry()
+            if not registered:
+                continue
+            connected = {d["device_id"] for d in _get_all_devices() if d["status"] == "device"}
+            for addr in registered:
+                if addr not in connected:
+                    ok, msg = _adb_connect(addr, timeout=5)
+                    if ok:
+                        logger.info("무선 디바이스 자동 재연결 성공: %s", addr)
+                    else:
+                        logger.debug("무선 디바이스 재연결 실패 (%s): %s", addr, msg)
+        except Exception as e:
+            logger.warning("디바이스 재연결 루프 오류: %s", e)
+
+
+@app.on_event("startup")
+def _startup_device_manager():
+    try:
+        subprocess.run(["adb", "start-server"], capture_output=True, timeout=15)
+    except Exception as e:
+        logger.warning("adb start-server 실패: %s", e)
+    # 서버 재시작 시 등록된 디바이스 일괄 재연결
+    for addr in _load_device_registry():
+        _adb_connect(addr, timeout=5)
+    threading.Thread(target=_device_reconnect_loop, daemon=True).start()
+    logger.info("디바이스 자동 재연결 루프 시작 (interval=%ds)", RECONNECT_INTERVAL_SEC)
+
 
 def _test_result_summary(result) -> dict:
     return {
@@ -139,9 +258,11 @@ def _test_result_summary(result) -> dict:
 # ─────────────────────────────────────────────
 class InstallApkRequest(BaseModel):
     filename: str
+    device: str = ""
 
 class UninstallRequest(BaseModel):
     package: str
+    device: str = ""
 
 class PackageApkMapEntry(BaseModel):
     package: str
@@ -162,6 +283,7 @@ class RunTestRequest(BaseModel):
     steps: list[dict]
     session_id: str
     record: bool = False
+    device: str = ""  # 대상 디바이스 시리얼 (미지정 시 기본 디바이스)
 
 class StopTestRequest(BaseModel):
     session_id: str
@@ -185,6 +307,7 @@ class RunPipelineRequest(BaseModel):
     edges: list[dict] = []
     session_id: str
     record: bool = False
+    device: str = ""  # 대상 디바이스 시리얼 (미지정 시 기본 디바이스)
 
 
 # ─────────────────────────────────────────────
@@ -205,48 +328,66 @@ def _get_all_devices() -> list[dict]:
     return devices
 
 @app.get("/api/device")
-def get_device():
+def get_device(device: str = ""):
+    """디바이스 상태. device 지정 시 해당 디바이스, 미지정 시 기본 디바이스."""
     try:
         devices = [d for d in _get_all_devices() if d["status"] == "device"]
         if not devices:
             return {"status": "disconnected", "device_id": None, "model": None}
-        preferred = os.getenv("ADB_DEVICE", "").strip()
-        device = next((d for d in devices if d["device_id"] == preferred), devices[0])
-        return {"status": "connected", "device_id": device["device_id"], "model": device["model"]}
+        preferred = device.strip() or os.getenv("ADB_DEVICE", "").strip()
+        found = next((d for d in devices if d["device_id"] == preferred), None)
+        if device.strip() and not found:
+            return {"status": "disconnected", "device_id": device.strip(), "model": None}
+        target = found or devices[0]
+        return {"status": "connected", "device_id": target["device_id"], "model": target["model"]}
     except Exception as e:
         return {"status": "error", "error": str(e), "device_id": None, "model": None}
 
 @app.get("/api/devices")
 def list_devices():
-    """연결된 모든 디바이스 목록"""
+    """연결된 디바이스 + 등록됐지만 오프라인인 무선 디바이스 목록 (busy 상태 포함)"""
     try:
         devices = [d for d in _get_all_devices() if d["status"] == "device"]
+        with _device_locks_guard:
+            locks = dict(_device_locks)
+        connected_ids = {d["device_id"] for d in devices}
+        registered = _load_device_registry()
+        for d in devices:
+            d["busy"] = d["device_id"] in locks
+            d["registered"] = d["device_id"] in registered
+        # 등록됐지만 현재 끊긴 무선 디바이스도 목록에 노출 (자동 재연결 대상)
+        for addr in registered:
+            if addr not in connected_ids:
+                devices.append({
+                    "device_id": addr, "model": addr, "status": "offline",
+                    "busy": False, "registered": True,
+                })
         return {"devices": devices}
     except Exception as e:
         return {"devices": [], "error": str(e)}
 
 @app.post("/api/devices/connect")
 def connect_device(body: dict):
-    """ADB WiFi 디바이스 연결 — body: {address: '192.168.1.10:5555'}"""
+    """ADB WiFi 디바이스 연결 + 자동 재연결 레지스트리 등록 — body: {address: '192.168.1.10:5555'}"""
     address = body.get("address", "").strip()
     if not address:
         raise HTTPException(status_code=400, detail="address가 필요합니다.")
-    try:
-        result = subprocess.run(["adb", "connect", address], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-        output = result.stdout.strip()
-        success = "connected" in output.lower() or "already connected" in output.lower()
-        return {"success": success, "message": output}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    if ":" not in address:
+        address = f"{address}:5555"  # 포트 생략 시 기본 5555
+    success, output = _adb_connect(address)
+    if success:
+        _registry_add(address)
+    return {"success": success, "message": output, "address": address}
 
 @app.post("/api/devices/disconnect")
 def disconnect_device(body: dict):
-    """ADB WiFi 디바이스 연결 해제 — body: {address: '192.168.1.10:5555'}"""
+    """ADB WiFi 디바이스 연결 해제 + 레지스트리에서 제거 — body: {address: '192.168.1.10:5555'}"""
     address = body.get("address", "").strip()
     if not address:
         raise HTTPException(status_code=400, detail="address가 필요합니다.")
     try:
         result = subprocess.run(["adb", "disconnect", address], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        _registry_remove(address)
         return {"success": True, "message": result.stdout.strip()}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -266,18 +407,17 @@ def device_reconnect():
     except Exception as e:
         log.append(f"❌ adb start-server 실패: {e}")
 
-    # 2. 무선 연결 (ADB_DEVICE가 IP:PORT 형식이면)
+    # 2. 무선 연결 — 레지스트리에 등록된 모든 디바이스 + ADB_DEVICE(IP:PORT 형식)
+    targets = _load_device_registry()
     preferred = os.getenv("ADB_DEVICE", "").strip()
-    if preferred and ":" in preferred:
-        try:
-            r = subprocess.run(["adb", "connect", preferred], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
-            out = r.stdout.strip()
-            success = "connected" in out.lower() or "already connected" in out.lower()
-            log.append(f"{'✅' if success else '⚠️'} adb connect {preferred}: {out}")
-        except Exception as e:
-            log.append(f"❌ adb connect {preferred} 실패: {e}")
+    if preferred and ":" in preferred and preferred not in targets:
+        targets.append(preferred)
+    if targets:
+        for addr in targets:
+            success, out = _adb_connect(addr, timeout=15)
+            log.append(f"{'✅' if success else '⚠️'} adb connect {addr}: {out}")
     else:
-        log.append(f"ℹ️ USB 연결 모드 (ADB_DEVICE={preferred or '미설정'})")
+        log.append("ℹ️ 등록된 무선 디바이스 없음 (USB 연결 모드)")
 
     # 3. 잠시 대기 후 연결 확인
     _time.sleep(2)
@@ -309,7 +449,7 @@ def install_apk(req: InstallApkRequest):
     if not apk_path.exists():
         raise HTTPException(status_code=404, detail=f"APK not found: {apk_path}")
     try:
-        adb = ADBController()
+        adb = ADBController(req.device or None)
         ok, msg = adb.install_apk(apk_path)
         return {"success": ok, "message": msg}
     except Exception as e:
@@ -319,14 +459,14 @@ def install_apk(req: InstallApkRequest):
 # 패키지 API
 # ─────────────────────────────────────────────
 @app.get("/api/packages")
-def list_packages():
+def list_packages(device: str = ""):
     # APK 파일명에서 키워드 추출 (확장자 제거, 소문자)
     apk_keywords = [
         f.stem.lower()
         for f in apk_directory.glob("*.apk")
     ]
     try:
-        device_info = get_device()
+        device_info = get_device(device)
         if device_info["status"] == "connected":
             did = device_info["device_id"]
             out = _adb_shell(did, ["shell", "pm", "list", "packages"])
@@ -394,7 +534,7 @@ def delete_package_apk_map(package: str):
 @app.post("/api/app/uninstall")
 def uninstall_app(req: UninstallRequest):
     try:
-        adb = ADBController()
+        adb = ADBController(req.device or None)
         _, msg = adb.uninstall_app(req.package)
         return {"success": True, "message": msg}
     except Exception as e:
@@ -492,11 +632,11 @@ def _adb_shell(device_id: str, args: list[str], timeout: int = 8) -> str:
 
 
 @app.get("/api/preflight")
-def preflight_check():
+def preflight_check(device: str = ""):
     checks = []
 
     # 1. ADB 연결
-    device_info = get_device()
+    device_info = get_device(device)
     connected = device_info["status"] == "connected"
     checks.append({
         "name": "ADB 연결",
@@ -642,11 +782,17 @@ def _png_to_jpeg(png_bytes: bytes, quality: int = 60) -> bytes:
 
 
 @app.get("/api/screen/latest")
-def screen_latest():
-    """테스트 실행 중 가장 최근 스크린샷 반환 (추가 ADB 호출 없음)"""
+def screen_latest(device: str = ""):
+    """테스트 실행 중 가장 최근 스크린샷 반환 (추가 ADB 호출 없음).
+    device 지정 시 해당 디바이스 태그가 포함된 파일만 검색."""
     try:
+        if device.strip():
+            tag = "".join(c if c.isalnum() or c in "._-" else "_" for c in device.strip())
+            pattern = f"*{tag}*.png"
+        else:
+            pattern = "*.png"
         files = sorted(
-            cfg.paths.screenshots_dir.glob("*.png"),
+            cfg.paths.screenshots_dir.glob(pattern),
             key=lambda f: f.stat().st_mtime,
             reverse=True,
         )
@@ -662,10 +808,10 @@ def screen_latest():
 
 
 @app.get("/api/screen/snapshot")
-def screen_snapshot():
+def screen_snapshot(device: str = ""):
     """온디맨드 ADB 스크린캡처 (유휴 상태 미러링용)"""
     try:
-        device_info = get_device()
+        device_info = get_device(device)
         if device_info["status"] != "connected":
             raise HTTPException(status_code=503, detail="디바이스 미연결")
         did = device_info["device_id"]
@@ -896,6 +1042,27 @@ async def run_test(req: RunTestRequest):
     if session_id in _test_stop_events and not _test_stop_events[session_id].is_set():
         raise HTTPException(status_code=409, detail="테스트가 이미 실행 중입니다.")
 
+    # 대상 디바이스 결정 + 실행 락 (같은 폰에 동시 테스트 방지)
+    target_device = req.device.strip() or (get_device().get("device_id") or "")
+    if not target_device:
+        raise HTTPException(status_code=503, detail="연결된 디바이스가 없습니다.")
+    holder = _acquire_device_lock(target_device, session_id)
+    if holder:
+        raise HTTPException(
+            status_code=409,
+            detail=f"디바이스 {target_device}는 다른 테스트가 사용 중입니다 (세션: {holder})",
+        )
+
+    try:
+        return _start_test_run(req, target_device)
+    except Exception:
+        # 실행 스레드 시작 전에 실패하면 락이 새지 않도록 해제
+        _release_device_lock(target_device, req.session_id)
+        raise
+
+
+def _start_test_run(req: RunTestRequest, target_device: str):
+    session_id = req.session_id
     stop_event = threading.Event()
     _test_stop_events[session_id] = stop_event
 
@@ -939,7 +1106,7 @@ async def run_test(req: RunTestRequest):
         adb_rec = None
         if should_record:
             try:
-                adb_rec = ADBController()
+                adb_rec = ADBController(target_device)
                 _active_adb[session_id] = adb_rec
                 # 병렬 세션 파일명 충돌 방지 — 세션 ID를 녹화 이름에 포함
                 _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -956,7 +1123,7 @@ async def run_test(req: RunTestRequest):
                 adb_rec = None
 
         try:
-            orchestrator = QAOrchestrator(cfg)
+            orchestrator = QAOrchestrator(cfg, device_id=target_device)
             result = orchestrator.run_test(session_id, stop_event, testcase_override=testcase)
             summary = _test_result_summary(result)
             asyncio.run_coroutine_threadsafe(
@@ -976,6 +1143,7 @@ async def run_test(req: RunTestRequest):
                     )
                 except Exception:
                     pass
+            _release_device_lock(target_device, session_id)
             _active_adb.pop(session_id, None)
             _test_stop_events.pop(session_id, None)  # 스레드 종료 후 정리
             root_logger.removeHandler(handler)
@@ -1065,6 +1233,27 @@ async def run_pipeline(req: RunPipelineRequest):
     if session_id in _test_stop_events and not _test_stop_events[session_id].is_set():
         raise HTTPException(status_code=409, detail="파이프라인이 이미 실행 중입니다.")
 
+    # 대상 디바이스 결정 + 실행 락 (같은 폰에 동시 테스트 방지)
+    target_device = req.device.strip() or (get_device().get("device_id") or "")
+    if not target_device:
+        raise HTTPException(status_code=503, detail="연결된 디바이스가 없습니다.")
+    holder = _acquire_device_lock(target_device, session_id)
+    if holder:
+        raise HTTPException(
+            status_code=409,
+            detail=f"디바이스 {target_device}는 다른 테스트가 사용 중입니다 (세션: {holder})",
+        )
+
+    try:
+        return _start_pipeline_run(req, target_device)
+    except Exception:
+        # 실행 스레드 시작 전에 실패하면 락이 새지 않도록 해제
+        _release_device_lock(target_device, req.session_id)
+        raise
+
+
+def _start_pipeline_run(req: RunPipelineRequest, target_device: str):
+    session_id = req.session_id
     stop_event = threading.Event()
     _test_stop_events[session_id] = stop_event
 
@@ -1162,7 +1351,7 @@ async def run_pipeline(req: RunPipelineRequest):
         adb_rec = None
         if should_record:
             try:
-                adb_rec = ADBController()
+                adb_rec = ADBController(target_device)
                 _active_adb[session_id] = adb_rec
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 _sid = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(session_id))[:24]
@@ -1175,7 +1364,7 @@ async def run_pipeline(req: RunPipelineRequest):
             asyncio.run_coroutine_threadsafe(
                 q.put({"type": "log", "message": f"━ 파이프라인: {' → '.join(phase_labels) if phase_labels else testcase.title}"}), loop
             )
-            orchestrator = QAOrchestrator(cfg)
+            orchestrator = QAOrchestrator(cfg, device_id=target_device)
             result = orchestrator.run_test(session_id, stop_event, testcase_override=testcase)
             summary = _test_result_summary(result)
             asyncio.run_coroutine_threadsafe(q.put({"type": "result", "data": summary}), loop)
@@ -1191,6 +1380,7 @@ async def run_pipeline(req: RunPipelineRequest):
                     )
                 except Exception:
                     pass
+            _release_device_lock(target_device, session_id)
             _active_adb.pop(session_id, None)
             _test_stop_events.pop(session_id, None)
             root_logger.removeHandler(handler)
@@ -1248,6 +1438,14 @@ async def ws_logs(websocket: WebSocket, session_id: str):
 # 4. SPA 정적 파일 서빙 (가장 중요 ⭐)
 # ─────────────────────────────────────────────
 # [수정] frontend/dist는 빌드 시 내부에 포함되므로 bundle_root를 참조해야 함
+# ─────────────────────────────────────────────
+# 헬스체크 (Docker healthcheck용 — SPA 캐치올보다 먼저 등록되어야 함)
+# ─────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok", "server": "qa-auto-api", "time": datetime.now().isoformat()}
+
+
 _dist = cfg.paths.bundle_root / "frontend" / "dist"
 
 if _dist.exists():

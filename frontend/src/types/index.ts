@@ -5,6 +5,15 @@ export interface DeviceInfo {
   error?: string
 }
 
+// 서버에 연결된(또는 등록만 된) 개별 디바이스
+export interface DeviceEntry {
+  device_id: string
+  model: string
+  status: 'device' | 'offline' | string
+  busy?: boolean
+  registered?: boolean
+}
+
 export interface PreflightCheck {
   name: string
   status: 'ok' | 'warn' | 'fail' | 'unknown'

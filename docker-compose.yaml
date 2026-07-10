@@ -12,6 +12,13 @@ services:
       - ./pipelines:/app/pipelines
       - ./test_results:/app/test_results
       - ./recordings:/app/recordings
+      - ./screenshots:/app/screenshots
+      - ./screenshots_debug:/app/screenshots_debug
+      - ./testcases:/app/testcases
+      - ./apks:/app/apks
+      - ./reports:/app/reports
+      # 무선 디바이스 레지스트리(devices.json) — 재배포에도 등록 유지
+      - ./state:/app/state
     env_file:
       - .env
     restart: unless-stopped

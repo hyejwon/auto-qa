@@ -3,10 +3,12 @@ import Stepper, { type WizardStep } from './components/wizard/Stepper'
 import GameSelectStep from './components/wizard/GameSelectStep'
 import RunStep from './components/wizard/RunStep'
 import ReportStep from './components/wizard/ReportStep'
+import DevicePicker from './components/DevicePicker'
 import type { AdaptiveRun, TestResult } from './types'
 
 export default function App() {
   const [step, setStep] = useState<WizardStep>(1)
+  const [device, setDevice] = useState('')
   const [pkg, setPkg] = useState('')
   const [result, setResult] = useState<TestResult | null>(null)
   const [since, setSince] = useState('')
@@ -25,6 +27,7 @@ export default function App() {
         <span className="text-lg">🎮</span>
         <h1 className="text-sm font-semibold text-gray-100">Auto QA</h1>
         <span className="text-xs text-gray-500">게임 자동 테스트</span>
+        <DevicePicker value={device} onChange={setDevice} />
       </header>
 
       <Stepper current={step} onJump={(s) => setStep(s)} />
@@ -32,6 +35,7 @@ export default function App() {
       <main className="flex-1 min-h-0 p-6 overflow-hidden flex flex-col">
         {step === 1 && (
           <GameSelectStep
+            device={device}
             selectedPackage={pkg}
             onSelect={setPkg}
             onNext={() => setStep(2)}
@@ -39,6 +43,7 @@ export default function App() {
         )}
         {step === 2 && (
           <RunStep
+            device={device}
             selectedPackage={pkg}
             onBack={() => setStep(1)}
             onComplete={handleComplete}

@@ -4,6 +4,7 @@ import { deviceApi, preflightApi, packageApi, apkApi } from '../../api/client'
 import type { DeviceInfo } from '../../types'
 
 interface Props {
+  device: string
   selectedPackage: string
   onSelect: (pkg: string) => void
   onNext: () => void
@@ -15,7 +16,7 @@ function gameLabel(pkg: string): string {
   return last.charAt(0).toUpperCase() + last.slice(1)
 }
 
-export default function GameSelectStep({ selectedPackage, onSelect, onNext }: Props) {
+export default function GameSelectStep({ device: selectedDevice, selectedPackage, onSelect, onNext }: Props) {
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [installed, setInstalled] = useState<string[]>([])
   const [apkMap, setApkMap] = useState<Record<string, string>>({})
@@ -30,8 +31,8 @@ export default function GameSelectStep({ selectedPackage, onSelect, onNext }: Pr
     setLoading(true)
     try {
       const [dev, pkgs, mapRes, apkRes] = await Promise.all([
-        deviceApi.getStatus(),
-        packageApi.list(),
+        deviceApi.getStatus(selectedDevice),
+        packageApi.list(selectedDevice),
         packageApi.getApkMap(),
         apkApi.list(),
       ])
@@ -46,7 +47,7 @@ export default function GameSelectStep({ selectedPackage, onSelect, onNext }: Pr
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [selectedDevice])
 
   // 설치된 패키지 + APK 매핑된 패키지 합집합 (미설치 게임도 선택/설치 가능)
   const games = useMemo(
@@ -78,7 +79,7 @@ export default function GameSelectStep({ selectedPackage, onSelect, onNext }: Pr
     setBusy(true)
     setMsg(`⏬ ${installApk} 설치 중...`)
     try {
-      const res = await apkApi.install(installApk)
+      const res = await apkApi.install(installApk, selectedDevice)
       setMsg(res.success ? `✅ 설치 완료 — ${installApk}` : `❌ 설치 실패: ${res.message}`)
       if (res.success) await load()
     } catch (e) {
@@ -94,7 +95,7 @@ export default function GameSelectStep({ selectedPackage, onSelect, onNext }: Pr
     setBusy(true)
     setMsg(`🗑️ ${selectedPackage} 삭제 중...`)
     try {
-      const res = await packageApi.uninstall(selectedPackage)
+      const res = await packageApi.uninstall(selectedPackage, selectedDevice)
       setMsg(res.success ? `✅ 삭제 완료 — ${selectedPackage}` : `❌ 삭제 실패: ${res.message}`)
       if (res.success) await load()
     } catch (e) {
@@ -124,7 +125,7 @@ export default function GameSelectStep({ selectedPackage, onSelect, onNext }: Pr
           <p className="text-xs text-gray-400 truncate">
             {connected
               ? `${device?.model ?? '알 수 없는 기기'} (${device?.device_id})`
-              : '기기를 USB로 연결하고 USB 디버깅을 허용하세요.'}
+              : '상단에서 디바이스를 선택하거나, 폰의 무선 디버깅을 켜고 IP로 연결하세요.'}
           </p>
         </div>
         <button onClick={handleReconnect} disabled={reconnecting}

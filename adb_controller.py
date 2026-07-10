@@ -49,8 +49,10 @@ class ADBController:
     CHUNK_SECONDS = 180  # screenrecord 최대 제한 (3분)
     ADB_BIN = _resolve_adb_executable()
 
-    def __init__(self):
+    def __init__(self, device_id: Optional[str] = None):
         self.device_id: Optional[str] = None
+        # 명시적으로 지정된 디바이스 — 다중 디바이스 서버에서 다른 폰으로 폴백하면 안 됨
+        self._requested_device = (device_id or "").strip()
         self._forwarded_ports: set[tuple[int, int]] = set()
         self._forward_map: dict[int, int] = {}  # remote_port → 동적 할당된 local_port
         self._verify_connection()
@@ -75,6 +77,18 @@ class ADBController:
                 raise ConnectionError("No device connected")
 
             connected_devices = [line.split("\t")[0] for line in lines]
+
+            # 생성자에서 디바이스가 명시된 경우: 그 디바이스가 없으면 실패 처리.
+            # (다중 사용자 환경에서 남의 폰으로 폴백해 테스트가 실행되는 사고 방지)
+            if self._requested_device:
+                if self._requested_device not in connected_devices:
+                    raise ConnectionError(
+                        f"지정한 디바이스가 연결되어 있지 않습니다: {self._requested_device}"
+                    )
+                self.device_id = self._requested_device
+                logger.info(f"Connected to device: {self.device_id}")
+                return
+
             preferred_device = os.getenv("ADB_DEVICE", "").strip()
 
             if preferred_device and preferred_device in connected_devices:
