@@ -4,18 +4,20 @@ name: Deploy Orchestrator (Linux Server)
 #   main → prod 스택: /opt/qa-auto,     이미지 태그 latest, 포트 8000
 #   dev  → dev  스택: /opt/qa-auto-dev, 이미지 태그 dev,    포트 8001
 # 같은 서버에 두 스택이 나란히 뜨며, 각 디렉토리의 .env는 최초 1회 수동 생성한다.
+# 자동 배포 일시 비활성화 — 서버 준비 후 아래 push 트리거 주석 해제
+# on:
+#   push:
+#     branches: [main, dev]
+#     paths:
+#       - '*.py'
+#       - 'requirements.txt'
+#       - 'Dockerfile'
+#       - 'docker-compose.yaml'
+#       - 'frontend/**'
+#       - 'templates/**'
+#       - 'game_testcases/**'
 on:
-  push:
-    # dev 자동 배포는 서버에 /opt/qa-auto-dev/.env 준비 후 활성화 → branches: [main, dev]
-    branches: [main]
-    paths:
-      - '*.py'
-      - 'requirements.txt'
-      - 'Dockerfile'
-      - 'docker-compose.yaml'
-      - 'frontend/**'
-      - 'templates/**'
-      - 'game_testcases/**'
+  workflow_dispatch:  # GitHub Actions 탭에서 수동 실행만 허용
 
 jobs:
   build-and-deploy:
