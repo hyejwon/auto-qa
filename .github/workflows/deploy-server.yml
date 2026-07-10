@@ -1,8 +1,12 @@
 name: Deploy Orchestrator (Linux Server)
 
+# 브랜치별 배포 환경 분리
+#   main → prod 스택: /opt/qa-auto,     이미지 태그 latest, 포트 8000
+#   dev  → dev  스택: /opt/qa-auto-dev, 이미지 태그 dev,    포트 8001
+# 같은 서버에 두 스택이 나란히 뜨며, 각 디렉토리의 .env는 최초 1회 수동 생성한다.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'orchestrator_server.py'
       - 'config.py'
@@ -21,6 +25,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve deploy target (main→prod, dev→dev)
+        id: target
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "image_tag=latest"            >> "$GITHUB_OUTPUT"
+            echo "deploy_dir=/opt/qa-auto"     >> "$GITHUB_OUTPUT"
+            echo "container=qa-orchestrator"   >> "$GITHUB_OUTPUT"
+            echo "port=8000"                   >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=dev"                  >> "$GITHUB_OUTPUT"
+            echo "deploy_dir=/opt/qa-auto-dev"    >> "$GITHUB_OUTPUT"
+            echo "container=qa-orchestrator-dev"  >> "$GITHUB_OUTPUT"
+            echo "port=8001"                      >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -32,17 +51,17 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t qa-auto-orchestrator:latest .
-          docker save qa-auto-orchestrator:latest | gzip > qa-auto-orchestrator.tar.gz
+          docker build -t qa-auto-orchestrator:${{ steps.target.outputs.image_tag }} .
+          docker save qa-auto-orchestrator:${{ steps.target.outputs.image_tag }} | gzip > qa-auto-orchestrator.tar.gz
 
-      - name: Copy image to server
+      - name: Copy image and compose file to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: qa-auto-orchestrator.tar.gz
-          target: /opt/qa-auto/
+          source: qa-auto-orchestrator.tar.gz,docker-compose.yaml
+          target: ${{ steps.target.outputs.deploy_dir }}/
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
@@ -51,8 +70,15 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            cd /opt/qa-auto
+            cd ${{ steps.target.outputs.deploy_dir }}
+            if [ ! -f .env ]; then
+              echo "❌ ${{ steps.target.outputs.deploy_dir }}/.env 없음 — 최초 1회 수동 생성 필요 (docs/deployment-guide.md 참고)"
+              exit 1
+            fi
             docker load < qa-auto-orchestrator.tar.gz
+            IMAGE_TAG=${{ steps.target.outputs.image_tag }} \
+            CONTAINER_NAME=${{ steps.target.outputs.container }} \
+            HOST_PORT=${{ steps.target.outputs.port }} \
             docker compose up -d --no-build
             docker image prune -f
-            echo "✅ 배포 완료: $(date)"
+            echo "✅ ${{ github.ref_name }} 배포 완료: $(date)"

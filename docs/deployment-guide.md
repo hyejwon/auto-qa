@@ -134,7 +134,29 @@ cat ~/.ssh/id_ed25519
 
 ## 3단계: 서버 자동 배포 (GitHub Actions)
 
-`main` 브랜치에 코드 푸시 시 자동 실행:
+### 브랜치 전략 — dev/prod 분리
+
+| 브랜치 | 환경 | 서버 디렉토리 | 이미지 태그 | 포트 | 컨테이너 |
+|--------|------|--------------|------------|------|----------|
+| `main` | prod | `/opt/qa-auto` | `latest` | 8000 | `qa-orchestrator` |
+| `dev` | dev | `/opt/qa-auto-dev` | `dev` | 8001 | `qa-orchestrator-dev` |
+
+- 작업 흐름: 기능 브랜치 → `dev` 머지(dev 서버 자동 배포, `http://서버IP:8001`에서 검증) → `main` 머지(prod 자동 배포)
+- 두 스택은 같은 서버에 나란히 뜨며 templates/pipelines/test_results/recordings 데이터가 서로 분리됨
+- 에이전트 EXE 릴리즈는 `main` 푸시에서만 빌드됨 (dev는 서버 스택만 배포)
+
+**dev 스택 최초 1회 설정** (prod와 동일하되 디렉토리만 다름):
+
+```bash
+sudo mkdir -p /opt/qa-auto-dev
+sudo chown $USER:$USER /opt/qa-auto-dev
+# .env 생성 — ORCHESTRATOR_PORT는 컨테이너 내부 포트이므로 8000 유지 (외부 8001 매핑은 워크플로우가 처리)
+cp /opt/qa-auto/.env /opt/qa-auto-dev/.env
+```
+
+> `.env`가 없으면 배포 워크플로우가 실패하도록 되어 있음 (실수로 빈 설정 배포 방지)
+
+`main` 또는 `dev` 브랜치에 코드 푸시 시 자동 실행:
 
 ```
 orchestrator_server.py, config.py, frontend/** 등 변경

@@ -1,11 +1,12 @@
-version: '3.8'
-
 services:
   orchestrator:
-    image: qa-auto-orchestrator:latest
-    container_name: qa-orchestrator
+    # IMAGE_TAG: prod=latest, dev=dev — 배포 워크플로우가 주입
+    image: qa-auto-orchestrator:${IMAGE_TAG:-latest}
+    container_name: ${CONTAINER_NAME:-qa-orchestrator}
     ports:
-      - "8000:8000"
+      # HOST_PORT: 서버 외부 노출 포트 (prod=8000, dev=8001). 컨테이너 내부는 항상 8000
+      # (.env의 ORCHESTRATOR_PORT는 컨테이너 내부 바인딩용이므로 8000 유지)
+      - "${HOST_PORT:-8000}:8000"
     volumes:
       - ./templates:/app/templates
       - ./pipelines:/app/pipelines
