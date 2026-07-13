@@ -1,367 +1,122 @@
 # qa-auto 배포 및 실행 가이드
 
-## 아키텍처 v2 — 단일 서버 + 무선 디바이스 (현행)
+## 아키텍처 — 단일 서버 + 무선 디바이스
 
 테스터 PC에 아무것도 설치하지 않는 구조. 서버가 폰을 Wi-Fi ADB로 직접 제어한다.
 
 ```
-[테스터 브라우저] ──HTTP/WS──> [중앙 서버 (Docker: api_server + adb)]
+[테스터 브라우저] ──HTTP/WS──> [중앙 서버 (api_server + adb)]
                                      │ adb over Wi-Fi (adb connect 폰IP:5555)
                                      ▼
                               [개인 디바이스 N대 (무선 디버깅 ON)]
 ```
 
-**테스터 사용 절차**
-1. 폰: 개발자 옵션 → 무선 디버깅 ON (또는 USB로 최초 1회 `adb tcpip 5555`)
-   - 폰과 서버가 서로 통신 가능한 망에 있어야 함 (게스트 Wi-Fi 불가)
-2. 브라우저: `http://서버IP:8000` (dev는 `:8001`) 접속
-3. 헤더의 **"IP로 연결"** 버튼 → 폰 IP 입력 (포트 생략 시 5555)
-4. 디바이스 드롭다운에서 자기 폰 선택 → 게임 선택 → 테스트 실행
+**테스터 사용 절차** (상세: `USER_SETUP.md` 상단 "테스터용" 섹션)
+1. 폰: 무선 디버깅 ON (USB로 최초 1회 `adb tcpip 5555`)
+2. 브라우저: `http://서버IP:8000` 접속
+3. 헤더의 **"IP로 연결"** → 폰 IP 입력 → 디바이스 선택 → 테스트 실행
 
 **동작 특성**
 - 등록한 디바이스는 `state/devices.json`에 영속화되고, 연결이 끊기면 서버가 30초마다 자동 재연결 시도 (`DEVICE_RECONNECT_INTERVAL`로 조정)
 - 테스트 실행 중인 디바이스는 잠금 처리 — 다른 세션이 같은 폰에 실행 요청 시 409 거부, 드롭다운에 "실행 중" 표시
-- 폰 재부팅 시 무선 디버깅이 꺼지는 기종은 다시 켜줘야 함 (또는 USB로 `adb tcpip 5555`)
+- 폰 재부팅 시 무선 디버깅이 꺼지는 기종은 다시 켜줘야 함 (USB로 `adb tcpip 5555`)
 - QA 디바이스는 공유기에서 MAC 고정 IP 할당 권장 (IP 바뀌면 재등록 필요)
 
-**서버 요구사항**: Docker 이미지에 adb 포함(자동 설치). 컨테이너는 폰의 5555 포트로 아웃바운드만 필요.
+**네트워크 전제**: 서버 → 폰(5555) 아웃바운드가 가능해야 함. 폰은 게스트 Wi-Fi 불가. 사전 확인: 서버에서 `adb connect 폰IP:5555`
 
 ---
 
-## 아키텍처 v1 — 오케스트레이터 + 에이전트 EXE (레거시)
+## 서버 세팅 A — 사내 Windows PC (기본)
 
-> 아래 구조는 무선 연결이 불가능한 환경(폰을 USB로만 물릴 수 있는 경우)의 대안으로 유지.
+전용 서버 없이 상시 켜두는 사내 Windows PC 1대로 운영한다.
 
-## 아키텍처 개요
+### 사전 준비물
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    사내 인프라                           │
-│                                                         │
-│  ┌─────────────────────────┐                            │
-│  │  Linux 서버 (Docker)    │                            │
-│  │  orchestrator_server    │ ← GitHub Actions 자동 배포  │
-│  │  포트: 8000             │                            │
-│  │  - React 웹 UI 서빙     │                            │
-│  │  - 에이전트 목록 관리   │                            │
-│  │  - 템플릿/파이프라인    │                            │
-│  │  - LLM 플랜 생성        │                            │
-│  └────────────┬────────────┘                            │
-│               │ HTTP (에이전트 등록/프록시)              │
-│    ┌──────────┼──────────────────────┐                  │
-│    ▼          ▼                      ▼                  │
-│  ┌──────┐  ┌──────┐            ┌──────┐                 │
-│  │테스터│  │테스터│            │테스터│                  │
-│  │A PC  │  │B PC  │  ...       │N PC  │                 │
-│  │      │  │      │            │      │                 │
-│  │ exe  │  │ exe  │            │ exe  │ ← GitHub Releases│
-│  │:8000 │  │:8000 │            │:8000 │                 │
-│  └──┬───┘  └──┬───┘            └──┬───┘                 │
-│     │ ADB     │ ADB               │ ADB                 │
-│  ┌──▼───┐  ┌──▼───┐            ┌──▼───┐                 │
-│  │LDPlayer│ │LDPlayer│         │LDPlayer│               │
-│  └──────┘  └──────┘            └──────┘                 │
-│                                                         │
-│               ┌────────────────┐                        │
-│               │ LLM Gateway    │                        │
-│               │ (사내 AI API)  │ ← 에이전트에서 직접 호출│
-│               └────────────────┘                        │
-└─────────────────────────────────────────────────────────┘
+| 항목 | 설명 |
+|------|------|
+| Python 3.12 | 설치 시 "Add python.exe to PATH" 체크 |
+| Git | 코드 받기/업데이트용 |
+| ADB (platform-tools) | `adb version` 확인. 없으면 platform-tools의 adb 경로를 PATH에 추가 |
+| 고정 IP | IT에 요청 (DHCP면 테스터 접속 주소가 바뀜) |
+
+### 최초 1회 세팅
+
+```bat
+git clone <레포주소> qa-auto
+cd qa-auto
+setup_server.bat   ← 우클릭 → "관리자 권한으로 실행"
 ```
 
-**흐름 요약**
-- 테스터는 브라우저로 `http://사내서버IP:8000` 접속
-- 오케스트레이터가 각 에이전트(exe)에 명령 프록시
-- 에이전트가 자기 PC의 LDPlayer를 ADB로 제어
-- 에이전트가 LLM Gateway에 직접 호출하여 AI 판단 수행
-- WebSocket 로그는 브라우저 → 에이전트 직접 연결
+`setup_server.bat`이 자동으로 처리하는 것:
+1. Python/adb 확인 → 가상환경 생성 → 의존성 설치
+2. `.env` 생성 (메모장이 열리면 `LLM_GATEWAY_TOKEN`만 채우면 됨 — `ADB_DEVICE`, `UNITY_API_URL`은 **비워둠**)
+3. 방화벽 인바운드 8000 허용
+4. 절전/최대 절전 해제 (서버가 잠들면 팀 전체 QA 중단)
+5. (선택) 로그온 시 자동 시작 등록 (작업 스케줄러 `qa-auto-server`)
+6. 서버 IP 안내 후 서버 시작
+
+### 평상시 실행
+
+```bat
+run_server.bat
+```
+
+- 브라우저 자동 오픈 없이 서버만 상시 실행, 프로세스가 죽으면 5초 후 자동 재시작
+- 자동 시작을 등록했다면 PC 로그온 시 알아서 뜸
+
+### 업데이트
+
+```bat
+git pull
+run_server.bat 재시작 (창 닫고 다시 실행)
+```
+
+> 프론트엔드를 수정한 경우에만 `cd frontend && npm run build` 후 재시작 (빌드 결과물이 리포에 포함되어 있어 평소엔 불필요)
+
+### 운영 주의사항
+
+- **끄지 말 것**: 이 PC가 꺼지면 팀 전체 QA가 중단됨. 개인 업무용 PC 말고 공용 PC 사용 권장
+- Windows 업데이트 자동 재시작 시간대를 업무 외 시간으로 설정
+- `screenshots/`, `recordings/`, `test_results/`가 계속 쌓이므로 주기적 정리
 
 ---
 
-## 1단계: 리눅스 서버 초기 설정 (최초 1회)
+## 서버 세팅 B — Linux + Docker (선택)
 
-### 필수 패키지 설치
+전용 리눅스 서버가 생기면 Docker로 이전할 수 있다. 이미지에 adb가 포함되어 있다.
 
 ```bash
-# Docker 설치
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-newgrp docker
-
-# 디렉토리 생성
-sudo mkdir -p /opt/qa-auto
-sudo chown $USER:$USER /opt/qa-auto
+# 서버 초기 설정
+sudo mkdir -p /opt/qa-auto && sudo chown $USER:$USER /opt/qa-auto
 cd /opt/qa-auto
+# .env 생성 (LLM_GATEWAY_URL/TOKEN)
+# docker-compose.yaml 복사 후:
+docker compose up -d
 ```
 
-### 환경변수 파일 생성
-
-```bash
-cat > /opt/qa-auto/.env << 'EOF'
-ORCHESTRATOR_PORT=8000
-LLM_GATEWAY_URL=https://llm-gateway.111percent.net/llm/google
-LLM_GATEWAY_TOKEN=발급받은_토큰값
-EOF
-```
-
-### docker-compose 파일 복사
-
-GitHub 저장소에서 `docker-compose.yaml`을 서버에 복사:
-
-```bash
-scp docker-compose.yaml user@서버IP:/opt/qa-auto/
-```
-
-또는 직접 생성:
-
-```bash
-cat > /opt/qa-auto/docker-compose.yaml << 'EOF'
-version: '3.8'
-services:
-  orchestrator:
-    image: qa-auto-orchestrator:latest
-    container_name: qa-orchestrator
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./templates:/app/templates
-      - ./pipelines:/app/pipelines
-      - ./test_results:/app/test_results
-      - ./recordings:/app/recordings
-    env_file:
-      - .env
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-EOF
-```
-
----
-
-## 2단계: GitHub Actions 시크릿 설정 (최초 1회)
-
-GitHub 저장소 → **Settings → Secrets and variables → Actions** 에서 추가:
-
-| 시크릿 이름 | 값 |
-|------------|-----|
-| `SERVER_HOST` | 사내 리눅스 서버 IP |
-| `SERVER_USER` | SSH 접속 유저명 (예: `ubuntu`) |
-| `SERVER_SSH_KEY` | SSH 개인키 내용 (`~/.ssh/id_rsa` 전체) |
-
-SSH 키 생성 (없는 경우):
-
-```bash
-ssh-keygen -t ed25519 -C "github-actions"
-# 생성된 공개키를 서버에 등록
-cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
-# 생성된 개인키를 GitHub 시크릿에 등록
-cat ~/.ssh/id_ed25519
-```
-
----
-
-## 3단계: 서버 자동 배포 (GitHub Actions)
-
-### 브랜치 전략 — dev/prod 분리
-
-| 브랜치 | 환경 | 서버 디렉토리 | 이미지 태그 | 포트 | 컨테이너 |
-|--------|------|--------------|------------|------|----------|
-| `main` | prod | `/opt/qa-auto` | `latest` | 8000 | `qa-orchestrator` |
-| `dev` | dev | `/opt/qa-auto-dev` | `dev` | 8001 | `qa-orchestrator-dev` |
-
-- 작업 흐름: 기능 브랜치 → `dev` 머지(dev 서버 자동 배포, `http://서버IP:8001`에서 검증) → `main` 머지(prod 자동 배포)
-- 두 스택은 같은 서버에 나란히 뜨며 templates/pipelines/test_results/recordings 데이터가 서로 분리됨
-- 에이전트 EXE 릴리즈는 `main` 푸시에서만 빌드됨 (dev는 서버 스택만 배포)
-
-**dev 스택 최초 1회 설정** (prod와 동일하되 디렉토리만 다름):
-
-```bash
-sudo mkdir -p /opt/qa-auto-dev
-sudo chown $USER:$USER /opt/qa-auto-dev
-# .env 생성 — ORCHESTRATOR_PORT는 컨테이너 내부 포트이므로 8000 유지 (외부 8001 매핑은 워크플로우가 처리)
-cp /opt/qa-auto/.env /opt/qa-auto-dev/.env
-```
-
-> `.env`가 없으면 배포 워크플로우가 실패하도록 되어 있음 (실수로 빈 설정 배포 방지)
-
-`main` 또는 `dev` 브랜치에 코드 푸시 시 자동 실행:
-
-```
-orchestrator_server.py, config.py, frontend/** 등 변경
-        ↓ git push origin main
-GitHub Actions (ubuntu-latest)
-  1. React 빌드 (npm run build)
-  2. Docker 이미지 빌드
-  3. 이미지 tar.gz → 서버 SCP 전송
-  4. SSH 접속 → docker compose up
-        ↓
-서버 자동 재시작 완료
-```
-
-### 수동 배포 (필요시)
-
-```bash
-# 로컬에서 이미지 빌드 후 서버 전송
-cd frontend && npm run build && cd ..
-docker build -t qa-auto-orchestrator:latest .
-docker save qa-auto-orchestrator:latest | gzip > qa-auto-orchestrator.tar.gz
-scp qa-auto-orchestrator.tar.gz user@서버IP:/opt/qa-auto/
-
-# 서버에서
-ssh user@서버IP
-cd /opt/qa-auto
-docker load < qa-auto-orchestrator.tar.gz
-docker compose up -d --no-build
-```
-
-### 서버 상태 확인
-
-```bash
-docker ps                          # 컨테이너 실행 여부
-docker logs qa-orchestrator -f     # 실시간 로그
-curl http://localhost:8000/health  # 헬스체크
-```
-
----
-
-## 4단계: 에이전트 EXE 빌드 (GitHub Actions)
-
-`main` 브랜치에 에이전트 관련 파일 변경 시 자동 빌드:
-
-```
-agent_server.py, vision_agent.py 등 변경
-        ↓ git push origin main
-GitHub Actions (windows-latest)
-  1. React 빌드
-  2. PyInstaller → qa-auto.exe
-  3. .env.example 포함하여 zip 압축
-  4. GitHub Releases 업로드
-        ↓
-Releases 페이지에서 다운로드 가능
-```
-
-**다운로드 위치**: GitHub 저장소 → **Releases** → 최신 `qa-auto-agent-*.zip`
-
----
-
-## 5단계: 테스터 PC 설정
-
-### 준비물
-- Windows 10/11
-- LDPlayer (또는 BlueStacks) 설치 및 실행 중
-- 사내 네트워크 연결
-
-### 설치 절차
-
-**1. EXE 다운로드**
-
-GitHub Releases에서 `qa-auto-agent-*.zip` 다운로드 후 압축 해제
-
-```
-qa-auto-agent/
-├── qa-auto.exe
-└── .env.example
-```
-
-**2. 환경변수 파일 설정**
-
-`.env.example`을 `.env`로 복사 후 편집:
-
-```env
-# 오케스트레이터 서버 주소
-ORCHESTRATOR_URL=http://사내서버IP:8000
-
-# 이 PC의 식별 이름 (팀원끼리 중복 금지)
-AGENT_NAME=홍길동-PC
-
-# 에이전트 포트 (기본값 사용)
-AGENT_PORT=8000
-
-# LDPlayer ADB 주소 (기본값 사용)
-ADB_DEVICE=127.0.0.1:5555
-
-# LLM Gateway
-LLM_GATEWAY_URL=https://llm-gateway.111percent.net/llm/google
-LLM_GATEWAY_TOKEN=발급받은_토큰값
-```
-
-**3. LDPlayer ADB 포트 확인**
-
-LDPlayer가 여러 개 실행 중인 경우 포트가 다를 수 있음:
-- LDPlayer 1번: `127.0.0.1:5555`
-- LDPlayer 2번: `127.0.0.1:5557`
-
-확인 방법: LDPlayer → 설정 → 기타 → ADB 포트 확인
-
-**4. EXE 실행**
-
-`qa-auto.exe` 더블클릭 (또는 터미널에서 실행)
-
-```
-[INFO] qa-auto Agent 시작 중...
-[INFO] ADB 디바이스 연결: 127.0.0.1:5555
-[INFO] 오케스트레이터 등록 완료: http://사내서버IP:8000
-[INFO] Uvicorn running on http://0.0.0.0:8000
-```
-
-> **방화벽 알림이 뜨면 "허용" 클릭** (오케스트레이터와 통신 필요)
-
----
-
-## 6단계: 사용
-
-**테스터 각자**의 접속 방법:
-
-```
-브라우저 → http://사내서버IP:8000
-```
-
-1. 상단 에이전트 드롭다운에서 자신의 PC 선택
-2. 사전 점검(Preflight) 자동 실행
-3. 파이프라인 탭에서 테스트 실행
-
----
-
-## 업데이트 절차
-
-### 서버 업데이트 (개발자)
-```
-코드 수정 → git push origin main → GitHub Actions 자동 배포
-```
-별도 작업 불필요. 약 3-5분 후 서버 자동 재시작.
-
-### 에이전트 업데이트 (테스터)
-```
-GitHub Releases → 최신 zip 다운로드 → 기존 exe 교체 → .env는 그대로 유지
-```
+- 브랜치별 스택: `main` → `/opt/qa-auto`(8000, latest) / `dev` → `/opt/qa-auto-dev`(8001, dev 태그)
+- GitHub Actions 배포는 현재 **수동 실행 전용** (Actions 탭 → "Deploy Orchestrator (Linux Server)" → Run workflow, 브랜치 선택)
+- 자동 배포를 켜려면 `.github/workflows/deploy-server.yml` 상단의 push 트리거 주석 해제
+- 대상 디렉토리에 `.env`가 없으면 배포가 의도적으로 실패함
 
 ---
 
 ## 트러블슈팅
 
-### 에이전트가 오케스트레이터에 등록되지 않음
-- `.env`의 `ORCHESTRATOR_URL` 확인 (IP, 포트 정확히)
-- 서버 방화벽에서 8000 포트 허용 여부 확인
-- `curl http://사내서버IP:8000/health` 로 서버 응답 확인
+### 서버에서 폰이 안 잡힘 (`adb connect` 실패)
+- 폰이 게스트 Wi-Fi에 붙어 있지 않은지 확인 (클라이언트 격리)
+- 폰 재부팅 후 무선 디버깅이 꺼졌는지 확인 → USB로 `adb tcpip 5555` 재실행
+- 서버↔폰이 다른 VLAN이면 방화벽에서 5555 허용 필요 (IT 협의)
 
-### ADB 연결 실패
-- LDPlayer 실행 중인지 확인
-- `.env`의 `ADB_DEVICE` 포트 확인 (LDPlayer 설정에서 확인)
-- `adb devices` 명령으로 수동 확인
+### 테스터 브라우저에서 서버 접속 불가
+- 서버 PC 방화벽 8000 인바운드 확인 (`setup_server.bat`이 등록함)
+- 서버 IP가 바뀌지 않았는지 확인 (`ipconfig`)
 
-### 브라우저에서 에이전트가 보이지 않음
-- exe 실행 후 콘솔에 "오케스트레이터 등록 완료" 메시지 확인
-- 브라우저 새로고침 (15초마다 자동 갱신)
-- 에이전트 오프라인 상태: exe를 재실행
+### 디바이스가 "실행 중"으로 계속 표시됨
+- 해당 세션 테스트가 실제로 돌고 있는 것. 강제로 풀려면 서버 재시작 (`run_server.bat` 창 닫고 재실행)
 
-### 미러링이 안 보임
-- 에이전트 선택 후 미러링 버튼 클릭
-- ADB 연결 상태 확인 (사전 점검 탭)
+### 테스트 중 화면이 이상하게 눌림
+- 테스트 실행 중에는 폰 화면을 만지지 말 것 (수동 터치와 자동 입력이 섞임)
 
 ### 녹화 파일이 없음
-- 테스트 실행 시 "녹화 ON" 버튼 활성화 확인 (빨간색)
-- 녹화 탭에서 에이전트 선택 후 새로고침
+- 실행 시 "녹화 ON" 활성화 여부 확인, `recordings/` 폴더 확인
