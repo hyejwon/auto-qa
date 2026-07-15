@@ -4,6 +4,7 @@ import { templateApi, testApi, apkApi, wsUrl, debugSince } from '../../api/clien
 import { stepsToYaml } from '../../lib/template'
 import { extractParams, substituteSteps } from '../../lib/params'
 import StepEditor, { newId } from './StepEditor'
+import ScreenPreview from '../ScreenPreview'
 import type { AdaptiveRun, Step, TemplateParam, TestResult } from '../../types'
 
 interface Props {
@@ -144,7 +145,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   }
 
   return (
-    <div className="max-w-5xl mx-auto w-full flex gap-4 h-full min-h-0">
+    <div className="max-w-6xl mx-auto w-full flex gap-4 h-full min-h-0">
       {/* 왼쪽: 모드 토글 + 편집 */}
       <div className="flex flex-col gap-3 w-1/2 min-w-0">
         {/* 모드 토글 */}
@@ -255,6 +256,9 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
           <div ref={logsEndRef} />
         </div>
       </div>
+
+      {/* 맨 오른쪽: 기기 화면 미리보기 (실행 전 확인 + 실행 중 모니터링) */}
+      <ScreenPreview device={device} running={running} />
     </div>
   )
 }
