@@ -56,6 +56,7 @@ class ADBController:
         self._forwarded_ports: set[tuple[int, int]] = set()
         self._forward_map: dict[int, int] = {}  # remote_port → 동적 할당된 local_port
         self._verify_connection()
+        self._apply_stay_awake()
         self.width, self.height = self._get_screen_size()
         # 녹화 상태
         self._recording: bool = False
@@ -106,6 +107,15 @@ class ADBController:
         except Exception as e:
             logger.error(f"Device connection failed: {e}")
             raise
+
+    def _apply_stay_awake(self):
+        """QA 기기 화면이 테스트 중 꺼지지 않도록 stayon 설정 (충전/USB/무선 연결 시 항상 켜짐)"""
+        try:
+            self._execute(["shell", "svc", "power", "stayon", "true"])
+            logger.info("Applied 'svc power stayon true' — screen stays on while powered")
+        except Exception as e:
+            # 실패해도 테스트는 계속 — launch_app의 ensure_screen_on이 폴백
+            logger.warning(f"stayon setting failed (non-fatal): {e}")
 
     def _adb_cmd(self, cmd: list[str]) -> list[str]:
         if self.device_id:
@@ -301,9 +311,46 @@ class ADBController:
             logger.error(f"Home press failed: {e}")
             return False
     
+    def is_screen_on(self) -> bool:
+        """화면 켜짐 여부 확인"""
+        try:
+            output = self._execute(["shell", "dumpsys", "display"])
+            for line in output.splitlines():
+                if "mScreenState=" in line:
+                    return "ON" in line.split("mScreenState=")[-1]
+            # 일부 기종은 dumpsys display에 mScreenState가 없어 power로 재확인
+            output = self._execute(["shell", "dumpsys", "power"])
+            return "mWakefulness=Awake" in output
+        except Exception as e:
+            logger.warning(f"Screen state check failed: {e}")
+            return True  # 확인 불가 시 켜져 있다고 간주 (POWER 토글 오동작 방지)
+
+    def ensure_screen_on(self) -> bool:
+        """화면이 꺼져 있으면 깨우고 잠금화면을 스와이프로 넘긴다 (PIN 미설정 기기 기준)"""
+        try:
+            if self.is_screen_on():
+                return True
+            # KEYCODE_WAKEUP은 꺼져 있을 때만 켜므로 POWER 토글보다 안전
+            self._execute(["shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+            time.sleep(1)
+            width, height = self._get_screen_size()
+            self._execute(["shell", "input", "swipe",
+                           str(width // 2), str(int(height * 0.8)),
+                           str(width // 2), str(int(height * 0.2)), "300"])
+            time.sleep(1)
+            if self.is_screen_on():
+                logger.info("Screen was off — woke device")
+                return True
+            logger.error("Failed to wake screen")
+            return False
+        except Exception as e:
+            logger.error(f"Screen wake failed: {e}")
+            return False
+
     def launch_app(self, package: str, activity: Optional[str] = None) -> bool:
         """앱 실행"""
         try:
+            self.ensure_screen_on()
             if activity:
                 target = f"{package}/{activity}"
             else:
