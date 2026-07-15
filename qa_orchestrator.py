@@ -169,6 +169,7 @@ class QAOrchestrator:
                         break
 
                     self._last_failure_reason = ""
+                    step_skipped = False
                     label = step.description or step.action
                     target_info = f"  → 대상: {step.target}" if step.target else ""
                     logger.info("")
@@ -217,12 +218,17 @@ class QAOrchestrator:
                                             tap_ok_verify_fail = True
 
                             if not success:
-                                logger.error("└─ ❌ 실패")
-                                if self._last_failure_reason:
-                                    logger.error(f"│    사유: {self._last_failure_reason}")
-                                result.status = "FAIL"
-                                reason_suffix = f" — {self._last_failure_reason}" if self._last_failure_reason else ""
-                                result.error_message = f"Step {idx + 1} 실패: {label}{reason_suffix}"
+                                if (step.params or {}).get("optional"):
+                                    # 선택 스텝: 조건부 팝업처럼 안 나올 수도 있는 대상 — 실패해도 건너뛰고 계속
+                                    step_skipped = True
+                                    logger.info("└─ ⏭️ 건너뜀 (선택 스텝 — 대상 미노출)")
+                                else:
+                                    logger.error("└─ ❌ 실패")
+                                    if self._last_failure_reason:
+                                        logger.error(f"│    사유: {self._last_failure_reason}")
+                                    result.status = "FAIL"
+                                    reason_suffix = f" — {self._last_failure_reason}" if self._last_failure_reason else ""
+                                    result.error_message = f"Step {idx + 1} 실패: {label}{reason_suffix}"
 
                         step_span.update(output={"passed": success, "vision_confidence": confidence})
 
@@ -230,8 +236,9 @@ class QAOrchestrator:
                         "step": idx + 1,
                         "label": label,
                         "passed": success,
+                        "skipped": step_skipped,
                         "vision_confidence": confidence,
-                        "failure_reason": "" if success else self._last_failure_reason,
+                        "failure_reason": "" if (success or step_skipped) else self._last_failure_reason,
                     })
 
                     self._cleanup_step_files()

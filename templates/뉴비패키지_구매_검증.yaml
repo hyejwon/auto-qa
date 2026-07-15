@@ -1,0 +1,68 @@
+title: 뉴비패키지 구매 검증
+description: 상점 진입 → 뉴비패키지 5500 KRW 상품 선택 → Google Play 결제 → 구매 후 보유 다이아 변경 확인
+package: ''
+steps:
+# 1) 메인 화면 또는 하단 내비게이션에서 상점으로 진입한다.
+- action: find_and_tap
+  target: 하단 상점 탭
+  params:
+    expect_visible: 뉴비패키지
+    wait_seconds: 2
+  description: 상점 진입 및 뉴비패키지 노출 확인
+  timeout: 20
+  retry: 2
+
+# 2) 구매 전 보유 다이아 수량을 저장한다.
+- action: read_text
+  target: 상단 보유 다이아 수량
+  params:
+    save_as: diamond_before
+  description: 구매 전 보유 다이아 수량 저장
+  timeout: 10
+  retry: 2
+
+# 3) 뉴비패키지 5500 KRW 가격 버튼을 탭해 Google Play 결제 시트를 연다.
+- action: find_and_tap
+  target: 뉴비패키지 5500 KRW 가격 버튼
+  params:
+    expect_visible: Google Play 원탭 구매 버튼
+    wait_seconds: 4
+  description: 뉴비패키지 상품 선택 및 Google Play 결제 시트 확인
+  timeout: 30
+  retry: 2
+
+# 4) Google Play 결제 시트에서 원탭 구매를 진행한다.
+- action: find_and_tap
+  target: Google Play 원탭 구매 버튼
+  params:
+    expect_visible: 구매 완료
+    wait_seconds: 8
+  description: 원탭 구매 버튼 탭 및 결제 완료 대기
+  timeout: 45
+  retry: 2
+
+# 5) 구매 완료 팝업을 닫고 상점 화면으로 복귀한다.
+- action: find_and_tap
+  target: 구매 완료 확인 버튼
+  params:
+    expect_visible: 상단 보유 다이아 수량
+    wait_seconds: 3
+  description: 구매 완료 확인 후 상점 복귀
+  timeout: 20
+  retry: 2
+
+# 6) 구매 후 보유 다이아 수량이 구매 전과 달라졌는지 확인한다.
+- action: read_text
+  target: 상단 보유 다이아 수량
+  params:
+    compare_with: diamond_before
+    expect_changed: true
+  description: 구매 후 보유 다이아 수량 변경 확인
+  timeout: 10
+  retry: 2
+
+expected_results:
+- 상점 화면에서 뉴비패키지가 노출되어야 한다.
+- 뉴비패키지 5500 KRW 가격 버튼 탭 후 Google Play 결제 시트가 노출되어야 한다.
+- 원탭 구매 후 구매 완료 상태가 확인되어야 한다.
+- 구매 후 상단 보유 다이아 수량이 구매 전과 달라져야 한다.

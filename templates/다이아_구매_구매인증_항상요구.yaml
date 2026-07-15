@@ -1,0 +1,95 @@
+title: 다이아 구매 — 구매 인증 '항상 요구' 선택 검증
+description: >
+  상점 → 다이아 상품 결제 → 원탭 구매 → (조건부) 구매 인증 팝업에서 '항상 요구' 선택
+  → 획득 화면 확인 → 보유 다이아 증가 확인.
+  구매 인증 팝업은 나올 수도 안 나올 수도 있으므로 optional 스텝으로 처리한다.
+package: ''
+steps:
+# 1) 메인 화면에서 상점으로 진입한다.
+- action: find_and_tap
+  target: 상점 버튼
+  params:
+    expect_visible: 상점 화면
+    wait_seconds: 2
+  description: 상점 진입
+  timeout: 20
+  retry: 2
+
+# 2) 상점 화면에서 다이아 상점을 찾고 진입한다.
+- action: find_and_tap
+  target: 다이아 상점 탭
+  params:
+    expect_visible: 다이아 상품 목록
+    wait_seconds: 2
+  description: 다이아 상점 진입
+  timeout: 20
+  retry: 2
+
+# 3) 구매 전 보유 다이아 수량을 저장한다.
+- action: read_text
+  target: 보유 다이아 수량
+  params:
+    save_as: diamond_before
+  description: 구매 전 다이아 수량 저장
+  timeout: 10
+  retry: 2
+
+# 4) 결제 아이템(다이아 상품 가격 버튼)을 탭 → Google Play 결제 시트 노출.
+- action: find_and_tap
+  target: 다이아 4000 상품의 12000 KRW 가격 버튼
+  params:
+    expect_visible: Google Play 원탭 구매 버튼
+    wait_seconds: 4
+  description: 결제 아이템 선택 → Google Play 결제 시트 확인
+  timeout: 30
+  retry: 2
+
+# 5) 원탭 구매 버튼 탭. 결제 완료 후 다음 화면은 두 갈래
+#    (구매 인증 팝업 또는 바로 획득 화면)라서 여기서는 화면 검증을 하지 않는다.
+- action: find_and_tap
+  target: Google Play 원탭 구매 버튼
+  params:
+    wait_seconds: 8
+  description: 원탭 구매 버튼 탭 및 결제 완료 대기
+  timeout: 40
+  retry: 2
+
+# 6) [조건부] 구매 인증 팝업이 나오면 '항상 요구'를 선택한다.
+#    안 나오면 건너뛴다 (optional). 이 선택 후에는 다음 결제부터
+#    비밀번호/생체 인증이 요구되므로 자동 결제 테스트가 막힌다 —
+#    본 시나리오는 마지막에 돌리거나, 실행 후 Play 스토어 설정에서 해제할 것.
+- action: find_and_tap
+  target: 구매 인증 팝업의 '항상 요구' 옵션 버튼
+  params:
+    optional: true
+    wait_seconds: 3
+  description: (나올 경우) 구매 인증 팝업에서 '항상 요구' 선택
+  timeout: 15
+  retry: 1
+
+# 7) 게임의 획득 화면을 닫는다 ("계속하려면 화면을 눌러주세요" 탭).
+- action: find_and_tap
+  target: 획득 팝업 (계속하려면 화면을 눌러주세요 문구가 있는 화면 중앙)
+  params:
+    expect_visible: 보유 다이아 수량
+    wait_seconds: 3
+  description: 획득 화면 확인 후 탭으로 닫고 상점 복귀
+  timeout: 30
+  retry: 2
+
+# 8) 아이템이 실제 지급되었는지 — 보유 다이아 수량 변경 확인.
+- action: read_text
+  target: 보유 다이아 수량
+  params:
+    compare_with: diamond_before
+    expect_changed: true
+  description: 구매 후 다이아 수량 증가(변경) 확인
+  timeout: 10
+  retry: 2
+
+expected_results:
+- 결제 아이템 선택 시 Google Play 원탭 구매 버튼이 노출되어야 한다.
+- 결제 완료 후 구매 인증 팝업이 노출되면 '항상 요구' 선택이 정상 동작해야 한다 (미노출 시 건너뜀).
+- 획득 화면이 노출되고 탭으로 닫혀야 한다.
+- 구매 후 보유 다이아 수량이 구매 전과 달라져야 한다 (아이템 정상 지급).
+- 테스트 결제 계정은 라이선스 테스터 또는 샌드박스 환경이어야 한다.
