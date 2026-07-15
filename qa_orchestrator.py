@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import json
 import unicodedata
@@ -645,10 +646,32 @@ class QAOrchestrator:
                 getattr(self, "_last_vision_confidence", 0.0), False,
             )
             return False
+        # tap_point: "center" — 대상이 화면에 보이는지 확인만 하고, 탭은 화면 정중앙에
+        # (획득 팝업처럼 "아무 곳이나 눌러 닫기" 화면용)
+        if params.get("tap_point") == "center":
+            tap_x, tap_y = self.adb.width // 2, self.adb.height // 2
+            coords = {**coords, "x": tap_x, "y": tap_y}
+            logger.info("tap_point=center — '%s' 확인 후 화면 정중앙 (%d, %d) 탭", target, tap_x, tap_y)
         self.adb.tap(coords["x"], coords["y"])
         self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
         self._auto_register_common(target, coords["x"], coords["y"])
         self._current_screen_type = ""
+
+        # then_tap: 첫 탭 후 이어서 탭할 대상 (예: 팝업 옵션 선택 → 확인 버튼) — 한 스텝으로 처리
+        then_target = params.get("then_tap")
+        if then_target:
+            then_path = self._wait_for_screen_stable()
+            then_coords = self._resolve_with_vision(then_path, then_target)
+            if not then_coords:
+                self._last_failure_reason = f"연속 탭 대상을 찾지 못함: '{then_target}' ('{target}' 탭 후)"
+                self._save_tap_debug(
+                    then_path, then_target, None,
+                    getattr(self, "_last_vision_confidence", 0.0), False,
+                )
+                return False
+            self.adb.tap(then_coords["x"], then_coords["y"])
+            logger.info("연속 탭: '%s' → '%s'", target, then_target)
+
         verified = self._verify_find_and_tap_outcome(step, tap_source="Vision")
         if not verified:
             self._last_failure_reason = f"탭 성공(Vision), 화면 검증 실패: '{target}'"
@@ -891,6 +914,8 @@ class QAOrchestrator:
         save_as = params.get("save_as")
         compare_with = params.get("compare_with")
         expect_changed = params.get("expect_changed")
+        expect_increase = params.get("expect_increase")
+        expect_decrease = params.get("expect_decrease")
 
         value = self.vision.read_text(screenshot_path, target)
         if value is None:
@@ -910,6 +935,31 @@ class QAOrchestrator:
             if prev is None:
                 logger.warning("read_text: compare_with '%s' 값이 없습니다.", compare_with)
                 return False
+
+            # 숫자 증감 검증 (재화 지급/차감 확인용) — 단순 변경 여부보다 강한 검증
+            if expect_increase or expect_decrease:
+                prev_n, curr_n = self._to_number(prev), self._to_number(value)
+                if prev_n is None or curr_n is None:
+                    self._last_failure_reason = (
+                        f"read_text: 숫자 비교 불가 ({prev!r} → {value!r})"
+                    )
+                    logger.error(self._last_failure_reason)
+                    return False
+                if expect_increase and curr_n <= prev_n:
+                    self._last_failure_reason = (
+                        f"read_text: 증가 기대했으나 {prev_n:g} → {curr_n:g}"
+                    )
+                    logger.error(self._last_failure_reason)
+                    return False
+                if expect_decrease and curr_n >= prev_n:
+                    self._last_failure_reason = (
+                        f"read_text: 감소 기대했으나 {prev_n:g} → {curr_n:g}"
+                    )
+                    logger.error(self._last_failure_reason)
+                    return False
+                logger.info("read_text 증감 확인: %g → %g (%+g)", prev_n, curr_n, curr_n - prev_n)
+                return True
+
             changed = prev != value
             if expect_changed is True and not changed:
                 logger.error("read_text: PID 변경 기대했으나 동일함 (%s)", value)
@@ -925,3 +975,16 @@ class QAOrchestrator:
             )
 
         return True
+
+    @staticmethod
+    def _to_number(text) -> Optional[float]:
+        """'1,234개' 같은 표시 문자열에서 숫자만 추출. 파싱 불가면 None."""
+        if text is None:
+            return None
+        s = re.sub(r"[^\d.\-]", "", str(text))
+        if not s or s in ("-", ".", "-."):
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None

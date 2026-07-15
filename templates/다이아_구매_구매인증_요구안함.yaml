@@ -54,34 +54,38 @@ steps:
   timeout: 40
   retry: 2
 
-# 6) [조건부] 구매 인증 팝업이 나오면 '요구 안함'을 선택한다. 안 나오면 건너뛴다 (optional).
+# 6) [조건부] 구매 인증 팝업이 나오면 '요구 안함' 선택 → '확인' 버튼까지 한 스텝(then_tap).
+#    팝업이 안 나오면 스텝 전체를 건너뛴다 (optional).
 #    '요구 안함' 선택 시 이후 결제에서 인증 없이 진행되므로 자동화 친화적 상태가 유지된다.
 - action: find_and_tap
   target: 구매 인증 팝업의 '요구 안함' 옵션 버튼
   params:
     optional: true
+    then_tap: 구매 인증 팝업의 '확인' 버튼
     wait_seconds: 3
-  description: (나올 경우) 구매 인증 팝업에서 '요구 안함' 선택
+  description: (나올 경우) 구매 인증 팝업에서 '요구 안함' 선택 후 확인
   timeout: 15
   retry: 1
 
-# 7) 게임의 획득 화면을 닫는다 ("계속하려면 화면을 눌러주세요" 탭).
+# 7) 결제 후 획득 창이 나와야 한다 — 확인되면 화면 정중앙을 탭해서 닫는다 (tap_point: center).
+#    획득 창이 안 나오면 이 스텝이 실패해 테스트가 FAIL 처리된다.
 - action: find_and_tap
-  target: 획득 팝업 (계속하려면 화면을 눌러주세요 문구가 있는 화면 중앙)
+  target: 아이템 획득 팝업 (획득! 또는 계속하려면 화면을 눌러주세요 문구)
   params:
+    tap_point: center
     expect_visible: 보유 다이아 수량
     wait_seconds: 3
-  description: 획득 화면 확인 후 탭으로 닫고 상점 복귀
+  description: 획득 창 노출 확인 후 정중앙 탭으로 닫고 상점 복귀
   timeout: 30
   retry: 2
 
-# 8) 아이템이 실제 지급되었는지 — 보유 다이아 수량 변경 확인.
+# 8) 아이템이 실제 지급되었는지 — 보유 다이아 수량이 '증가'했는지 숫자로 확인.
 - action: read_text
   target: 보유 다이아 수량
   params:
     compare_with: diamond_before
-    expect_changed: true
-  description: 구매 후 다이아 수량 증가(변경) 확인
+    expect_increase: true
+  description: 구매 후 다이아 수량 증가 확인 (재화 지급 검증)
   timeout: 10
   retry: 2
 
