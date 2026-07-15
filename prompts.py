@@ -45,6 +45,31 @@ JSON 형식으로 반환:
   "suggested_actions": ["액션1", "액션2", ...]
 }}"""
 
+DETECT_INTERRUPT_PROMPT = """이 게임 화면이 테스트 진행을 가로막는 '인터럽트 팝업'인지 판단해줘.
+
+인터럽트 팝업인 것 (테스트와 무관하게 갑자기 뜨는 것):
+- 이벤트/광고/프로모션 팝업, 공지사항, 출석 체크, 업데이트 안내
+- 네트워크 오류/재연결 팝업, 점검 안내
+
+인터럽트가 아닌 것 (절대 닫으면 안 됨):
+- 일반 게임 화면, 상점, 로비, 전투, 로딩 화면
+- Google Play 결제 시트, 구매 인증/확인 팝업
+- 아이템/재화 획득 결과 화면 (구매·보상 획득 팝업)
+- 확신이 없으면 인터럽트가 아니라고 판단해
+
+닫는 방법은 아래 두 가지만 허용:
+- "tap"  : 닫기(X)/"닫기"/"확인" 버튼 탭 — close_box_2d에 그 버튼 위치를 [ymin, xmin, ymax, xmax] (0~1000 정규화)로 반환
+- "back" : 명확한 닫기 버튼이 없을 때 안드로이드 뒤로가기
+
+**반환 형식 (JSON만):**
+{
+  "is_interrupt": true/false,
+  "kind": "event|notice|reward|error|network|other",
+  "close_method": "tap" | "back" | null,
+  "close_box_2d": [ymin, xmin, ymax, xmax] or null,
+  "description": "화면 설명 한 줄"
+}"""
+
 READ_TEXT_PROMPT = """이 게임 화면에서 '{region_description}'에 해당하는 텍스트 값을 읽어줘.
 
 **규칙:**

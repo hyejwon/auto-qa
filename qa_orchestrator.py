@@ -541,6 +541,46 @@ class QAOrchestrator:
     # 탭 성공했으나 검증만 실패했음을 나타내는 센티널
     _TAP_OK_VERIFY_FAIL = "TAP_OK_VERIFY_FAIL"
 
+    # 대상 미발견 시 인터럽트 팝업 복구 최대 횟수 (팝업이 겹쳐 뜨는 경우 대비)
+    INTERRUPT_RECOVERY_MAX = 2
+
+    def _try_recover_interrupt(self, screenshot_path: Path) -> bool:
+        """예상 밖 인터럽트 팝업(이벤트/공지/오류)이면 닫는다. 복구했으면 True.
+
+        복구 액션은 닫기 버튼 탭 / 뒤로가기만 허용 (화이트리스트) —
+        결제 시트·획득 팝업 등 테스트가 의도한 화면은 프롬프트에서 제외되며,
+        임의 버튼을 눌러 기기 상태를 오염시키지 않는다.
+        경로 우회는 하지 않는다: 복구 후에도 원래 대상을 다시 찾을 뿐이며,
+        복구 불가면 정직하게 FAIL로 남긴다.
+        """
+        analysis = self.vision.detect_interrupt(screenshot_path)
+        if not analysis or not analysis.get("is_interrupt"):
+            return False
+
+        kind = analysis.get("kind", "?")
+        desc = analysis.get("description", "")
+        method = analysis.get("close_method")
+        logger.info("⚠️ 인터럽트 팝업 감지 [%s]: %s", kind, desc)
+
+        if method == "tap":
+            box = analysis.get("close_box_2d")
+            if box and len(box) == 4:
+                ymin, xmin, ymax, xmax = box
+                x = int((xmin + xmax) / 2 / 1000 * self.adb.width)
+                y = int((ymin + ymax) / 2 / 1000 * self.adb.height)
+                self.adb.tap(x, y)
+                logger.info("│  닫기 버튼 탭 (%d, %d)", x, y)
+            else:
+                self.adb.press_back()
+                logger.info("│  닫기 버튼 좌표 없음 — 뒤로가기로 대체")
+        elif method == "back":
+            self.adb.press_back()
+            logger.info("│  뒤로가기로 팝업 닫기")
+        else:
+            logger.info("│  닫기 방법 불명 — 복구 중단")
+            return False
+        return True
+
     def _find_and_tap(self, step) -> bool | str:
         """공통 캐시 → 게임 캐시 → Vision 순으로 좌표 탐색. 해상도별 관리."""
         target = step.target
@@ -582,9 +622,28 @@ class QAOrchestrator:
         time.sleep(3)
         latest_path = self._wait_for_screen_stable()
         coords = self._resolve_with_vision(latest_path, target)
+
+        # 대상 미발견 시 인터럽트 복구: 이벤트/공지/오류 팝업이 가리고 있으면 닫고 재탐색.
+        # optional 스텝은 "안 나올 수 있는 대상"이라 미발견이 정상 — 복구를 시도하지 않는다.
+        params = step.params or {}
+        if not coords and not params.get("optional") and not params.get("no_recovery"):
+            for attempt in range(self.INTERRUPT_RECOVERY_MAX):
+                if not self._try_recover_interrupt(latest_path):
+                    break
+                latest_path = self._wait_for_screen_stable()
+                coords = self._resolve_with_vision(latest_path, target)
+                if coords:
+                    logger.info("✅ 인터럽트 복구 후 대상 재발견: '%s' (복구 %d회)", target, attempt + 1)
+                    break
+
         if not coords:
             if not self._last_failure_reason:
                 self._last_failure_reason = f"Vision으로 요소를 찾지 못함: '{target}'"
+            # 못 찾은 경우에도 실패 당시 화면을 남긴다 — cleanup이 지우지 않는 taps/ 에 저장
+            self._save_tap_debug(
+                latest_path, target, None,
+                getattr(self, "_last_vision_confidence", 0.0), False,
+            )
             return False
         self.adb.tap(coords["x"], coords["y"])
         self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
@@ -648,12 +707,13 @@ class QAOrchestrator:
         self._last_vision_confidence = vision_result.confidence
         return vision_result.bbox.to_pixels(self.adb.width, self.adb.height)
 
-    def _save_tap_debug(self, screenshot_path: Path, target: str, coords: dict,
+    def _save_tap_debug(self, screenshot_path: Path, target: str, coords: Optional[dict],
                         confidence: float, verified: bool) -> None:
         """find_and_tap 디버그 아티팩트 저장 — 버튼을 제대로 눌렀는지 추적용.
 
-        - screenshots_debug/taps/{ts}_{target}_{PASS|FAIL}.png : bbox + 실제 탭 지점 표시
-        - screenshots_debug/find_and_tap_debug.jsonl           : 스텝별 한 줄 요약 로그
+        - screenshots_debug/taps/{ts}_{target}_{PASS|FAIL|NOTFOUND}.png : bbox + 실제 탭 지점 표시
+        - screenshots_debug/find_and_tap_debug.jsonl                    : 스텝별 한 줄 요약 로그
+        coords가 None이면 대상을 아예 못 찾은 경우 — 실패 당시 화면만 라벨과 함께 남긴다.
         """
         try:
             debug_dir = self.config.paths.debug_dir
@@ -661,7 +721,7 @@ class QAOrchestrator:
             taps_dir.mkdir(parents=True, exist_ok=True)
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            status = "PASS" if verified else "FAIL"
+            status = "PASS" if verified else ("FAIL" if coords else "NOTFOUND")
             safe_target = "".join(
                 c if c.isalnum() or c in "._- " else "_" for c in (target or "")
             ).strip().replace(" ", "_")[:40] or "none"
@@ -671,24 +731,29 @@ class QAOrchestrator:
             img = Image.open(screenshot_path).convert("RGB")
             draw = ImageDraw.Draw(img)
             color = (0, 200, 0) if verified else (255, 40, 40)
-            x1, y1 = coords["x1"], coords["y1"]
-            x2, y2 = coords["x2"], coords["y2"]
-            cx, cy = coords["x"], coords["y"]
-            draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
-            r = 16
-            draw.line([cx - r, cy, cx + r, cy], fill=color, width=3)
-            draw.line([cx, cy - r, cx, cy + r], fill=color, width=3)
-            draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=3)
-            label = f"{target} | tap=({cx},{cy}) conf={confidence:.2f} {status}"
-            draw.text((max(x1, 5), max(y1 - 16, 2)), label, fill=color)
+            if coords:
+                x1, y1 = coords["x1"], coords["y1"]
+                x2, y2 = coords["x2"], coords["y2"]
+                cx, cy = coords["x"], coords["y"]
+                draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
+                r = 16
+                draw.line([cx - r, cy, cx + r, cy], fill=color, width=3)
+                draw.line([cx, cy - r, cx, cy + r], fill=color, width=3)
+                draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=3)
+                label = f"{target} | tap=({cx},{cy}) conf={confidence:.2f} {status}"
+                draw.text((max(x1, 5), max(y1 - 16, 2)), label, fill=color)
+            else:
+                label = f"NOT FOUND: {target} | conf={confidence:.2f} | {self._last_failure_reason}"
+                draw.text((5, 5), label, fill=color)
             img.save(img_path)
 
             record = {
                 "timestamp": ts,
                 "device": self._file_tag,
                 "target": target,
-                "tap": {"x": cx, "y": cy},
-                "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                "tap": {"x": coords["x"], "y": coords["y"]} if coords else None,
+                "bbox": {"x1": coords["x1"], "y1": coords["y1"],
+                         "x2": coords["x2"], "y2": coords["y2"]} if coords else None,
                 "confidence": round(float(confidence), 3),
                 "resolution": self._resolution,
                 "package": self._current_package,
@@ -701,8 +766,9 @@ class QAOrchestrator:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
             logger.info("┌─ find_and_tap 디버그 저장: %s", img_path.name)
-            logger.info("│  target='%s' tap=(%d,%d) conf=%.2f → %s",
-                        target, cx, cy, confidence, status)
+            tap_info = f"tap=({coords['x']},{coords['y']})" if coords else "tap=없음(미발견)"
+            logger.info("│  target='%s' %s conf=%.2f → %s",
+                        target, tap_info, confidence, status)
         except Exception as e:
             logger.warning("find_and_tap 디버그 저장 실패: %s", e)
 

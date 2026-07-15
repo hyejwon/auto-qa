@@ -4,6 +4,7 @@ from prompts import (
     FIND_ELEMENT_PROMPT,
     ANALYZE_SCREEN_STATE_PROMPT,
     READ_TEXT_PROMPT,
+    DETECT_INTERRUPT_PROMPT,
 )
 from PIL import Image, ImageDraw
 import json
@@ -146,6 +147,26 @@ class GeminiVisionAgent:
             logger.error(f"Screen analysis failed: {e}")
             return {}
     
+    def detect_interrupt(self, image_path: Path) -> Dict:
+        """예상 밖 인터럽트 팝업(이벤트/공지/오류 등) 감지 및 닫기 방법 판단.
+
+        반환: {"is_interrupt": bool, "kind": str, "close_method": "tap"|"back"|None,
+               "close_box_2d": [ymin,xmin,ymax,xmax]|None, "description": str}
+        실패 시 빈 dict — 호출부는 인터럽트 아님으로 처리한다.
+        """
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[DETECT_INTERRUPT_PROMPT, self._image_part(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            logger.error(f"Interrupt detection failed: {e}")
+            return {}
+
     def read_text(self, image_path: Path, region_description: str) -> Optional[str]:
         """
         화면에서 특정 영역의 텍스트 값을 읽어서 반환
