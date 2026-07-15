@@ -67,15 +67,15 @@ steps:
   timeout: 15
   retry: 1
 
-# 7) 결제 후 획득 창이 나와야 한다 — 확인되면 화면 정중앙을 탭해서 닫는다 (tap_point: center).
+# 7) 결제 후 획득 창이 나와야 한다 — '터치하세요' 문구를 찾아 그 문구를 탭해서 닫는다.
+#    (문구가 화면 중앙부에 있어 사실상 정중앙 탭과 동일)
 #    획득 창이 안 나오면 이 스텝이 실패해 테스트가 FAIL 처리된다.
 - action: find_and_tap
-  target: 아이템 획득 팝업 (획득! 또는 계속하려면 화면을 눌러주세요 문구)
+  target: 아이템 획득 팝업의 '터치하세요' 문구
   params:
-    tap_point: center
     expect_visible: 보유 다이아 수량
     wait_seconds: 3
-  description: 획득 창 노출 확인 후 정중앙 탭으로 닫고 상점 복귀
+  description: 획득 창 노출 확인 후 '터치하세요' 문구 탭으로 닫고 상점 복귀
   timeout: 30
   retry: 2
 
