@@ -79,6 +79,36 @@ run_server.bat 재시작 (창 닫고 다시 실행)
 - Windows 업데이트 자동 재시작 시간대를 업무 외 시간으로 설정
 - `screenshots/`, `recordings/`, `test_results/`가 계속 쌓이므로 주기적 정리
 
+### 폰 IP 고정 (DHCP 예약) — 필수 권장
+
+무선 adb는 **폰 IP가 바뀌면 끊긴다.** 서버의 30초 자동 재연결도 `state/devices.json`에
+저장된 **옛 IP**로만 재시도하므로, DHCP로 IP가 바뀌면 테스터가 새 IP로 재등록해야 한다.
+운영에서 가장 자주 터지는 부분이라 QA 폰은 전부 IP를 고정해둘 것.
+
+1. 폰 Wi-Fi 상세 정보에서 **MAC 주소** 확인 (설정 → Wi-Fi → 연결된 네트워크 → 상세.
+   ⚠️ "랜덤 MAC" 사용 중이면 **"기기 MAC"으로 변경** — 랜덤 MAC은 예약이 무의미)
+2. 공유기 관리 페이지 → DHCP 설정 → **주소 예약(고정 할당)** 에 MAC ↔ IP 등록
+3. 폰 Wi-Fi 재연결 후 IP 확인 → 서버 웹 UI에서 해당 IP로 디바이스 재등록 (최초 1회)
+
+서버 PC 고정 IP(사전 준비물 표 참고)와는 별개로, **폰마다** 해줘야 한다.
+
+### 서버 자가복구 워치독
+
+`setup_server.bat`(관리자)에서 자동 시작 등록 시 `qa-auto-watchdog` 작업이 함께 등록된다
+(1분마다 `server_watchdog.bat` 실행). 동작:
+
+1. `http://localhost:8000/health` 체크 (10초 간격 2회 — 일시 부하 오탐 방지)
+2. 무응답이면 **행 걸린 api_server 프로세스를 강제 종료** → `run_server.bat` 루프가 5초 후 재시작
+3. 루프 자체가 없으면 `qa-auto-server` 작업을 기동
+4. 조치 내역은 `watchdog.log`에 기록 (1MB 초과 시 자동 리셋)
+
+즉 프로세스 크래시는 run_server 루프가, **행(응답 없음)과 루프 부재**는 워치독이 복구한다.
+수동 등록:
+
+```bat
+schtasks /Create /TN "qa-auto-watchdog" /TR "C:\qa-auto\server_watchdog.bat" /SC MINUTE /MO 1 /RL HIGHEST /F
+```
+
 ---
 
 ## 서버 세팅 B — Linux + Docker (선택)

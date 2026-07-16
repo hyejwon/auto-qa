@@ -71,11 +71,13 @@ powercfg /change standby-timeout-ac 0 >nul
 powercfg /change hibernate-timeout-ac 0 >nul
 echo [*] 절전/최대 절전 해제 완료 ^(AC 전원 기준^)
 
-REM ── 7) 로그온 시 자동 시작 등록 (선택)
-set /p AUTOSTART="[?] PC 로그온 시 서버 자동 시작을 등록할까요? (y/N): "
+REM ── 7) 로그온 시 자동 시작 + 워치독 등록 (선택)
+set /p AUTOSTART="[?] PC 로그온 시 서버 자동 시작 + 1분 주기 워치독을 등록할까요? (y/N): "
 if /i "%AUTOSTART%"=="y" (
   schtasks /Create /TN "qa-auto-server" /TR "\"%~dp0run_server.bat\"" /SC ONLOGON /RL HIGHEST /F >nul
   echo [*] 자동 시작 등록 완료 ^(작업 스케줄러: qa-auto-server^)
+  schtasks /Create /TN "qa-auto-watchdog" /TR "\"%~dp0server_watchdog.bat\"" /SC MINUTE /MO 1 /RL HIGHEST /F >nul
+  echo [*] 워치독 등록 완료 ^(1분마다 /health 체크, 행/다운 시 자동 재시작 — 로그: watchdog.log^)
 )
 
 :skip_admin
