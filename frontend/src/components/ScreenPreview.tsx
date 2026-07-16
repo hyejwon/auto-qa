@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Monitor, Pause, Play, RefreshCw } from 'lucide-react'
+import { Monitor, Pause, Play, RefreshCw, ArrowLeft, Home, Square, ArrowUp, ArrowDown, Sun } from 'lucide-react'
+import { deviceApi } from '../api/client'
 
 interface Props {
   device: string
   running: boolean
 }
+
+// 수동 조작 버튼 — 테스트 스텝/보고서와 무관한 즉석 adb 입력
+const CONTROLS: { action: string; title: string; Icon: typeof ArrowLeft }[] = [
+  { action: 'scroll_up', title: '위로 스크롤', Icon: ArrowUp },
+  { action: 'scroll_down', title: '아래로 스크롤', Icon: ArrowDown },
+  { action: 'back', title: '뒤로가기', Icon: ArrowLeft },
+  { action: 'home', title: '홈', Icon: Home },
+  { action: 'recents', title: '최근 앱', Icon: Square },
+  { action: 'wake', title: '화면 깨우기', Icon: Sun },
+]
 
 /**
  * 기기 화면 미리보기 패널.
@@ -16,6 +27,7 @@ export default function ScreenPreview({ device, running }: Props) {
   const [url, setUrl] = useState('')
   const [paused, setPaused] = useState(false)
   const [error, setError] = useState('')
+  const [controlBusy, setControlBusy] = useState('')
   const inFlightRef = useRef(false)
 
   const endpoint = running ? '/api/screen/latest' : '/api/screen/snapshot'
@@ -71,6 +83,25 @@ export default function ScreenPreview({ device, running }: Props) {
         )}
       </div>
       {error && url && <p className="text-[10px] text-amber-400 mt-1 flex-none truncate">{error} (마지막 화면)</p>}
+
+      {/* 수동 조작 바 — 테스트 실행 중에는 입력이 섞이므로 비활성화 */}
+      <div className="flex justify-center gap-1 mt-1.5 flex-none">
+        {CONTROLS.map(({ action, title, Icon }) => (
+          <button key={action} title={running ? '테스트 실행 중에는 사용 불가' : title}
+            disabled={running || !device || !!controlBusy}
+            onClick={async () => {
+              setControlBusy(action)
+              try {
+                await deviceApi.control(action, device)
+                setTimeout(refresh, 600)  // 조작 결과가 화면에 반영된 후 갱신
+              } catch { /* 미리보기 오류 표시로 충분 */ }
+              finally { setControlBusy('') }
+            }}
+            className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white disabled:opacity-40 transition-colors">
+            <Icon size={13} className={controlBusy === action ? 'animate-pulse' : ''} />
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

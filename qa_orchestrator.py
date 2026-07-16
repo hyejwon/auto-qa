@@ -313,6 +313,9 @@ class QAOrchestrator:
                 )
                 return ok, 1.0
 
+            elif step.action == ActionType.SCROLL:
+                return self._scroll_action(step), 1.0
+
             elif step.action == ActionType.WAIT:
                 time.sleep(step.params.get("seconds", 2))
                 return True, 1.0
@@ -725,6 +728,52 @@ class QAOrchestrator:
     SCROLL_SEARCH_MAX_DEFAULT = 5      # 스크롤 상한 (무한 루프 방지 1)
     SCROLL_END_THRESHOLD = 0.005       # 스크롤 전후 변화율이 이보다 작으면 리스트 끝 (무한 루프 방지 2)
 
+    def _scroll_one_page(self, direction: str) -> None:
+        """화면 중앙 세로선 기준 한 페이지 스크롤 (up=이전 내용으로, down=다음 내용으로)."""
+        w, h = self.adb.width, self.adb.height
+        x = w // 2
+        if direction == "up":
+            self.adb.swipe(x, int(h * 0.35), x, int(h * 0.70), duration=400)
+        else:
+            self.adb.swipe(x, int(h * 0.70), x, int(h * 0.35), duration=400)
+
+    def _scroll_action(self, step) -> bool:
+        """선언적 스크롤 액션.
+
+        params:
+          direction: down(기본) | up | top(맨 위까지) | bottom(맨 끝까지)
+          times: 횟수 (up/down만, 기본 1)
+        top/bottom은 화면이 더 이상 변하지 않을 때까지 스크롤 (최대 10회).
+        """
+        params = step.params or {}
+        direction = str(params.get("direction", "down")).lower()
+        times = max(1, int(params.get("times", 1)))
+
+        if direction in ("top", "bottom"):
+            one_dir = "up" if direction == "top" else "down"
+            prev = self._wait_for_screen_stable()
+            for i in range(10):
+                if getattr(self, '_stop_event', None) and self._stop_event.is_set():
+                    break
+                self._scroll_one_page(one_dir)
+                curr = self._wait_for_screen_stable()
+                ratio = self._image_change_ratio(prev, curr)
+                if ratio is not None and ratio < self.SCROLL_END_THRESHOLD:
+                    logger.info("scroll %s: 끝 도달 (%d회 스크롤)", direction, i + 1)
+                    break
+                prev = curr
+            return True
+
+        if direction not in ("up", "down"):
+            self._last_failure_reason = f"scroll direction 값 오류: '{direction}' (up/down/top/bottom)"
+            logger.error(self._last_failure_reason)
+            return False
+        for _ in range(times):
+            self._scroll_one_page(direction)
+            time.sleep(0.5)
+        logger.info("scroll %s x%d 완료", direction, times)
+        return True
+
     def _scroll_search(self, step, target: str, latest_path: Path) -> tuple[Path, Optional[dict]]:
         """대상을 찾을 때까지 한 페이지씩 스크롤하며 재탐색.
 
@@ -733,21 +782,14 @@ class QAOrchestrator:
         """
         params = step.params or {}
         max_scrolls = int(params.get("max_scrolls", self.SCROLL_SEARCH_MAX_DEFAULT))
-        direction = str(params.get("scroll_direction", "down")).lower()
-
-        w, h = self.adb.width, self.adb.height
-        x = w // 2
-        if direction == "up":
-            y1, y2 = int(h * 0.35), int(h * 0.70)
-        else:  # down (리스트를 아래로 내려 보기 — 화면은 위로 스와이프)
-            y1, y2 = int(h * 0.70), int(h * 0.35)
+        direction = "up" if str(params.get("scroll_direction", "down")).lower() == "up" else "down"
 
         for i in range(max_scrolls):
             if getattr(self, '_stop_event', None) and self._stop_event.is_set():
                 logger.warning("scroll_search: 사용자 중단")
                 break
             before_path = latest_path
-            self.adb.swipe(x, y1, x, y2, duration=400)
+            self._scroll_one_page(direction)
             latest_path = self._wait_for_screen_stable()
 
             ratio = self._image_change_ratio(before_path, latest_path)

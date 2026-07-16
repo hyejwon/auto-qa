@@ -137,6 +137,7 @@ export const ACTION_CHOICES = [
   'find_and_tap',
   'verify',
   'read_text',
+  'scroll',
   'wait',
   'back',
   'home',

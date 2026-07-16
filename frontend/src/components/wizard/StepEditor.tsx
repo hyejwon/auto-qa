@@ -159,6 +159,25 @@ export default function StepEditor({ steps, ids, selectedPackage, apks = [], dis
                     onChange={(e) => setStep(i, { ...s, params: { ...p, seconds: Number(e.target.value) } })}
                     placeholder="초"
                     className="w-24 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500" />
+                ) : s.action === 'scroll' ? (
+                  <>
+                    <select disabled={disabled}
+                      value={(p.direction as string) ?? 'down'}
+                      onChange={(e) => setStep(i, { ...s, params: { ...p, direction: e.target.value } })}
+                      className="w-32 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500">
+                      <option value="down">아래로</option>
+                      <option value="up">위로</option>
+                      <option value="top">맨 위까지</option>
+                      <option value="bottom">맨 아래까지</option>
+                    </select>
+                    {((p.direction as string) ?? 'down') === 'down' || (p.direction as string) === 'up' ? (
+                      <input type="number" min={1} max={20} disabled={disabled}
+                        value={(p.times as number) ?? 1}
+                        onChange={(e) => setStep(i, { ...s, params: { ...p, times: Number(e.target.value) || 1 } })}
+                        placeholder="횟수"
+                        className="w-20 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500" />
+                    ) : null}
+                  </>
                 ) : (
                   <>
                     <input value={p.expect_visible || ''} disabled={disabled}

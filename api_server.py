@@ -456,6 +456,52 @@ def install_apk(req: InstallApkRequest):
         return {"success": False, "message": str(e)}
 
 # ─────────────────────────────────────────────
+# 수동 디바이스 조작 — 테스트 스텝/보고서와 무관한 즉석 adb 입력
+# ─────────────────────────────────────────────
+class DeviceControlRequest(BaseModel):
+    action: str
+    device: str = ""
+
+
+_CONTROL_KEYMAP = {
+    "back": "KEYCODE_BACK",
+    "home": "KEYCODE_HOME",
+    "recents": "KEYCODE_APP_SWITCH",
+    "wake": "KEYCODE_WAKEUP",
+    "enter": "KEYCODE_ENTER",
+}
+
+
+@app.post("/api/device/control")
+def device_control(req: DeviceControlRequest):
+    """수동 조작: back/home/recents/wake/enter/scroll_up/scroll_down"""
+    device_info = get_device(req.device)
+    if device_info["status"] != "connected":
+        raise HTTPException(status_code=503, detail="디바이스 미연결")
+    did = device_info["device_id"]
+    try:
+        if req.action in _CONTROL_KEYMAP:
+            _adb_shell(did, ["shell", "input", "keyevent", _CONTROL_KEYMAP[req.action]])
+        elif req.action in ("scroll_up", "scroll_down"):
+            out = _adb_shell(did, ["shell", "wm", "size"])
+            try:
+                w, h = (int(v) for v in out.split()[-1].split("x"))
+            except Exception:
+                w, h = 1080, 1920
+            x = w // 2
+            y1, y2 = (int(h * 0.35), int(h * 0.70)) if req.action == "scroll_up" \
+                else (int(h * 0.70), int(h * 0.35))
+            _adb_shell(did, ["shell", "input", "swipe", str(x), str(y1), str(x), str(y2), "400"])
+        else:
+            raise HTTPException(status_code=400, detail=f"지원하지 않는 action: {req.action}")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+# ─────────────────────────────────────────────
 # Firebase App Distribution — 빌드 조회/설치
 # ─────────────────────────────────────────────
 from app_distribution import AppDistributionClient

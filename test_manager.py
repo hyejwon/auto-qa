@@ -13,6 +13,7 @@ class ActionType(str, Enum):
     """액션 타입"""
     FIND_AND_TAP = "find_and_tap"
     SWIPE = "swipe"
+    SCROLL = "scroll"
     WAIT = "wait"
     VERIFY = "verify"
     BACK = "back"

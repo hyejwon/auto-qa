@@ -19,6 +19,10 @@ export const deviceApi = {
     api
       .post<{ success: boolean; message: string }>('/devices/disconnect', { address })
       .then((r) => r.data),
+  control: (action: string, device?: string) =>
+    api
+      .post<{ success: boolean; message?: string }>('/device/control', { action, device: device ?? '' })
+      .then((r) => r.data),
 }
 
 export const preflightApi = {
