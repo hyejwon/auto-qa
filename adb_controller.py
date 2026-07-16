@@ -325,26 +325,66 @@ class ADBController:
             logger.warning(f"Screen state check failed: {e}")
             return True  # 확인 불가 시 켜져 있다고 간주 (POWER 토글 오동작 방지)
 
-    def ensure_screen_on(self) -> bool:
-        """화면이 꺼져 있으면 깨우고 잠금화면을 스와이프로 넘긴다 (PIN 미설정 기기 기준)"""
+    def is_locked(self) -> bool:
+        """잠금화면(키가드) 표시 여부. 확인 불가 시 False (잠기지 않음으로 간주)."""
         try:
-            if self.is_screen_on():
+            out = self._execute(["shell", "dumpsys", "window"])
+            for token in ("mKeyguardShowing=true", "keyguardShowing=true",
+                          "isKeyguardShowing=true", "mShowingLockscreen=true"):
+                if token in out:
+                    return True
+            return False
+        except Exception as e:
+            logger.warning(f"Lock state check failed: {e}")
+            return False
+
+    def ensure_screen_on(self) -> bool:
+        """화면이 꺼져 있거나 잠겨 있으면 깨우고 잠금을 해제한다.
+
+        1) KEYCODE_WAKEUP으로 화면 켜기
+        2) wm dismiss-keyguard — 비보안 잠금(스와이프)은 이걸로 해제
+        3) 여전히 잠겨 있고 ADB_UNLOCK_PIN이 설정돼 있으면: 스와이프 업 → PIN 입력 → 엔터
+        """
+        try:
+            if self.is_screen_on() and not self.is_locked():
                 return True
             # KEYCODE_WAKEUP은 꺼져 있을 때만 켜므로 POWER 토글보다 안전
             self._execute(["shell", "input", "keyevent", "KEYCODE_WAKEUP"])
             time.sleep(1)
+            # 비보안 잠금(스와이프/없음)은 dismiss-keyguard 한 방으로 해제
+            self._execute(["shell", "wm", "dismiss-keyguard"])
+            time.sleep(0.7)
+            if self.is_screen_on() and not self.is_locked():
+                logger.info("Screen was off/locked — woke and dismissed keyguard")
+                return True
+
+            # 보안 잠금(PIN): 스와이프 업으로 PIN 입력 화면 진입 후 입력
             width, height = self._get_screen_size()
             self._execute(["shell", "input", "swipe",
                            str(width // 2), str(int(height * 0.8)),
                            str(width // 2), str(int(height * 0.2)), "300"])
             time.sleep(1)
-            if self.is_screen_on():
-                logger.info("Screen was off — woke device")
+            pin = os.getenv("ADB_UNLOCK_PIN", "").strip()
+            if pin and self.is_locked():
+                self._execute(["shell", "input", "text", pin])
+                self._execute(["shell", "input", "keyevent", "KEYCODE_ENTER"])
+                time.sleep(1)
+
+            if self.is_screen_on() and not self.is_locked():
+                logger.info("Screen was off/locked — unlocked%s", " with PIN" if pin else "")
                 return True
-            logger.error("Failed to wake screen")
+            if self.is_locked():
+                logger.error(
+                    "잠금 해제 실패 — 보안 잠금(PIN/패턴)이 설정된 기기입니다. "
+                    ".env에 ADB_UNLOCK_PIN을 설정하거나, QA 기기라면 잠금을 없애는 것을 권장: "
+                    "adb shell locksettings clear --old <기존PIN> 후 "
+                    "adb shell locksettings set-disabled true"
+                )
+            else:
+                logger.error("Failed to wake screen")
             return False
         except Exception as e:
-            logger.error(f"Screen wake failed: {e}")
+            logger.error(f"Screen wake/unlock failed: {e}")
             return False
 
     def launch_app(self, package: str, activity: Optional[str] = None) -> bool:

@@ -637,6 +637,11 @@ class QAOrchestrator:
                     logger.info("✅ 인터럽트 복구 후 대상 재발견: '%s' (복구 %d회)", target, attempt + 1)
                     break
 
+        # scroll_search: 대상이 화면 밖(스크롤 필요)일 수 있으면 한 페이지씩 스크롤하며 재탐색.
+        # 무한 루프 방지 2중 장치: (1) max_scrolls 상한, (2) 스크롤 전후 화면이 같으면 리스트 끝으로 판단하고 중단.
+        if not coords and params.get("scroll_search"):
+            latest_path, coords = self._scroll_search(step, target, latest_path)
+
         if not coords:
             if not self._last_failure_reason:
                 self._last_failure_reason = f"Vision으로 요소를 찾지 못함: '{target}'"
@@ -680,6 +685,50 @@ class QAOrchestrator:
             getattr(self, "_last_vision_confidence", 0.0), verified,
         )
         return True if verified else self._TAP_OK_VERIFY_FAIL
+
+    # scroll_search 기본값
+    SCROLL_SEARCH_MAX_DEFAULT = 5      # 스크롤 상한 (무한 루프 방지 1)
+    SCROLL_END_THRESHOLD = 0.005       # 스크롤 전후 변화율이 이보다 작으면 리스트 끝 (무한 루프 방지 2)
+
+    def _scroll_search(self, step, target: str, latest_path: Path) -> tuple[Path, Optional[dict]]:
+        """대상을 찾을 때까지 한 페이지씩 스크롤하며 재탐색.
+
+        중단 조건: 대상 발견 / max_scrolls 도달 / 스크롤해도 화면이 안 변함(리스트 끝) / 사용자 중단.
+        반환: (마지막 스크린샷 경로, 좌표 or None)
+        """
+        params = step.params or {}
+        max_scrolls = int(params.get("max_scrolls", self.SCROLL_SEARCH_MAX_DEFAULT))
+        direction = str(params.get("scroll_direction", "down")).lower()
+
+        w, h = self.adb.width, self.adb.height
+        x = w // 2
+        if direction == "up":
+            y1, y2 = int(h * 0.35), int(h * 0.70)
+        else:  # down (리스트를 아래로 내려 보기 — 화면은 위로 스와이프)
+            y1, y2 = int(h * 0.70), int(h * 0.35)
+
+        for i in range(max_scrolls):
+            if getattr(self, '_stop_event', None) and self._stop_event.is_set():
+                logger.warning("scroll_search: 사용자 중단")
+                break
+            before_path = latest_path
+            self.adb.swipe(x, y1, x, y2, duration=400)
+            latest_path = self._wait_for_screen_stable()
+
+            ratio = self._image_change_ratio(before_path, latest_path)
+            if ratio is not None and ratio < self.SCROLL_END_THRESHOLD:
+                logger.info("scroll_search: 화면 변화 없음(%.4f) — 리스트 끝 도달, 중단 (%d회 스크롤)", ratio, i + 1)
+                break
+
+            coords = self._resolve_with_vision(latest_path, target)
+            if coords:
+                logger.info("✅ scroll_search: %d회 스크롤 후 '%s' 발견", i + 1, target)
+                return latest_path, coords
+        else:
+            logger.info("scroll_search: 최대 스크롤(%d회) 도달 — '%s' 미발견", max_scrolls, target)
+
+        self._last_failure_reason = f"스크롤 탐색으로도 '{target}'을 찾지 못함"
+        return latest_path, None
 
     def _lookup_cache(self, target: str) -> Optional[CachedElement]:
         """현재 패키지 + 화면 + 해상도 기준으로 게임별 캐시 조회."""
@@ -846,18 +895,8 @@ class QAOrchestrator:
             time.sleep(interval)
             curr_path = self._capture_runtime_screenshot(prefix="stable_check")
 
-            try:
-                with Image.open(prev_path) as prev_img, Image.open(curr_path) as curr_img:
-                    p = prev_img.convert("RGB")
-                    c = curr_img.convert("RGB")
-                    if p.size != c.size:
-                        c = c.resize(p.size)
-                    diff = ImageChops.difference(p, c)
-                    hist = diff.histogram()
-                    weighted = sum((i % 256) * cnt for i, cnt in enumerate(hist))
-                    max_val = 255 * p.width * p.height * 3
-                    ratio = (weighted / max_val) if max_val else 0.0
-            except Exception:
+            ratio = self._image_change_ratio(prev_path, curr_path)
+            if ratio is None:
                 prev_path = curr_path
                 continue
 
@@ -870,6 +909,23 @@ class QAOrchestrator:
             "Screen did not stabilize within %.1fs — proceeding with last capture.", timeout
         )
         return prev_path
+
+    @staticmethod
+    def _image_change_ratio(path_a: Path, path_b: Path) -> Optional[float]:
+        """두 스크린샷의 픽셀 변화 비율 (0.0=동일). 비교 불가 시 None."""
+        try:
+            with Image.open(path_a) as img_a, Image.open(path_b) as img_b:
+                a = img_a.convert("RGB")
+                b = img_b.convert("RGB")
+                if a.size != b.size:
+                    b = b.resize(a.size)
+                diff = ImageChops.difference(a, b)
+                hist = diff.histogram()
+                weighted = sum((i % 256) * cnt for i, cnt in enumerate(hist))
+                max_val = 255 * a.width * a.height * 3
+                return (weighted / max_val) if max_val else 0.0
+        except Exception:
+            return None
 
     def _cleanup_step_files(self) -> None:
         count = 0

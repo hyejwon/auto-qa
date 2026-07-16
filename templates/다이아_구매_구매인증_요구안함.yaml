@@ -38,6 +38,8 @@ steps:
 - action: find_and_tap
   target: 다이아 4000 상품의 12000 KRW 가격 버튼
   params:
+    scroll_search: true
+    max_scrolls: 5
     expect_visible: Google Play 원탭 구매 버튼
     wait_seconds: 4
   description: 결제 아이템 선택 → Google Play 결제 시트 확인
