@@ -236,6 +236,8 @@ class QAOrchestrator:
                     result.step_results.append({
                         "step": idx + 1,
                         "label": label,
+                        "action": getattr(step.action, "value", str(step.action)),
+                        "target": step.target or "",
                         "passed": success,
                         "skipped": step_skipped,
                         "vision_confidence": confidence,
@@ -562,6 +564,7 @@ class QAOrchestrator:
         desc = analysis.get("description", "")
         method = analysis.get("close_method")
         logger.info("⚠️ 인터럽트 팝업 감지 [%s]: %s", kind, desc)
+        self._save_interrupt_debug(screenshot_path, analysis)
 
         if method == "tap":
             box = analysis.get("close_box_2d")
@@ -581,6 +584,33 @@ class QAOrchestrator:
             logger.info("│  닫기 방법 불명 — 복구 중단")
             return False
         return True
+
+    def _save_interrupt_debug(self, screenshot_path: Path, analysis: dict) -> None:
+        """인터럽트 복구가 '무엇을 보고' 팝업으로 판단했는지 남긴다 — 오판 분석용.
+
+        - screenshots_debug/taps/{ts}_{device}_INTERRUPT_{kind}.png : 판단 당시 화면
+        - screenshots_debug/interrupt_debug.jsonl                   : 판단 내용 한 줄
+        (taps/와 같은 이유로 cleanup이 지우지 않는 위치 사용)
+        """
+        try:
+            debug_dir = self.config.paths.debug_dir
+            taps_dir = debug_dir / "taps"
+            taps_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            kind = str(analysis.get("kind", "unknown"))[:20]
+            img_path = taps_dir / f"{ts}_{self._file_tag}_INTERRUPT_{kind}.png"
+            Image.open(screenshot_path).convert("RGB").save(img_path)
+            record = {
+                "timestamp": ts,
+                "device": self._file_tag,
+                "analysis": analysis,
+                "debug_image": str(img_path),
+            }
+            with open(debug_dir / "interrupt_debug.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            logger.info("┌─ 인터럽트 판단 근거 저장: %s", img_path.name)
+        except Exception as e:
+            logger.warning("인터럽트 디버그 저장 실패: %s", e)
 
     def _find_and_tap(self, step) -> bool | str:
         """공통 캐시 → 게임 캐시 → Vision 순으로 좌표 탐색. 해상도별 관리."""
@@ -624,9 +654,16 @@ class QAOrchestrator:
         latest_path = self._wait_for_screen_stable()
         coords = self._resolve_with_vision(latest_path, target)
 
+        params = step.params or {}
+
+        # scroll_search 스텝은 첫 화면에서 미발견이 정상(스크롤해야 나옴) —
+        # 인터럽트 분석을 먼저 돌리면 상점/목록 화면을 팝업으로 오판해 뒤로가기로
+        # 이탈할 수 있으므로, 스크롤 탐색을 먼저 한다.
+        if not coords and params.get("scroll_search"):
+            latest_path, coords = self._scroll_search(step, target, latest_path)
+
         # 대상 미발견 시 인터럽트 복구: 이벤트/공지/오류 팝업이 가리고 있으면 닫고 재탐색.
         # optional 스텝은 "안 나올 수 있는 대상"이라 미발견이 정상 — 복구를 시도하지 않는다.
-        params = step.params or {}
         if not coords and not params.get("optional") and not params.get("no_recovery"):
             for attempt in range(self.INTERRUPT_RECOVERY_MAX):
                 if not self._try_recover_interrupt(latest_path):
@@ -636,11 +673,9 @@ class QAOrchestrator:
                 if coords:
                     logger.info("✅ 인터럽트 복구 후 대상 재발견: '%s' (복구 %d회)", target, attempt + 1)
                     break
-
-        # scroll_search: 대상이 화면 밖(스크롤 필요)일 수 있으면 한 페이지씩 스크롤하며 재탐색.
-        # 무한 루프 방지 2중 장치: (1) max_scrolls 상한, (2) 스크롤 전후 화면이 같으면 리스트 끝으로 판단하고 중단.
-        if not coords and params.get("scroll_search"):
-            latest_path, coords = self._scroll_search(step, target, latest_path)
+            # 복구로 팝업을 닫았다면 가려져 있던 목록일 수 있으니 스크롤 탐색 1회 재시도
+            if not coords and params.get("scroll_search"):
+                latest_path, coords = self._scroll_search(step, target, latest_path)
 
         if not coords:
             if not self._last_failure_reason:

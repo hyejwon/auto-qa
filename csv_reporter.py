@@ -97,15 +97,45 @@ def build_test_result_csv(
             "all_screenshots": screenshots_joined,
         }
 
+    # 탭 디버그 기록을 스텝에 매칭 — 순번 조인은 read_text 등 탭 없는 스텝과
+    # 재시도(스텝당 다수 row)에서 어긋나므로, target 기준으로 순서 소비하며 매칭.
+    # (같은 target의 연속 row는 마지막 것 = 최종 시도 결과를 사용)
+    tap_i = 0
+
+    def _tap_for_step(step: dict) -> dict:
+        nonlocal tap_i
+        if "action" not in step:  # 구버전 결과 폴백: 기존 순번 조인
+            idx = step.get("step", 1) - 1
+            return tap_rows[idx] if 0 <= idx < len(tap_rows) else {}
+        if step.get("action") != "find_and_tap":
+            return {}
+        target = step.get("target") or ""
+        matched: dict = {}
+        j = tap_i
+        while j < len(tap_rows):
+            if tap_rows[j].get("target") == target:
+                matched = tap_rows[j]
+                j += 1
+                while j < len(tap_rows) and tap_rows[j].get("target") == target:
+                    matched = tap_rows[j]
+                    j += 1
+                tap_i = j
+                break
+            j += 1
+        return matched
+
     rows: list[dict[str, Any]] = []
     if steps:
-        for idx, step in enumerate(steps):
-            tap = tap_rows[idx] if idx < len(tap_rows) else {}
+        for step in steps:
+            tap = _tap_for_step(step)
             row = base_row()
+            passed_display: Any = step.get("passed")
+            if step.get("skipped"):
+                passed_display = "SKIPPED"
             row.update({
                 "step": step.get("step"),
                 "step_label": step.get("label"),
-                "step_passed": step.get("passed"),
+                "step_passed": passed_display,
                 "step_failure_reason": step.get("failure_reason"),
                 "vision_confidence": _score_pct(step.get("vision_confidence")),
                 "tap_target": tap.get("target"),

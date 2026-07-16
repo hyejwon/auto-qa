@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle, XCircle, RotateCcw, Home, ImageIcon, AlertTriangle, Bot, Wrench, Download, Loader2 } from 'lucide-react'
+import { CheckCircle, XCircle, MinusCircle, RotateCcw, Home, ImageIcon, AlertTriangle, Bot, Wrench, Download, Loader2 } from 'lucide-react'
 import { debugApi, reportApi } from '../../api/client'
 import type { AdaptiveRun, TapDebug, TestResult } from '../../types'
 
@@ -135,14 +135,17 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
             <div className="space-y-1.5">
               {result.step_results.map((s) => (
                 <div key={s.step} className={`flex items-start gap-2 px-3 py-2 rounded-lg border text-xs ${
-                  s.passed ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-red-950/20 border-red-900/50'
+                  s.skipped ? 'bg-amber-950/20 border-amber-900/50'
+                    : s.passed ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-red-950/20 border-red-900/50'
                 }`}>
-                  {s.passed ? <CheckCircle size={14} className="text-emerald-400 mt-0.5 flex-none" />
-                            : <XCircle size={14} className="text-red-400 mt-0.5 flex-none" />}
+                  {s.skipped ? <MinusCircle size={14} className="text-amber-400 mt-0.5 flex-none" />
+                    : s.passed ? <CheckCircle size={14} className="text-emerald-400 mt-0.5 flex-none" />
+                    : <XCircle size={14} className="text-red-400 mt-0.5 flex-none" />}
                   <div className="min-w-0">
                     <p className="text-gray-200">{s.step}. {s.label}</p>
-                    {!s.passed && s.failure_reason && <p className="text-red-400">{s.failure_reason}</p>}
-                    {s.vision_confidence != null && (
+                    {s.skipped && <p className="text-amber-400">건너뜀 — 조건부 스텝, 대상 미노출 (정상)</p>}
+                    {!s.passed && !s.skipped && s.failure_reason && <p className="text-red-400">{s.failure_reason}</p>}
+                    {s.vision_confidence != null && !s.skipped && (
                       <p className="text-gray-500">신뢰도 {scorePct(s.vision_confidence)}</p>
                     )}
                   </div>

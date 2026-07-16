@@ -61,6 +61,9 @@ export interface StepResult {
   step: number
   label: string
   passed: boolean
+  skipped?: boolean
+  action?: string
+  target?: string
   failure_reason?: string
   vision_confidence?: number
 }
