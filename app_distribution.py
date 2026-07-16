@@ -3,9 +3,12 @@
 설정: firebase_apps.json (project_root)
   { "<패키지명>": { "project_number": "123456789", "app_id": "1:123456789:android:abcdef" } }
 
-인증: GOOGLE_APPLICATION_CREDENTIALS(credentials.json) 서비스 계정.
-  각 Firebase 프로젝트에서 서비스 계정에 'Firebase App Distribution 뷰어'
-  (roles/firebaseappdistribution.viewer) 역할이 부여되어 있어야 한다.
+인증 (둘 중 하나):
+  1. 서비스 계정 — GOOGLE_APPLICATION_CREDENTIALS(credentials.json).
+     각 프로젝트에서 'Firebase App Distribution 뷰어' 역할 부여 필요.
+  2. 사용자 계정 ADC — `gcloud auth application-default login`.
+     해당 계정이 Firebase 프로젝트 멤버(뷰어 이상)면 별도 역할 부여 불필요.
+     사용자 계정은 쿼터 프로젝트가 없어 x-goog-user-project 헤더를 자동 추가한다.
 
 전제: App Distribution에 APK로 업로드된 빌드만 지원 (AAB는 adb 직접 설치 불가).
 """
@@ -29,14 +32,29 @@ class AppDistributionClient:
         self._creds = None
 
     # ── 설정/인증 ────────────────────────────────────────────
-    def apps(self) -> dict:
-        """firebase_apps.json 로드. 없으면 빈 dict."""
+    def _raw_config(self) -> dict:
         try:
             if self.config_path.exists():
                 return json.loads(self.config_path.read_text(encoding="utf-8"))
         except Exception as e:
             logger.error("firebase_apps.json 파싱 실패: %s", e)
         return {}
+
+    def apps(self) -> dict:
+        """앱 매핑만 반환 ('_'로 시작하는 메타 키는 제외)."""
+        return {k: v for k, v in self._raw_config().items()
+                if not k.startswith("_") and isinstance(v, dict)}
+
+    def _quota_project(self) -> str:
+        """사용자 계정 ADC용 쿼터 프로젝트.
+
+        대상 프로젝트에 뷰어 권한만 있으면 쿼터 프로젝트로 못 쓰므로(serviceusage.use 필요),
+        App Distribution API가 활성화된 별도 프로젝트를 지정할 수 있다.
+        우선순위: 환경변수 APPDIST_QUOTA_PROJECT > firebase_apps.json의 "_quota_project"
+        """
+        import os
+        return (os.getenv("APPDIST_QUOTA_PROJECT", "").strip()
+                or str(self._raw_config().get("_quota_project", "")).strip())
 
     def configured(self) -> bool:
         """서비스 계정 인증이 가능한 상태인지 (토큰 발급 시도 없이 가볍게 확인)."""
@@ -56,8 +74,23 @@ class AppDistributionClient:
             self._creds.refresh(google.auth.transport.requests.Request())
         return self._creds.token
 
-    def _headers(self) -> dict:
-        return {"Authorization": f"Bearer {self._token()}"}
+    def _is_user_credentials(self) -> bool:
+        """사용자 계정 ADC 여부 (서비스 계정이 아닌 gcloud 로그인 크리덴셜)."""
+        try:
+            from google.oauth2.credentials import Credentials as UserCredentials
+            return isinstance(self._creds, UserCredentials)
+        except Exception:
+            return False
+
+    def _headers(self, project_number: str = "") -> dict:
+        headers = {"Authorization": f"Bearer {self._token()}"}
+        # 사용자 계정 ADC는 쿼터 프로젝트가 없어 명시해야 한다.
+        # (서비스 계정에 이 헤더를 보내면 serviceusage 권한이 추가로 필요해지므로 사용자 계정일 때만)
+        if self._is_user_credentials():
+            quota = self._quota_project() or project_number
+            if quota:
+                headers["x-goog-user-project"] = quota
+        return headers
 
     def _app_entry(self, app_key: str) -> dict:
         entry = self.apps().get(app_key)
@@ -69,7 +102,7 @@ class AppDistributionClient:
     def list_releases(self, app_key: str, page_size: int = 20) -> list[dict]:
         entry = self._app_entry(app_key)
         url = f"{_API}/projects/{entry['project_number']}/apps/{entry['app_id']}/releases"
-        resp = requests.get(url, headers=self._headers(),
+        resp = requests.get(url, headers=self._headers(entry["project_number"]),
                             params={"pageSize": page_size}, timeout=20)
         resp.raise_for_status()
         releases = resp.json().get("releases", [])
@@ -88,7 +121,9 @@ class AppDistributionClient:
     def download_release(self, app_key: str, release_name: str) -> Path:
         """릴리스 APK를 캐시에 다운로드 (이미 있으면 재사용). 반환: APK 경로."""
         # 목록의 binaryDownloadUri는 만료될 수 있어 단건 재조회로 신선한 URI 확보
-        resp = requests.get(f"{_API}/{release_name}", headers=self._headers(), timeout=20)
+        entry = self._app_entry(app_key)
+        resp = requests.get(f"{_API}/{release_name}",
+                            headers=self._headers(entry["project_number"]), timeout=20)
         resp.raise_for_status()
         rel = resp.json()
 

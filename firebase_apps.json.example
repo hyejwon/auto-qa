@@ -1,7 +1,9 @@
 {
-  "_설명": "Firebase App Distribution 연동 설정 — 이 파일을 firebase_apps.json으로 복사 후 값 채우기. project_number는 Firebase 콘솔 > 프로젝트 설정 > 일반, app_id는 같은 화면의 앱 ID (1:숫자:android:해시). 서비스 계정(credentials.json)에 각 프로젝트의 'Firebase App Distribution 뷰어' 역할 필요.",
+  "_설명": "Firebase App Distribution 연동 설정 — 이 파일을 firebase_apps.json으로 복사 후 값 채우기. project_number는 Firebase 콘솔 > 프로젝트 설정 > 일반, app_id는 같은 화면의 앱 ID (1:숫자:android:해시). 인증: 서비스 계정(credentials.json, 각 프로젝트 'App Distribution 뷰어' 역할) 또는 사용자 계정(gcloud auth application-default login, 프로젝트 멤버).",
+  "_quota_project": "percent-vertex-test",
+  "_quota_설명": "사용자 계정 인증 시에만 사용 — App Distribution API가 활성화돼 있고 본인이 serviceUsageConsumer 이상인 프로젝트. 서비스 계정 인증이면 무시됨.",
   "com.percent.aos.cooptd": {
-    "project_number": "123456789012",
-    "app_id": "1:123456789012:android:0123456789abcdef"
+    "project_number": "953759719189",
+    "app_id": "1:953759719189:android:APP_ID_해시_입력"
   }
 }
