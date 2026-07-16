@@ -456,6 +456,57 @@ def install_apk(req: InstallApkRequest):
         return {"success": False, "message": str(e)}
 
 # ─────────────────────────────────────────────
+# Firebase App Distribution — 빌드 조회/설치
+# ─────────────────────────────────────────────
+from app_distribution import AppDistributionClient
+
+_appdist = AppDistributionClient(
+    config_path=cfg.paths.project_root / "firebase_apps.json",
+    cache_dir=cfg.paths.apks_dir / "appdist",
+)
+
+
+class AppDistInstallRequest(BaseModel):
+    app: str            # firebase_apps.json의 키 (패키지명)
+    release_name: str   # projects/.../apps/.../releases/... 전체 리소스 이름
+    device: str = ""
+
+
+@app.get("/api/appdist/apps")
+def appdist_apps():
+    """App Distribution 연동 설정된 앱 목록 + 인증 가능 여부"""
+    return {"apps": list(_appdist.apps().keys()), "configured": _appdist.configured()}
+
+
+@app.get("/api/appdist/releases")
+def appdist_releases(package: str):
+    """해당 앱의 빌드(릴리스) 목록 — 최신순"""
+    try:
+        return {"releases": _appdist.list_releases(package)}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error("AppDist 릴리스 조회 실패 (%s): %s", package, e)
+        raise HTTPException(status_code=502, detail=f"App Distribution 조회 실패: {e}")
+
+
+@app.post("/api/appdist/install")
+def appdist_install(req: AppDistInstallRequest):
+    """빌드 다운로드(캐시) 후 디바이스에 설치"""
+    try:
+        apk_path = _appdist.download_release(req.app, req.release_name)
+    except Exception as e:
+        logger.error("AppDist 다운로드 실패: %s", e)
+        return {"success": False, "message": f"다운로드 실패: {e}"}
+    try:
+        adb = ADBController(req.device or None)
+        ok, msg = adb.install_apk(apk_path)
+        return {"success": ok, "message": msg, "apk": apk_path.name}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+# ─────────────────────────────────────────────
 # 패키지 API
 # ─────────────────────────────────────────────
 @app.get("/api/packages")

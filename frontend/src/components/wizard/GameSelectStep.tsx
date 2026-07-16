@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CheckCircle, XCircle, RefreshCw, Loader2, Smartphone, Gamepad2, ArrowRight, Download, Trash2 } from 'lucide-react'
-import { deviceApi, preflightApi, packageApi, apkApi } from '../../api/client'
+import { CheckCircle, XCircle, RefreshCw, Loader2, Smartphone, Gamepad2, ArrowRight, Download, Trash2, Cloud } from 'lucide-react'
+import { deviceApi, preflightApi, packageApi, apkApi, appdistApi } from '../../api/client'
+import type { AppDistRelease } from '../../api/client'
 import type { DeviceInfo } from '../../types'
 
 interface Props {
@@ -26,6 +27,11 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
   const [reconnecting, setReconnecting] = useState(false)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  // App Distribution 빌드
+  const [appdistApps, setAppdistApps] = useState<string[]>([])
+  const [releases, setReleases] = useState<AppDistRelease[]>([])
+  const [selectedRelease, setSelectedRelease] = useState('')
+  const [releasesLoading, setReleasesLoading] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -48,6 +54,19 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
   }
 
   useEffect(() => { load() }, [selectedDevice])
+  useEffect(() => { appdistApi.apps().then((r) => setAppdistApps(r.configured ? r.apps : [])).catch(() => {}) }, [])
+
+  // 선택한 게임이 App Distribution에 등록돼 있으면 빌드 목록 로드
+  useEffect(() => {
+    setReleases([])
+    setSelectedRelease('')
+    if (!selectedPackage || !appdistApps.includes(selectedPackage)) return
+    setReleasesLoading(true)
+    appdistApi.releases(selectedPackage)
+      .then((r) => setReleases(r.releases))
+      .catch(() => setReleases([]))
+      .finally(() => setReleasesLoading(false))
+  }, [selectedPackage, appdistApps])
 
   // 설치된 패키지 + APK 매핑된 패키지 합집합 (미설치 게임도 선택/설치 가능)
   const games = useMemo(
@@ -81,6 +100,23 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
     try {
       const res = await apkApi.install(installApk, selectedDevice)
       setMsg(res.success ? `✅ 설치 완료 — ${installApk}` : `❌ 설치 실패: ${res.message}`)
+      if (res.success) await load()
+    } catch (e) {
+      setMsg(`❌ 설치 실패: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleAppdistInstall = async () => {
+    if (!selectedRelease) { setMsg('⚠️ 설치할 빌드를 선택하세요.'); return }
+    const rel = releases.find((r) => r.name === selectedRelease)
+    const label = rel ? `v${rel.display_version} (${rel.build_version})` : ''
+    setBusy(true)
+    setMsg(`⏬ App Distribution ${label} ${rel?.cached ? '설치 중 (캐시)' : '다운로드 + 설치 중'}... (수 분 걸릴 수 있음)`)
+    try {
+      const res = await appdistApi.install(selectedPackage, selectedRelease, selectedDevice)
+      setMsg(res.success ? `✅ 설치 완료 — ${label}` : `❌ 설치 실패: ${res.message}`)
       if (res.success) await load()
     } catch (e) {
       setMsg(`❌ 설치 실패: ${e instanceof Error ? e.message : String(e)}`)
@@ -201,6 +237,30 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
               <Trash2 size={13} /> 삭제
             </button>
           </div>
+          {/* App Distribution 빌드 — firebase_apps.json에 등록된 게임만 노출 */}
+          {appdistApps.includes(selectedPackage) && (
+            <div className="flex items-center gap-2">
+              <Cloud size={13} className="text-sky-400 flex-none" />
+              <select value={selectedRelease} disabled={busy || !connected || releasesLoading}
+                onChange={(e) => setSelectedRelease(e.target.value)}
+                className="flex-1 min-w-0 bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-sky-500 disabled:opacity-50">
+                <option value="">
+                  {releasesLoading ? 'App Distribution 빌드 불러오는 중...'
+                    : releases.length ? 'App Distribution 빌드 선택' : 'App Distribution 빌드 없음'}
+                </option>
+                {releases.map((r) => (
+                  <option key={r.name} value={r.name}>
+                    v{r.display_version} ({r.build_version}) · {r.create_time.slice(0, 10)}{r.cached ? ' ⚡' : ''}
+                  </option>
+                ))}
+              </select>
+              <button onClick={handleAppdistInstall} disabled={busy || !connected || !selectedRelease}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-xs font-medium transition-colors">
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                설치
+              </button>
+            </div>
+          )}
           {msg && <p className="text-xs text-gray-400 truncate">{msg}</p>}
         </div>
       )}

@@ -45,6 +45,36 @@ export const packageApi = {
       .then((r) => r.data),
 }
 
+// ── Firebase App Distribution 빌드 ─────────────────────────────
+export interface AppDistRelease {
+  name: string
+  display_version: string
+  build_version: string
+  create_time: string
+  release_notes: string
+  cached: boolean
+}
+
+export const appdistApi = {
+  apps: () =>
+    api.get<{ apps: string[]; configured: boolean }>('/appdist/apps').then((r) => ({
+      apps: Array.isArray(r.data?.apps) ? r.data.apps : [],
+      configured: !!r.data?.configured,
+    })),
+  releases: (pkg: string) =>
+    api
+      .get<{ releases: AppDistRelease[] }>('/appdist/releases', { params: { package: pkg } })
+      .then((r) => ({ releases: Array.isArray(r.data?.releases) ? r.data.releases : [] })),
+  install: (app: string, releaseName: string, device?: string) =>
+    api
+      .post<{ success: boolean; message: string; apk?: string }>('/appdist/install', {
+        app,
+        release_name: releaseName,
+        device: device ?? '',
+      })
+      .then((r) => r.data),
+}
+
 // ── APK 설치 ────────────────────────────────────────────────────
 export const apkApi = {
   list: () => api.get<{ apks: string[] }>('/apks').then((r) => ({

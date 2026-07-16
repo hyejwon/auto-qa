@@ -1,0 +1,7 @@
+{
+  "_설명": "Firebase App Distribution 연동 설정 — 이 파일을 firebase_apps.json으로 복사 후 값 채우기. project_number는 Firebase 콘솔 > 프로젝트 설정 > 일반, app_id는 같은 화면의 앱 ID (1:숫자:android:해시). 서비스 계정(credentials.json)에 각 프로젝트의 'Firebase App Distribution 뷰어' 역할 필요.",
+  "com.percent.aos.cooptd": {
+    "project_number": "123456789012",
+    "app_id": "1:123456789012:android:0123456789abcdef"
+  }
+}
