@@ -96,6 +96,14 @@ export interface TestResult {
   screenshots?: string[]
   step_results: StepResult[]
   eval_output?: EvalOutput | null
+  pipeline?: {
+    templates: {
+      name: string
+      start_step: number
+      end_step: number
+      step_count: number
+    }[]
+  }
 }
 
 export interface TapDebug {

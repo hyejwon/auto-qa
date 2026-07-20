@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Play, Square, RefreshCw, Loader2, ArrowLeft, FileText, Save, Pencil, Braces, Sparkles } from 'lucide-react'
+import { Play, Square, RefreshCw, Loader2, ArrowLeft, FileText, Save, Pencil, Braces, Sparkles, Plus, Layers, X } from 'lucide-react'
 import { templateApi, testApi, apkApi, planApi, wsUrl, debugSince } from '../../api/client'
 import { stepsToYaml } from '../../lib/template'
 import { extractParams, substituteSteps } from '../../lib/params'
@@ -16,6 +16,41 @@ interface Props {
 
 type Mode = 'select' | 'create'
 
+interface PipelineSegment {
+  id: string
+  name: string
+  stepIds: string[]
+}
+
+interface PipelinePreviewSegment {
+  id: string
+  name: string
+  stepNumbers: number[]
+}
+
+function segmentId() {
+  return `segment_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+function makePipelinePreview(ids: string[], segments: PipelineSegment[]): PipelinePreviewSegment[] {
+  const owner = new Map<string, { segmentId: string; name: string }>()
+  for (const segment of segments) {
+    for (const id of segment.stepIds) owner.set(id, { segmentId: segment.id, name: segment.name })
+  }
+
+  const out: PipelinePreviewSegment[] = []
+  ids.forEach((id, idx) => {
+    const meta = owner.get(id) ?? { segmentId: 'manual', name: '직접 추가' }
+    const last = out[out.length - 1]
+    if (last && last.id.startsWith(`${meta.segmentId}_`) && last.name === meta.name) {
+      last.stepNumbers.push(idx + 1)
+    } else {
+      out.push({ id: `${meta.segmentId}_${idx}`, name: meta.name, stepNumbers: [idx + 1] })
+    }
+  })
+  return out
+}
+
 export default function RunStep({ device, selectedPackage, onBack, onComplete }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   const [templates, setTemplates] = useState<string[]>([])
@@ -23,6 +58,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   const [title, setTitle] = useState('')
   const [steps, setSteps] = useState<Step[]>([])
   const [stepIds, setStepIds] = useState<string[]>([])
+  const [pipelineSegments, setPipelineSegments] = useState<PipelineSegment[]>([])
   const [logs, setLogs] = useState<string[]>([])
   const [status, setStatus] = useState('')
   const [running, setRunning] = useState(false)
@@ -37,6 +73,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   const sessionRef = useRef('')
   const resultRef = useRef<TestResult | null>(null)
   const sinceRef = useRef('')
+  const pipelineRef = useRef<TestResult['pipeline'] | null>(null)
 
   const loadTemplates = async () => {
     const res = await templateApi.list()
@@ -51,31 +88,110 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   useEffect(() => () => wsRef.current?.close(), [])
 
   const paramNames = useMemo(() => extractParams(steps), [steps])
+  const pipelinePreview = useMemo(() => makePipelinePreview(stepIds, pipelineSegments), [pipelineSegments, stepIds])
 
-  const resetEditing = () => { setSteps([]); setStepIds([]); setTitle(''); setSelected(''); setStatus(''); setParamValues({}) }
+  const resetEditing = () => {
+    setSteps([])
+    setStepIds([])
+    setPipelineSegments([])
+    setTitle('')
+    setSelected('')
+    setStatus('')
+    setParamValues({})
+  }
 
   const switchMode = (m: Mode) => { if (m !== mode) { setMode(m); resetEditing() } }
 
-  const handleLoad = async (name: string) => {
-    setSelected(name)
-    if (!name) { setSteps([]); setStepIds([]); setTitle(''); return }
+  const cloneSteps = (loaded: Step[]) =>
+    loaded.map((s) => ({ ...s, params: s.params ? { ...s.params } : {} }))
+
+  const templateDefaults = (params: TemplateParam[] = []) => {
+    const defaults: Record<string, string> = {}
+    for (const p of params) defaults[p.name] = p.default ?? ''
+    return defaults
+  }
+
+  const buildPipeline = (ids: string[], segments: PipelineSegment[]): TestResult['pipeline'] => {
+    const templates = makePipelinePreview(ids, segments)
+      .map((segment) => {
+        const start = segment.stepNumbers[0]
+        const end = segment.stepNumbers[segment.stepNumbers.length - 1]
+        return {
+          name: segment.name,
+          start_step: start,
+          end_step: end,
+          step_count: segment.stepNumbers.length,
+        }
+      })
+    return { templates }
+  }
+
+  const attachPipeline = (result: TestResult): TestResult => ({
+    ...result,
+    pipeline: pipelineRef.current ?? undefined,
+  })
+
+  const handleTemplateLoad = async (append: boolean) => {
+    const name = selected
+    if (!name) { setStatus('⚠️ 테스트케이스를 선택하세요.'); return }
     const res = await templateApi.get(name)
     const t = res.template
-    const loaded = t.steps || []
-    setTitle(t.title || name)
-    setSteps(loaded)
-    setStepIds(loaded.map(() => newId()))
-    // 템플릿에 선언된 파라미터 기본값으로 초기화
-    const defaults: Record<string, string> = {}
-    for (const p of t.parameters || []) defaults[p.name] = p.default ?? ''
-    setParamValues(defaults)
-    setStatus('✏️ 값을 수정한 뒤 실행하거나 저장할 수 있습니다.')
+    const loaded = cloneSteps(t.steps || [])
+    const ids = loaded.map(() => newId())
+    const label = t.title || name
+    const defaults = templateDefaults(t.parameters)
+    const segment: PipelineSegment = { id: segmentId(), name: label, stepIds: ids }
+
+    if (append && steps.length) {
+      setTitle((prev) => prev.trim() ? `${prev.trim()} + ${label}` : label)
+      setSteps((prev) => [...prev, ...loaded])
+      setStepIds((prev) => [...prev, ...ids])
+      setPipelineSegments((prev) => [...prev, segment])
+      setParamValues((prev) => ({ ...defaults, ...prev }))
+      setStatus(`➕ '${label}' 스텝 ${loaded.length}개를 뒤에 붙였습니다.`)
+    } else {
+      setTitle(label)
+      setSteps(loaded)
+      setStepIds(ids)
+      setPipelineSegments([segment])
+      setParamValues(defaults)
+      setStatus('✏️ 값을 수정한 뒤 실행하거나 저장할 수 있습니다.')
+    }
+    setLogs([])
+  }
+
+  const handleClearLoaded = () => {
+    setSteps([])
+    setStepIds([])
+    setPipelineSegments([])
+    setTitle('')
+    setParamValues({})
+    setStatus('🧹 선택한 테스트 구성을 비웠습니다.')
     setLogs([])
   }
 
   const handleEditorChange = (nextSteps: Step[], nextIds: string[]) => {
     setSteps(nextSteps)
     setStepIds(nextIds)
+    setPipelineSegments((prev) => {
+      const known = new Set(prev.flatMap((segment) => segment.stepIds))
+      const nextIdSet = new Set(nextIds)
+      const kept = prev
+        .map((segment) => ({
+          ...segment,
+          stepIds: segment.stepIds.filter((id) => nextIdSet.has(id)),
+        }))
+        .filter((segment) => segment.stepIds.length > 0)
+      const added = nextIds.filter((id) => !known.has(id))
+      if (!added.length) return kept
+      const manual = kept.find((segment) => segment.name === '직접 추가')
+      if (manual) {
+        return kept.map((segment) => (
+          segment.id === manual.id ? { ...segment, stepIds: [...segment.stepIds, ...added] } : segment
+        ))
+      }
+      return [...kept, { id: segmentId(), name: '직접 추가', stepIds: added }]
+    })
   }
 
   // 자연어 시나리오 → 플래너가 검증된 템플릿을 조합해 스텝 생성 → 편집기에 로드
@@ -86,9 +202,12 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     try {
       const res = await planApi.generate(scenario.trim(), selectedPackage)
       const generated = (res.plan?.steps ?? []) as Step[]
+      const ids = generated.map(() => newId())
+      const label = res.title || '생성된 테스트'
       setTitle(res.title || '생성된 테스트')
       setSteps(generated)
-      setStepIds(generated.map(() => newId()))
+      setStepIds(ids)
+      setPipelineSegments([{ id: segmentId(), name: label, stepIds: ids }])
       const defaults: Record<string, string> = {}
       setParamValues(defaults)
       setStatus(`✅ 스텝 ${res.steps_count}개 생성 — 검토·수정 후 실행하거나 저장하세요.`)
@@ -133,6 +252,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     setLogs([])
     setStatus('🔄 실행 중...')
     resultRef.current = null
+    pipelineRef.current = buildPipeline(stepIds, pipelineSegments)
 
     const sid = `sess_${Date.now()}`
     sessionRef.current = sid
@@ -143,7 +263,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data)
       if (msg.type === 'log') setLogs((p) => [...p, msg.message])
-      else if (msg.type === 'result') { resultRef.current = msg.data; setStatus('✅ 실행 완료') }
+      else if (msg.type === 'result') { resultRef.current = attachPipeline(msg.data); setStatus('✅ 실행 완료') }
       else if (msg.type === 'error') { setStatus(`❌ ${msg.message}`); setRunning(false) }
       else if (msg.type === 'done') {
         setRunning(false)
@@ -184,19 +304,54 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
         </div>
 
         {mode === 'select' && (
-          <div className="flex items-end gap-2 flex-none">
-            <div className="flex-1">
-              <label className="block text-xs text-gray-400 mb-1">테스트케이스</label>
-              <select value={selected} onChange={(e) => handleLoad(e.target.value)} disabled={running}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60">
-                <option value="">테스트케이스 선택</option>
-                {templates.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
+          <div className="flex-none rounded-lg border border-gray-800 bg-gray-900/60 p-2.5 space-y-2">
+            <div className="flex items-end gap-2">
+              <div className="flex-1 min-w-0">
+                <label className="block text-xs text-gray-400 mb-1">테스트케이스</label>
+                <select value={selected} onChange={(e) => setSelected(e.target.value)} disabled={running}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60">
+                  <option value="">테스트케이스 선택</option>
+                  {templates.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <button onClick={() => handleTemplateLoad(false)} disabled={running || !selected}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs text-gray-200 disabled:opacity-50 transition-colors">
+                <Layers size={14} /> 교체
+              </button>
+              <button onClick={() => handleTemplateLoad(true)} disabled={running || !selected}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 text-xs font-medium disabled:opacity-50 transition-colors">
+                <Plus size={14} /> 뒤에 붙이기
+              </button>
+              <button onClick={loadTemplates} disabled={running}
+                className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white disabled:opacity-50 transition-colors"
+                title="목록 새로고침">
+                <RefreshCw size={16} />
+              </button>
             </div>
-            <button onClick={loadTemplates} disabled={running}
-              className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white disabled:opacity-50 transition-colors">
-              <RefreshCw size={16} />
-            </button>
+            {pipelinePreview.length > 0 && (
+              <div className="flex items-start gap-2 min-h-7">
+                <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1">
+                  {pipelinePreview.map((segment) => (
+                    <div key={segment.id} className="flex flex-wrap items-center gap-1">
+                      <span className="px-2 py-1 rounded bg-blue-950/50 border border-blue-800/60 text-[11px] font-medium text-blue-200">
+                        [{segment.name}]
+                      </span>
+                      {segment.stepNumbers.map((n) => (
+                        <span key={`${segment.id}_${n}`} className="px-1.5 py-1 rounded bg-gray-800 border border-gray-700 text-[11px] text-gray-300">
+                          step {n}
+                        </span>
+                      ))}
+                    </div>
+                  ))}
+                  <span className="px-2 py-1 text-[11px] text-gray-500">총 {steps.length} 스텝</span>
+                </div>
+                <button onClick={handleClearLoaded} disabled={running}
+                  className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-40"
+                  title="구성 비우기">
+                  <X size={14} />
+                </button>
+              </div>
+            )}
           </div>
         )}
 

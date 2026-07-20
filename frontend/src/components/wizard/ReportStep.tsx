@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle, XCircle, MinusCircle, RotateCcw, Home, ImageIcon, AlertTriangle, Bot, Wrench, Download, Loader2 } from 'lucide-react'
 import { debugApi, reportApi } from '../../api/client'
 import type { AdaptiveRun, TapDebug, TestResult } from '../../types'
@@ -22,6 +22,18 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
   const [exportError, setExportError] = useState('')
   const pass = result.status === 'PASS'
   const evalOut = result.eval_output
+  const stepGroups = useMemo(() => {
+    const steps = result.step_results || []
+    const templates = result.pipeline?.templates || []
+    if (!templates.length) return [{ name: '테스트 실행', steps, startStep: 0 }]
+    return templates
+      .map((template) => ({
+        name: template.name,
+        steps: steps.filter((s) => s.step >= template.start_step && s.step <= template.end_step),
+        startStep: template.start_step,
+      }))
+      .filter((group) => group.steps.length > 0)
+  }, [result])
 
   useEffect(() => {
     debugApi.taps(since).then((r) => setTaps(r.taps)).catch(() => setTaps([]))
@@ -132,29 +144,60 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
         {!!result.step_results?.length && (
           <div>
             <h3 className="text-xs text-gray-400 mb-2">스텝 결과</h3>
-            <div className="space-y-1.5">
-              {result.step_results.map((s) => (
-                <div key={s.step} className={`flex items-start gap-2 px-3 py-2 rounded-lg border text-xs ${
-                  s.skipped ? 'bg-amber-950/20 border-amber-900/50'
-                    : s.passed ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-red-950/20 border-red-900/50'
-                }`}>
-                  {s.skipped ? <MinusCircle size={14} className="text-amber-400 mt-0.5 flex-none" />
-                    : s.passed ? <CheckCircle size={14} className="text-emerald-400 mt-0.5 flex-none" />
-                    : <XCircle size={14} className="text-red-400 mt-0.5 flex-none" />}
-                  <div className="min-w-0">
-                    <p className="text-gray-200">{s.step}. {s.label}</p>
-                    {s.skipped && <p className="text-amber-400">건너뜀 — 조건부 스텝, 대상 미노출 (정상)</p>}
-                    {!s.passed && !s.skipped && s.failure_reason && <p className="text-red-400">{s.failure_reason}</p>}
-                    {s.passed && !s.skipped && s.pass_reason && (
-                      <p className="text-emerald-400">{s.pass_reason}</p>
-                    )}
-                    {s.vision_confidence != null && !s.skipped && !(s.passed && s.pass_reason) && (
-                      <p className="text-gray-500">신뢰도 {scorePct(s.vision_confidence)}</p>
-                    )}
+            <div className="space-y-3">
+              {stepGroups.map((group) => {
+                const passed = group.steps.filter((s) => s.passed || s.skipped).length
+                return (
+                  <div key={`${group.name}_${group.startStep ?? 0}`} className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
+                    <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 bg-gray-900">
+                      <span className="px-2 py-1 rounded bg-blue-950/50 border border-blue-800/60 text-[11px] font-medium text-blue-200">
+                        [{group.name}]
+                      </span>
+                      <span className="text-[11px] text-gray-500">{passed}/{group.steps.length} 스텝 통과</span>
+                    </div>
+                    <div className="space-y-1.5 p-2">
+                      {group.steps.map((s) => (
+                        <div key={s.step} className={`flex items-start gap-2 px-3 py-2 rounded-lg border text-xs ${
+                          s.skipped ? 'bg-amber-950/20 border-amber-900/50'
+                            : s.passed ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-red-950/20 border-red-900/50'
+                        }`}>
+                          {s.skipped ? <MinusCircle size={14} className="text-amber-400 mt-0.5 flex-none" />
+                            : s.passed ? <CheckCircle size={14} className="text-emerald-400 mt-0.5 flex-none" />
+                            : <XCircle size={14} className="text-red-400 mt-0.5 flex-none" />}
+                          <div className="min-w-0">
+                            <p className="text-gray-200">step {s.step}. {s.label}</p>
+                            {s.skipped && <p className="text-amber-400">건너뜀 — 조건부 스텝, 대상 미노출 (정상)</p>}
+                            {!s.passed && !s.skipped && s.failure_reason && <p className="text-red-400">{s.failure_reason}</p>}
+                            {s.passed && !s.skipped && s.pass_reason && (
+                              <p className="text-emerald-400">{s.pass_reason}</p>
+                            )}
+                            {s.vision_confidence != null && !s.skipped && !(s.passed && s.pass_reason) && (
+                              <p className="text-gray-500">신뢰도 {scorePct(s.vision_confidence)}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
+            {!!result.pipeline?.templates?.length && (
+              <div className="mt-2 flex flex-wrap items-center gap-1">
+                {result.pipeline.templates.map((template) => (
+                  <div key={`${template.name}_${template.start_step}`} className="flex flex-wrap items-center gap-1">
+                    <span className="px-2 py-1 rounded bg-blue-950/50 border border-blue-800/60 text-[11px] font-medium text-blue-200">
+                      [{template.name}]
+                    </span>
+                    {Array.from({ length: template.step_count }, (_, i) => template.start_step + i).map((step) => (
+                      <span key={`${template.name}_${step}`} className="px-1.5 py-1 rounded bg-gray-800 border border-gray-700 text-[11px] text-gray-300">
+                        step {step}
+                      </span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
