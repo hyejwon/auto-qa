@@ -1,0 +1,53 @@
+title: 결제테스트_게임내재화_테스트
+description: ''
+package: com.percent.aos.cooptd
+steps:
+- action: find_and_tap
+  target: 상점 버튼
+  description: 상점 진입
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: 상점 화면
+    wait_seconds: 2
+- action: read_text
+  target: 보유 다이아 수량
+  description: 구매 전 다이아 수량 저장
+  timeout: 10
+  retry: 2
+  params:
+    save_as: diamond_before
+- action: find_and_tap
+  target: 마신석 섹션 헤더 아래 50 상품의 5000 다이아 버튼 (빨간 구슬 주머니 카드 — 노란 뽑기 티켓 섹션 아님)
+  description: 결제 아이템 선택 → 구매 확인 팝업 확인
+  timeout: 30
+  retry: 2
+  params:
+    scroll_search: true
+    max_scrolls: 8
+    expect_visible: 구매 확인 팝업 안의 빨간색 마신석 아이템 아이콘 (노란 뽑기 티켓 아이콘이면 실패)
+    wait_seconds: 4
+- action: find_and_tap
+  target: 구매 버튼
+  description: '결제 버튼 누르기 '
+  timeout: 40
+  retry: 2
+  params:
+    wait_seconds: 8
+- action: find_and_tap
+  target: 아이템 획득 팝업의 안내 문구 ('터치하세요' 또는 '계속하려면 화면을 눌러주세요')
+  description: 획득 창 노출 확인 후 '터치하세요' 문구 탭으로 닫고 상점 복귀
+  timeout: 30
+  retry: 2
+  params:
+    expect_visible: 보유 다이아 수량
+    wait_seconds: 3
+- action: read_text
+  target: 보유 다이아 수량
+  description: 구매 후 재화 지급 검증(마신석 증가 다이아감소)
+  timeout: 10
+  retry: 2
+  params:
+    compare_with: diamond_before
+    expect_increase: false
+preconditions: []

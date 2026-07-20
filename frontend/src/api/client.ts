@@ -61,8 +61,9 @@ export interface AppDistRelease {
 
 export const appdistApi = {
   apps: () =>
-    api.get<{ apps: string[]; configured: boolean }>('/appdist/apps').then((r) => ({
+    api.get<{ apps: string[]; tester_apps?: string[]; configured: boolean }>('/appdist/apps').then((r) => ({
       apps: Array.isArray(r.data?.apps) ? r.data.apps : [],
+      testerApps: Array.isArray(r.data?.tester_apps) ? r.data.tester_apps : [],
       configured: !!r.data?.configured,
     })),
   releases: (pkg: string) =>
@@ -79,6 +80,49 @@ export const appdistApi = {
       .then((r) => r.data),
 }
 
+// ── App Tester (폰 화면 조작) 프로젝트/빌드 ─────────────────────
+export interface AppTesterApp {
+  name: string       // App Tester에 표시되는 앱 이름
+  info: string
+  package: string    // 매핑된 패키지명 (모르면 '')
+  installed: boolean
+}
+
+export interface AppTesterBuild {
+  version: string
+  info: string
+}
+
+export const apptesterApi = {
+  // 서버가 캐시하므로 최초 1회만 폰 화면을 읽음 — refresh=true면 다시 읽음
+  apps: (device?: string, refresh = false) =>
+    api
+      .get<{ apps: AppTesterApp[] }>('/apptester/apps', {
+        params: { device: device ?? '', refresh },
+        timeout: 180_000, // 폰 화면을 읽어오므로 수십 초 걸림
+      })
+      .then((r) => ({ apps: Array.isArray(r.data?.apps) ? r.data.apps : [] })),
+  builds: (game: string, device?: string, refresh = false) =>
+    api
+      .get<{ builds: AppTesterBuild[]; cached?: boolean }>('/apptester/builds', {
+        params: { game, device: device ?? '', refresh },
+        timeout: 180_000, // 폰 화면을 읽어오므로 수십 초 걸림
+      })
+      .then((r) => ({
+        builds: Array.isArray(r.data?.builds) ? r.data.builds : [],
+        cached: !!r.data?.cached,
+      })),
+  install: (game: string, version: string, device?: string, pkg?: string) =>
+    api
+      .post<{ success: boolean; message: string; package?: string }>('/apptester/install', {
+        game,
+        version,
+        package: pkg ?? '',
+        device: device ?? '',
+      }, { timeout: 900_000 }) // 다운로드+설치 수 분
+      .then((r) => r.data),
+}
+
 // ── APK 설치 ────────────────────────────────────────────────────
 export const apkApi = {
   list: () => api.get<{ apks: string[] }>('/apks').then((r) => ({
@@ -87,6 +131,26 @@ export const apkApi = {
   install: (filename: string, device?: string) =>
     api
       .post<{ success: boolean; message: string }>('/apk/install', { filename, device: device ?? '' })
+      .then((r) => r.data),
+}
+
+// ── 플래너: 자연어 → 테스트 스텝 생성 ──────────────────────────
+export interface GeneratedPlan {
+  title: string
+  description: string
+  package: string
+  steps: object[]
+  expected_results: string[]
+}
+
+export const planApi = {
+  generate: (scenario: string, pkg?: string) =>
+    api
+      .post<{ title: string; steps_count: number; yaml: string; plan: GeneratedPlan }>(
+        '/plan/generate',
+        { scenario, package: pkg ?? '' },
+        { timeout: 120_000 }, // LLM 생성 수십 초
+      )
       .then((r) => r.data),
 }
 

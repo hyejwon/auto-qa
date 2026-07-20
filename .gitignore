@@ -29,3 +29,4 @@ dist/auto-qa.exe
 *.db
 google-cloud-sdk/
 google-cloud-cli-*.tar.gz
+apptester_cache.json

@@ -65,6 +65,7 @@ export interface StepResult {
   action?: string
   target?: string
   failure_reason?: string
+  pass_reason?: string
   vision_confidence?: number
 }
 
@@ -103,6 +104,7 @@ export interface TapDebug {
   confidence: number | null
   verified: boolean
   failure_reason: string
+  pass_reason?: string
   image: string
 }
 

@@ -1,19 +1,18 @@
 title: google 로그인
-description: 'Google 로그인 버튼 → 약관 동의 → QA 계정 선택 → 로그인 완료'
+description: 'Google 로그인 버튼 → (약관 동의 — 최초 로그인 시만) → QA 계정 선택 → 로그인 완료'
 package: ''
 steps:
 - action: find_and_tap
   target: Google 로그인 버튼
-  params:
-    expect_visible: 약관 알림 팝업
-  description: Google 로그인 버튼 클릭
+  description: Google 로그인 버튼 클릭 (다음 화면은 시나리오별 상이 — 약관 팝업 or 계정 선택)
   timeout: 15
   retry: 2
 - action: find_and_tap
   target: 약관 알림 팝업 내 동의합니다 영역
   params:
+    optional: true
     expect_visible: 계정 선택 팝업
-  description: 약관 동의 클릭
+  description: 약관 동의 클릭 — 최초 로그인/계정 삭제 후에만 노출, 재로그인 시 건너뜀
   timeout: 10
   retry: 2
 - action: verify

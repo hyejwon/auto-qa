@@ -2,14 +2,56 @@ import subprocess
 import threading
 import time
 import os
+import re
 import shutil
 import sys
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+_UI_BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+
+def parse_ui_nodes(xml_text: str) -> list[dict]:
+    """uiautomator dump XML → 텍스트/설명/체크박스 노드 목록 (좌표 포함).
+
+    반환 필드: text, desc, rid(resource-id 마지막 조각), checkable, checked,
+    x1/y1/x2/y2, cx/cy. XML이 비었거나 파싱 불가면 빈 리스트.
+    """
+    if not xml_text or "<node" not in xml_text:
+        return []
+    # uiautomator 출력 앞뒤에 안내 문구가 붙는 기종 대응
+    start = xml_text.find("<?xml")
+    if start < 0:
+        start = xml_text.find("<hierarchy")
+    try:
+        root = ET.fromstring(xml_text[start:] if start >= 0 else xml_text)
+    except ET.ParseError as e:
+        logger.warning("ui_dump XML 파싱 실패: %s", e)
+        return []
+    out = []
+    for node in root.iter("node"):
+        text = (node.get("text") or "").strip()
+        desc = (node.get("content-desc") or "").strip()
+        checkable = node.get("checkable") == "true"
+        m = _UI_BOUNDS_RE.match(node.get("bounds") or "")
+        if not m or not (text or desc or checkable):
+            continue
+        x1, y1, x2, y2 = map(int, m.groups())
+        out.append({
+            "text": text, "desc": desc,
+            "rid": (node.get("resource-id") or "").rsplit("/", 1)[-1],
+            "checkable": checkable,
+            "checked": node.get("checked") == "true",
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "cx": (x1 + x2) // 2, "cy": (y1 + y2) // 2,
+        })
+    return out
+
 
 def _runtime_roots() -> list[Path]:
     """Return likely resource roots for normal and PyInstaller execution."""
@@ -280,6 +322,15 @@ class ADBController:
                 raise
         raise last_err
     
+    def ui_dump(self) -> str:
+        """uiautomator로 현재 화면 UI 트리 XML 덤프 (텍스트/좌표 결정적 추출용)"""
+        try:
+            self._execute(["shell", "uiautomator", "dump", "/sdcard/uidump.xml"])
+            return self._execute(["shell", "cat", "/sdcard/uidump.xml"])
+        except Exception as e:
+            logger.warning(f"ui_dump failed: {e}")
+            return ""
+
     def get_current_activity(self) -> str:
         """현재 Activity 확인"""
         try:

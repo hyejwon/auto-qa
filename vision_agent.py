@@ -5,6 +5,7 @@ from prompts import (
     ANALYZE_SCREEN_STATE_PROMPT,
     READ_TEXT_PROMPT,
     DETECT_INTERRUPT_PROMPT,
+    EXTRACT_ITEMS_PROMPT,
 )
 from PIL import Image, ImageDraw
 import json
@@ -150,7 +151,8 @@ class GeminiVisionAgent:
     def detect_interrupt(self, image_path: Path) -> Dict:
         """예상 밖 인터럽트 팝업(이벤트/공지/오류 등) 감지 및 닫기 방법 판단.
 
-        반환: {"is_interrupt": bool, "kind": str, "close_method": "tap"|"back"|None,
+        반환: {"is_interrupt": bool, "kind": str,
+               "close_method": "tap"|"tap_center"|"back"|None,
                "close_box_2d": [ymin,xmin,ymax,xmax]|None, "description": str}
         실패 시 빈 dict — 호출부는 인터럽트 아님으로 처리한다.
         """
@@ -166,6 +168,27 @@ class GeminiVisionAgent:
         except Exception as e:
             logger.error(f"Interrupt detection failed: {e}")
             return {}
+
+    def extract_items(self, image_path: Path, items_description: str) -> list:
+        """화면에 보이는 목록 항목들 추출 (예: 빌드 버전 목록).
+
+        반환: [{"text": str, "info": str}, ...] — 실패 시 빈 리스트
+        """
+        prompt = EXTRACT_ITEMS_PROMPT.format(items_description=items_description)
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, self._image_part(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(response.text)
+            items = data.get("items", [])
+            return [i for i in items if isinstance(i, dict) and i.get("text")]
+        except Exception as e:
+            logger.error(f"extract_items failed: {e}")
+            return []
 
     def read_text(self, image_path: Path, region_description: str) -> Optional[str]:
         """

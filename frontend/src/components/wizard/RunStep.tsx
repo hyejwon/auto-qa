@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Play, Square, RefreshCw, Loader2, ArrowLeft, FileText, Save, Pencil, Braces } from 'lucide-react'
-import { templateApi, testApi, apkApi, wsUrl, debugSince } from '../../api/client'
+import { Play, Square, RefreshCw, Loader2, ArrowLeft, FileText, Save, Pencil, Braces, Sparkles } from 'lucide-react'
+import { templateApi, testApi, apkApi, planApi, wsUrl, debugSince } from '../../api/client'
 import { stepsToYaml } from '../../lib/template'
 import { extractParams, substituteSteps } from '../../lib/params'
 import StepEditor, { newId } from './StepEditor'
@@ -30,6 +30,8 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   const [saving, setSaving] = useState(false)
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
   const [apks, setApks] = useState<string[]>([])
+  const [scenario, setScenario] = useState('')
+  const [generating, setGenerating] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const sessionRef = useRef('')
@@ -74,6 +76,27 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   const handleEditorChange = (nextSteps: Step[], nextIds: string[]) => {
     setSteps(nextSteps)
     setStepIds(nextIds)
+  }
+
+  // 자연어 시나리오 → 플래너가 검증된 템플릿을 조합해 스텝 생성 → 편집기에 로드
+  const handleGenerate = async () => {
+    if (!scenario.trim()) { setStatus('⚠️ 시나리오를 자연어로 입력하세요.'); return }
+    setGenerating(true)
+    setStatus('🤖 검증된 템플릿을 참조해 스텝 생성 중... (수십 초)')
+    try {
+      const res = await planApi.generate(scenario.trim(), selectedPackage)
+      const generated = (res.plan?.steps ?? []) as Step[]
+      setTitle(res.title || '생성된 테스트')
+      setSteps(generated)
+      setStepIds(generated.map(() => newId()))
+      const defaults: Record<string, string> = {}
+      setParamValues(defaults)
+      setStatus(`✅ 스텝 ${res.steps_count}개 생성 — 검토·수정 후 실행하거나 저장하세요.`)
+    } catch (e) {
+      setStatus(`❌ 생성 실패: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setGenerating(false)
+    }
   }
 
   const handleSave = async () => {
@@ -174,6 +197,25 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
               className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white disabled:opacity-50 transition-colors">
               <RefreshCw size={16} />
             </button>
+          </div>
+        )}
+
+        {mode === 'create' && (
+          <div className="flex-none rounded-lg border border-fuchsia-800/60 bg-fuchsia-950/20 p-2.5 space-y-2">
+            <p className="text-xs text-fuchsia-300 flex items-center gap-1.5">
+              <Sparkles size={13} /> 자연어로 시나리오를 쓰면 검증된 템플릿을 조합해 스텝을 생성합니다
+            </p>
+            <textarea value={scenario} onChange={(e) => setScenario(e.target.value)}
+              disabled={running || generating} rows={3}
+              placeholder={'예: 앱 실행 후 구글 재로그인하고, 상점에서 마신석 50 상품을 구매한 뒤 다이아가 감소했는지 검증'}
+              className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1.5 text-xs resize-y focus:outline-none focus:border-fuchsia-500 disabled:opacity-50" />
+            <div className="flex justify-end">
+              <button onClick={handleGenerate} disabled={running || generating || !scenario.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-fuchsia-700 hover:bg-fuchsia-600 disabled:opacity-50 text-xs font-medium transition-colors">
+                {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                {generating ? '생성 중...' : '스텝 생성'}
+              </button>
+            </div>
           </div>
         )}
 

@@ -145,7 +145,10 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
                     <p className="text-gray-200">{s.step}. {s.label}</p>
                     {s.skipped && <p className="text-amber-400">건너뜀 — 조건부 스텝, 대상 미노출 (정상)</p>}
                     {!s.passed && !s.skipped && s.failure_reason && <p className="text-red-400">{s.failure_reason}</p>}
-                    {s.vision_confidence != null && !s.skipped && (
+                    {s.passed && !s.skipped && s.pass_reason && (
+                      <p className="text-emerald-400">{s.pass_reason}</p>
+                    )}
+                    {s.vision_confidence != null && !s.skipped && !(s.passed && s.pass_reason) && (
                       <p className="text-gray-500">신뢰도 {scorePct(s.vision_confidence)}</p>
                     )}
                   </div>
@@ -174,8 +177,11 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
                   <img src={t.image} alt={t.target || ''} loading="lazy" className="w-full h-36 object-cover bg-gray-950" />
                   <div className="px-2 py-1 bg-gray-900">
                     <p className="text-[11px] text-gray-300 truncate">{t.target}</p>
-                    <p className={`text-[10px] ${t.verified ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {t.verified ? 'PASS' : 'FAIL'} · conf {t.confidence != null ? t.confidence.toFixed(2) : '—'}
+                    <p className={`text-[10px] truncate ${t.verified ? 'text-emerald-400' : 'text-red-400'}`}
+                      title={t.verified ? (t.pass_reason || '') : (t.failure_reason || '')}>
+                      {t.verified
+                        ? (t.pass_reason ? `PASS · ${t.pass_reason}` : `PASS · conf ${t.confidence != null ? t.confidence.toFixed(2) : '—'}`)
+                        : `FAIL${t.failure_reason ? ` · ${t.failure_reason}` : ''}`}
                     </p>
                   </div>
                 </button>

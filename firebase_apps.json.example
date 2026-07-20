@@ -2,8 +2,10 @@
   "_설명": "Firebase App Distribution 연동 설정 — 이 파일을 firebase_apps.json으로 복사 후 값 채우기. project_number는 Firebase 콘솔 > 프로젝트 설정 > 일반, app_id는 같은 화면의 앱 ID (1:숫자:android:해시). 인증: 서비스 계정(credentials.json, 각 프로젝트 'App Distribution 뷰어' 역할) 또는 사용자 계정(gcloud auth application-default login, 프로젝트 멤버).",
   "_quota_project": "percent-vertex-test",
   "_quota_설명": "사용자 계정 인증 시에만 사용 — App Distribution API가 활성화돼 있고 본인이 serviceUsageConsumer 이상인 프로젝트. 서비스 계정 인증이면 무시됨.",
+  "_tester_설명": "tester_name: App Tester 앱에 표시되는 앱 이름 — REST 권한 없이 폰 화면 조작으로 빌드를 받는 App Tester 모드에서 사용. project_number/app_id 없이 tester_name만 있어도 됨.",
   "com.percent.aos.cooptd": {
     "project_number": "953759719189",
-    "app_id": "1:953759719189:android:APP_ID_해시_입력"
+    "app_id": "1:953759719189:android:APP_ID_해시_입력",
+    "tester_name": "Coop TD"
   }
 }

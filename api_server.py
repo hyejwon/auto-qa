@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -520,8 +521,20 @@ class AppDistInstallRequest(BaseModel):
 
 @app.get("/api/appdist/apps")
 def appdist_apps():
-    """App Distribution 연동 설정된 앱 목록 + 인증 가능 여부"""
-    return {"apps": list(_appdist.apps().keys()), "configured": _appdist.configured()}
+    """App Distribution 연동 설정된 앱 목록 + 인증 가능 여부.
+
+    apps: REST API 모드 (project_number/app_id 설정 + 인증 필요)
+    tester_apps: App Tester 폰 조작 모드 (tester_name만 있으면 됨)
+    """
+    entries = _appdist.apps()
+    rest_apps = [k for k, v in entries.items()
+                 if v.get("project_number") and v.get("app_id")]
+    tester_apps = [k for k, v in entries.items() if v.get("tester_name")]
+    return {
+        "apps": rest_apps,
+        "tester_apps": tester_apps,
+        "configured": _appdist.configured(),
+    }
 
 
 @app.get("/api/appdist/releases")
@@ -550,6 +563,228 @@ def appdist_install(req: AppDistInstallRequest):
         return {"success": ok, "message": msg, "apk": apk_path.name}
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+# ─────────────────────────────────────────────
+# App Tester(폰 화면 조작) — REST 권한 없이 테스터 초대만으로 빌드 조회/설치
+# ─────────────────────────────────────────────
+from app_tester_driver import AppTesterDriver
+
+
+def _tester_name_for(package: str) -> Optional[str]:
+    """firebase_apps.json 항목의 tester_name (App Tester에 표시되는 앱 이름)"""
+    entry = _appdist.apps().get(package) or {}
+    return entry.get("tester_name")
+
+
+class AppTesterInstallRequest(BaseModel):
+    version: str
+    game: str = ""      # App Tester에 표시되는 앱 이름 (프로젝트 목록에서 선택)
+    package: str = ""   # 알고 있으면 전달 — 설치 확인/후속 단계용
+    device: str = ""
+
+
+def _installed_packages(device_id: str) -> set[str]:
+    """서드파티 설치 패키지 전체 (APK 키워드 필터 없음)"""
+    out = _adb_shell(device_id, ["shell", "pm", "list", "packages", "-3"], timeout=15)
+    return {line.split(":", 1)[1].strip()
+            for line in out.splitlines() if line.startswith("package:")}
+
+
+# 폰 화면 조회 결과 캐시 — 조회가 수십 초 걸리므로 처음 한 번만 읽고 재사용.
+# refresh=true 요청 시에만 다시 폰을 읽는다. (서버 재시작 시 초기화)
+_APPTESTER_CACHE_PATH = cfg.paths.project_root / "apptester_cache.json"
+_apptester_fetch_guard = threading.Lock()
+_apptester_fetch_locks: dict[str, threading.Lock] = {}
+
+
+def _load_apptester_cache() -> dict[str, list]:
+    try:
+        with open(_APPTESTER_CACHE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            logger.info("App Tester 캐시 로드: %d개 항목 (%s)", len(data), _APPTESTER_CACHE_PATH.name)
+            return data
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning("App Tester 캐시 파일 로드 실패 (%s) — 빈 캐시로 시작", e)
+    return {}
+
+
+# 디스크에 영속화 — 서버를 재시작해도 프로젝트/버전 목록을 다시 폰에서 읽지 않는다
+_apptester_cache: dict[str, list] = _load_apptester_cache()
+
+
+def _save_apptester_cache() -> None:
+    try:
+        tmp = _APPTESTER_CACHE_PATH.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_apptester_cache, f, ensure_ascii=False, indent=1)
+        tmp.replace(_APPTESTER_CACHE_PATH)
+    except Exception as e:
+        logger.warning("App Tester 캐시 저장 실패: %s", e)
+
+
+def _merge_builds(old: list, new: list) -> list:
+    """새로 읽은 버전 목록(최신순)에 캐시에만 남은 옛 버전을 이어붙인다.
+
+    폰 화면 스캔은 최신 N페이지만 읽으므로, 전체 교체하면 스크롤 깊이 밖의
+    옛 버전이 사라진다 — 새 버전은 추가, 옛 버전은 유지.
+    """
+    seen = {b.get("version") for b in new}
+    return list(new) + [b for b in old if b.get("version") not in seen]
+
+
+def _apptester_fetch(cache_key: str, refresh: bool, fetch, merge=None) -> tuple[list, bool]:
+    """(결과, 캐시 여부). 같은 조회가 동시에 들어오면 첫 요청만 폰을 읽고,
+    나머지는 409 대신 첫 요청이 채운 캐시를 기다렸다가 반환한다."""
+    with _apptester_fetch_guard:
+        key_lock = _apptester_fetch_locks.setdefault(cache_key, threading.Lock())
+    with key_lock:
+        cached = _apptester_cache.get(cache_key)
+        if not refresh and cached is not None:
+            return cached, True
+        result = fetch()
+        if merge is not None and cached:
+            result = merge(cached, result)
+        _apptester_cache[cache_key] = result
+        _save_apptester_cache()
+        return result, False
+
+
+def _norm_game_name(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _guess_package(game_name: str, installed: set[str]) -> str:
+    """App Tester 표시 이름 → 패키지명 추정 (마지막 세그먼트 일치 우선)"""
+    gn = _norm_game_name(game_name)
+    if not gn:
+        return ""
+    exact = next((p for p in sorted(installed)
+                  if _norm_game_name(p.split(".")[-1]) == gn), "")
+    if exact:
+        return exact
+    if len(gn) >= 5:
+        return next((p for p in sorted(installed) if gn in _norm_game_name(p)), "")
+    return ""
+
+
+@app.get("/api/apptester/apps")
+def apptester_apps(device: str = "", refresh: bool = False):
+    """폰의 App Tester 홈 화면을 읽어 프로젝트(앱) 목록 반환.
+
+    최초 1회만 폰을 읽고(수십 초) 이후엔 캐시 반환 — refresh=true면 다시 읽음.
+    package 매핑 우선순위: 목록 행에 노출된 패키지명 →
+    firebase_apps.json tester_name 매칭 → 설치 패키지 이름 추정.
+    """
+    device_info = get_device(device)
+    if device_info["status"] != "connected":
+        raise HTTPException(status_code=503, detail="디바이스 미연결")
+    did = device_info["device_id"]
+
+    def fetch() -> list:
+        session = f"apptester_{int(datetime.now().timestamp())}"
+        holder = _acquire_device_lock(did, session)
+        if holder:
+            raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
+        try:
+            driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
+            return driver.list_games()
+        finally:
+            _release_device_lock(did, session)
+
+    try:
+        result, _ = _apptester_fetch(f"{did}|apps", refresh, fetch)
+        games = [dict(g) for g in result]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("AppTester 프로젝트 목록 조회 실패: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+    installed = _installed_packages(did)
+    tester_map = {_norm_game_name(v["tester_name"]): pkg
+                  for pkg, v in _appdist.apps().items() if v.get("tester_name")}
+    for g in games:
+        pkg = (g.get("package")
+               or tester_map.get(_norm_game_name(g["name"]), "")
+               or _guess_package(g["name"], installed))
+        g["package"] = pkg
+        g["installed"] = bool(pkg) and pkg in installed
+    return {"apps": games}
+
+
+@app.get("/api/apptester/builds")
+def apptester_builds(package: str = "", game: str = "", device: str = "", refresh: bool = False):
+    """폰의 App Tester 화면을 읽어 빌드 목록 반환.
+
+    최초 1회만 폰을 읽고(수십 초) 이후엔 캐시 반환 — refresh=true면 다시 읽음.
+    """
+    game_name = game or _tester_name_for(package)
+    if not game_name:
+        raise HTTPException(status_code=404,
+                            detail=f"game 파라미터가 없고 firebase_apps.json에 '{package}'의 tester_name도 없습니다.")
+    device_info = get_device(device)
+    if device_info["status"] != "connected":
+        raise HTTPException(status_code=503, detail="디바이스 미연결")
+    did = device_info["device_id"]
+
+    def fetch() -> list:
+        session = f"apptester_{int(datetime.now().timestamp())}"
+        holder = _acquire_device_lock(did, session)
+        if holder:
+            raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
+        try:
+            driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
+            return driver.list_builds(game_name)
+        finally:
+            _release_device_lock(did, session)
+
+    try:
+        builds, cached = _apptester_fetch(
+            f"{did}|builds|{game_name}", refresh, fetch, merge=_merge_builds)
+        return {"builds": builds, "cached": cached}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("AppTester 빌드 조회 실패: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/apptester/install")
+def apptester_install(req: AppTesterInstallRequest):
+    """폰의 App Tester를 조작해 지정 버전 다운로드+설치 (수 분 소요).
+
+    package를 모르고 설치한 경우 설치 전후 패키지 목록 diff로 알아내 반환한다.
+    """
+    game_name = req.game or _tester_name_for(req.package)
+    if not game_name:
+        raise HTTPException(status_code=404,
+                            detail=f"game 파라미터가 없고 firebase_apps.json에 '{req.package}'의 tester_name도 없습니다.")
+    device_info = get_device(req.device)
+    if device_info["status"] != "connected":
+        raise HTTPException(status_code=503, detail="디바이스 미연결")
+    did = device_info["device_id"]
+    session = f"apptester_{int(datetime.now().timestamp())}"
+    holder = _acquire_device_lock(did, session)
+    if holder:
+        raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
+    try:
+        before = set() if req.package else _installed_packages(did)
+        driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
+        ok, msg = driver.install_build(game_name, req.version)
+        pkg = req.package
+        if ok and not pkg:
+            after = _installed_packages(did)
+            new = after - before
+            pkg = next(iter(new)) if len(new) == 1 else _guess_package(game_name, after)
+        return {"success": ok, "message": msg, "package": pkg}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    finally:
+        _release_device_lock(did, session)
 
 
 # ─────────────────────────────────────────────
@@ -642,11 +877,8 @@ def uninstall_app(req: UninstallRequest):
 # 템플릿 API
 # ─────────────────────────────────────────────
 def _template_roots() -> dict[str, Path]:
-    return {
-        "templates": cfg.paths.templates_dir,
-        "game_testcases": cfg.paths.project_root / "game_testcases",
-        "testcases": cfg.paths.testcases_dir,
-    }
+    # 템플릿 소스는 templates/ 폴더 하나만 사용
+    return {"templates": cfg.paths.templates_dir}
 
 
 def _resolve_template_path(name: str) -> Path | None:
@@ -669,11 +901,11 @@ def _resolve_template_path(name: str) -> Path | None:
 def list_templates():
     try:
         names: list[str] = []
-        for prefix, root in _template_roots().items():
+        for root in _template_roots().values():
             if not root.exists():
                 continue
             for f in sorted(root.glob("*.yaml")):
-                names.append(f"{prefix}/{f.stem}")
+                names.append(f.stem)
         return {"templates": names}
     except Exception as e:
         return {"templates": [], "error": str(e)}
@@ -961,6 +1193,7 @@ def list_tap_debug(since: str = "", limit: int = 100):
                 "confidence": rec.get("confidence"),
                 "verified": rec.get("verified"),
                 "failure_reason": rec.get("failure_reason", ""),
+                "pass_reason": rec.get("pass_reason", ""),
                 "image": f"/debug/taps/{name}" if name else "",
             })
     except Exception as e:
@@ -1009,6 +1242,18 @@ def unity_tutorial_pass(req: TutorialPassRequest):
 # ─────────────────────────────────────────────
 # 플랜 생성 API
 # ─────────────────────────────────────────────
+def _template_library_text() -> str:
+    """templates/ 폴더의 검증된 템플릿 전체를 플래너 참조용 텍스트로 직렬화"""
+    parts = []
+    for f in sorted(cfg.paths.templates_dir.glob("*.yaml")):
+        try:
+            body = f.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        parts.append(f"### {f.stem}\n```yaml\n{body}\n```")
+    return "\n\n".join(parts)
+
+
 @app.post("/api/plan/generate")
 def generate_plan(req: GeneratePlanRequest):
     if not req.scenario.strip():
@@ -1019,7 +1264,10 @@ def generate_plan(req: GeneratePlanRequest):
             location=cfg.gemini.location,
             model=cfg.gemini.model,
         )
-        plan = planner.create_test_plan(req.scenario.strip(), req.package.strip())
+        plan = planner.create_test_plan(
+            req.scenario.strip(), req.package.strip(),
+            template_library=_template_library_text(),
+        )
         yaml_data = {
             "title": plan.title,
             "description": plan.description,
@@ -1032,6 +1280,7 @@ def generate_plan(req: GeneratePlanRequest):
             "title": plan.title,
             "steps_count": len(plan.steps),
             "yaml": yaml_str,
+            "plan": yaml_data,  # 프론트 스텝 편집기에 바로 로드할 구조화 플랜
         }
     except Exception as e:
         logger.exception("generate_plan failed")

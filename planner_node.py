@@ -43,7 +43,8 @@ class PlannerNode:
     def create_test_plan(
         self,
         natural_language_scenario: str,
-        package_name: str = ""
+        package_name: str = "",
+        template_library: str = "",
     ) -> TestPlan:
         """
         자연어 시나리오를 구조화된 테스트 플랜으로 변환
@@ -51,11 +52,14 @@ class PlannerNode:
         Args:
             natural_language_scenario: 자연어로 작성된 테스트 시나리오
             package_name: 앱 패키지명 (옵션)
+            template_library: 검증된 기존 템플릿 YAML 모음 — 플래너가 스텝을
+                재사용/조합할 소스. 비면 백지 생성.
 
         Returns:
             TestPlan: 구조화된 테스트 플랜
         """
-        prompt = self._build_planner_prompt(natural_language_scenario, package_name or "(자동 추출)")
+        prompt = self._build_planner_prompt(
+            natural_language_scenario, package_name or "(자동 추출)", template_library)
 
         try:
             with langfuse.start_as_current_observation(
@@ -85,8 +89,21 @@ class PlannerNode:
             logger.error(f"Failed to create test plan: {e}")
             raise
     
-    def _build_planner_prompt(self, scenario: str, package_name: str) -> str:
+    def _build_planner_prompt(self, scenario: str, package_name: str,
+                              template_library: str = "") -> str:
         """플래너 프롬프트 생성"""
+        library_section = ""
+        if template_library.strip():
+            library_section = f"""
+**검증된 템플릿 라이브러리 (스텝 재사용 최우선):**
+아래는 실기기에서 검증이 끝난 이 프로젝트의 템플릿들이다. 시나리오의 일부가
+라이브러리 템플릿의 흐름과 겹치면 그 스텝들을 **target 문구와 params까지 그대로
+복사**해서 사용하라. target 표현을 임의로 바꾸거나 params(optional, expect_visible,
+scroll_search 등)를 빼먹으면 안 된다 — 그 문구/설정들은 실기기 시행착오로 다듬어진
+것이다. 라이브러리에 없는 동작만 새로 작성하라.
+
+{template_library}
+"""
         return f"""
 당신은 모바일 QA 테스트 전문가입니다. 자연어로 작성된 테스트 시나리오를 구조화된 테스트 스텝으로 변환하세요.
 
@@ -94,6 +111,7 @@ class PlannerNode:
 {scenario}
 
 **앱 패키지명:** {package_name or '(자동 추출)'}
+{library_section}
 
 **사용 가능한 액션 타입:**
 1. `launch_app` - 앱 실행
@@ -106,10 +124,18 @@ class PlannerNode:
        "expect_visible": "탭 후 보여야 하는 요소 (필수)",
        "wait_seconds": 3,
        "verify_timeout_sec": 2.0,
-       "expect_hidden": "탭 후 사라져야 하는 요소 (선택)"
+       "expect_hidden": "탭 후 사라져야 하는 요소 (선택)",
+       "optional": true,              // 조건부 팝업 등 안 나올 수도 있는 대상 — 미발견 시 실패 대신 건너뜀
+       "scroll_search": true,         // 스크롤해야 나오는 대상 (상점 하단 상품 등)
+       "max_scrolls": 8,              // scroll_search 시 최대 스크롤 횟수
+       "then_tap": "연속 탭 대상",     // 첫 탭 직후 이어서 탭할 대상 (옵션 선택→확인 등)
+       "tap_point": "center"          // 대상 확인만 하고 화면 정중앙 탭 (아무 곳이나 눌러 닫는 획득 팝업용)
      }}
    - **`expect_visible`은 필수이다.** 탭 후 어떤 요소/화면이 보여야 하는지 반드시 명시하라.
    - 예: 버튼 탭 → 팝업이 뜨면 expect_visible="팝업 제목", 화면 전환이면 expect_visible="다음 화면 특징 요소"
+   - 최초 실행에만 나오는 약관/동의/권한 팝업 스텝에는 `optional: true`를 넣어라 (재실행 시 안 나옴)
+   - 같은 화면에 수량·가격이 같은 유사 상품이 여럿이면 target에 섹션 헤더를 명시하라
+     (예: "마신석 섹션 헤더 아래 50 상품의 5000 다이아 버튼")
 
 3. `verify` - 화면에 특정 요소가 보이는지 검증
    - target: "검증할 UI 요소"
@@ -140,7 +166,9 @@ class PlannerNode:
      {{
        "save_as": "변수명",           // 읽은 값을 저장할 변수명 (나중에 compare_with로 참조)
        "compare_with": "변수명",      // 이전에 save_as로 저장한 변수명과 비교
-       "expect_changed": true/false   // true: 값이 달라야 PASS / false: 값이 같아야 PASS
+       "expect_changed": true/false,  // true: 값이 달라야 PASS / false: 값이 같아야 PASS
+       "expect_increase": true,       // 숫자가 증가해야 PASS (재화 지급 검증)
+       "expect_decrease": true        // 숫자가 감소해야 PASS (재화 차감 검증)
      }}
    - PID 변경 여부 확인 예시:
      1) 연동 전: action=read_text, target="PID 값", params={{save_as: "pid_before"}}
@@ -197,6 +225,9 @@ class PlannerNode:
 - 가능하면 `find_and_tap + wait + verify`도 `find_and_tap.params.expect_visible/expect_hidden`로 합치세요
 - PID / 유저 ID / 계정 ID 등 숫자/문자 값의 변경·유지 여부를 확인해야 하는 경우 `read_text`를 사용하세요
 - `read_text`로 값을 비교할 때는 반드시 확인 전(save_as)과 후(compare_with)를 쌍으로 구성하세요
+- 실행할 때마다 달라질 수 있는 값(계정 이메일, 상품명 등)은 target에 `{{{{변수명}}}}` 플레이스홀더로
+  쓰세요 (예: `{{{{account_email}}}}`) — 실행 시 UI에서 값을 입력받아 치환됩니다.
+  단, 라이브러리 템플릿을 재사용할 때는 그 템플릿의 표기를 그대로 따르세요
 """
     
     def save_as_yaml(

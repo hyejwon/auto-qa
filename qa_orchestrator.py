@@ -13,7 +13,7 @@ from PIL import Image, ImageChops, ImageDraw
 from langfuse_disabled import get_client
 
 from config import Config
-from adb_controller import ADBController
+from adb_controller import ADBController, parse_ui_nodes
 from vision_agent import GeminiVisionAgent
 from test_manager import TestCaseManager, TestResult, ActionType, TestCase
 from planner_node import PlannerNode
@@ -40,6 +40,9 @@ class QAOrchestrator:
     STABILITY_POLL_INTERVAL_SEC = 0.5
     STABILITY_TIMEOUT_SEC = 10.0
     STABILITY_THRESHOLD = 0.01
+    # expect_visible/hidden 검증 시도 상한 — 시도마다 Vision 호출이 나가므로
+    # step.timeout까지 무한 반복하지 않고 이 횟수에서 끊는다
+    VERIFY_MAX_ATTEMPTS = 3
 
     def __init__(self, config: Config = Config(), device_id: Optional[str] = None):
         self.config = config
@@ -80,6 +83,7 @@ class QAOrchestrator:
         self._current_package: str = ""
         self._current_screen_type: str = ""
         self._last_failure_reason: str = ""
+        self._last_pass_detail: str = ""  # 통과 스텝의 근거 (읽은 값, 증감량 등)
         self._package_apk_map: dict[str, str] = {}
 
     def run_natural_language_test(
@@ -170,6 +174,7 @@ class QAOrchestrator:
                         break
 
                     self._last_failure_reason = ""
+                    self._last_pass_detail = ""
                     step_skipped = False
                     label = step.description or step.action
                     target_info = f"  → 대상: {step.target}" if step.target else ""
@@ -242,6 +247,7 @@ class QAOrchestrator:
                         "skipped": step_skipped,
                         "vision_confidence": confidence,
                         "failure_reason": "" if (success or step_skipped) else self._last_failure_reason,
+                        "pass_reason": self._last_pass_detail if success else "",
                     })
 
                     self._cleanup_step_files()
@@ -548,7 +554,7 @@ class QAOrchestrator:
     _TAP_OK_VERIFY_FAIL = "TAP_OK_VERIFY_FAIL"
 
     # 대상 미발견 시 인터럽트 팝업 복구 최대 횟수 (팝업이 겹쳐 뜨는 경우 대비)
-    INTERRUPT_RECOVERY_MAX = 2
+    INTERRUPT_RECOVERY_MAX = 3  # 로그인 직후 퀘스트/이벤트 팝업이 연달아 뜨는 경우 대비
 
     def _try_recover_interrupt(self, screenshot_path: Path) -> bool:
         """예상 밖 인터럽트 팝업(이벤트/공지/오류)이면 닫는다. 복구했으면 True.
@@ -580,6 +586,10 @@ class QAOrchestrator:
             else:
                 self.adb.press_back()
                 logger.info("│  닫기 버튼 좌표 없음 — 뒤로가기로 대체")
+        elif method == "tap_center":
+            # "계속하려면 화면을 눌러주세요" 류 — 아무 곳이나 눌러 닫는 팝업
+            self.adb.tap(self.adb.width // 2, self.adb.height // 2)
+            logger.info("│  안내 문구 팝업 — 화면 중앙 탭으로 닫기")
         elif method == "back":
             self.adb.press_back()
             logger.info("│  뒤로가기로 팝업 닫기")
@@ -650,10 +660,17 @@ class QAOrchestrator:
         #         self._last_failure_reason = f"탭 성공(Cache), 화면 검증 실패: '{target}'"
         #     return True if verified else self._TAP_OK_VERIFY_FAIL
 
+        # 이메일 대상(구글 계정 선택 등)은 결정적으로만 처리 — Vision 유사 매칭이
+        # qa_google_01/02 같은 한 글자 차이 계정을 혼동하고, 인터럽트 복구가
+        # 계정 팝업을 닫으려다 다른 계정을 눌러 잘못 로그인하는 사고 방지.
+        if "@" in target and " " not in target.strip():
+            return self._tap_account_email(step, target.strip())
+
         # 3. 캐시 미스 → Vision 탐지 → 캐시 저장
         # logger.info("Cache MISS for '%s' @ %s → Vision fallback.", target, self._resolution)
         logger.info(f"vision target:{target}")
-        time.sleep(3)
+        # 전환 시작 여유만 두고, 실제 대기는 stable check가 담당 (기존 3초 고정 대기 축소)
+        time.sleep(1)
         latest_path = self._wait_for_screen_stable()
         coords = self._resolve_with_vision(latest_path, target)
 
@@ -718,10 +735,61 @@ class QAOrchestrator:
         verified = self._verify_find_and_tap_outcome(step, tap_source="Vision")
         if not verified:
             self._last_failure_reason = f"탭 성공(Vision), 화면 검증 실패: '{target}'"
+        else:
+            exp = params.get("expect_visible")
+            self._last_pass_detail = (
+                f"'{target}' 탭 ({coords['x']},{coords['y']})"
+                + (f" → '{exp}' 노출 확인" if exp else "")
+            )
         self._save_tap_debug(
             latest_path, target, coords,
             getattr(self, "_last_vision_confidence", 0.0), verified,
         )
+        return True if verified else self._TAP_OK_VERIFY_FAIL
+
+    def _tap_account_email(self, step, email: str) -> bool | str:
+        """구글 계정 선택 등 이메일 대상 탭 — UI 트리 텍스트 정확 일치만 허용.
+
+        요청한 계정이 화면에 없으면 절대 다른 항목을 누르지 않고,
+        기기 등록 계정을 확인해 원인(미등록 vs 화면 미노출)을 명확히 남긴다.
+        """
+        time.sleep(1)
+        latest_path = self._wait_for_screen_stable()
+        email_l = email.lower()
+        node = None
+        for attempt in range(3):  # 다이얼로그 로딩 지연 대비
+            nodes = parse_ui_nodes(self.adb.ui_dump())
+            node = next(
+                (n for n in nodes if n["text"].strip().lower() == email_l), None)
+            if node:
+                break
+            time.sleep(2)
+        if node is None:
+            accounts = self.adb.get_google_accounts()
+            if email_l not in (a.lower() for a in accounts):
+                self._last_failure_reason = (
+                    f"기기에 구글 계정 '{email}' 미등록 (등록된 계정: "
+                    f"{', '.join(accounts) or '없음'}) — 폰에 계정 추가 후 다시 실행"
+                )
+            else:
+                self._last_failure_reason = (
+                    f"화면에서 계정 '{email}'을 찾지 못함 (기기에는 등록되어 있음)"
+                )
+            logger.error(self._last_failure_reason)
+            self._save_tap_debug(latest_path, email, None, 0.0, False)
+            return False
+        coords = {"x": node["cx"], "y": node["cy"],
+                  "x1": node["x1"], "y1": node["y1"],
+                  "x2": node["x2"], "y2": node["y2"]}
+        logger.info("계정 이메일 XML 정확 일치 탭: '%s' → (%d, %d)", email, coords["x"], coords["y"])
+        self.adb.tap(coords["x"], coords["y"])
+        self._current_screen_type = ""
+        verified = self._verify_find_and_tap_outcome(step, tap_source="XML")
+        if not verified:
+            self._last_failure_reason = f"탭 성공(XML), 화면 검증 실패: '{email}'"
+        else:
+            self._last_pass_detail = f"계정 '{email}' XML 정확 일치 탭 ({coords['x']},{coords['y']})"
+        self._save_tap_debug(latest_path, email, coords, 1.0, verified)
         return True if verified else self._TAP_OK_VERIFY_FAIL
 
     # scroll_search 기본값
@@ -936,7 +1004,7 @@ class QAOrchestrator:
 
         deadline = time.time() + step.timeout
         attempt = 0
-        while time.time() < deadline:
+        while time.time() < deadline and attempt < self.VERIFY_MAX_ATTEMPTS:
             attempt += 1
             stable_screenshot = self._wait_for_screen_stable(
                 timeout=min(self.STABILITY_TIMEOUT_SEC, deadline - time.time())
@@ -946,13 +1014,13 @@ class QAOrchestrator:
                 return True
 
             remaining = deadline - time.time()
-            if remaining <= 0:
+            if remaining <= 0 or attempt >= self.VERIFY_MAX_ATTEMPTS:
                 break
             time.sleep(min(self.POST_TAP_POLL_INTERVAL_SEC, remaining))
 
         logger.warning(
-            "%s tap post-verification timed out for target '%s' after %ds.",
-            tap_source, target, step.timeout,
+            "%s tap post-verification failed for target '%s' (%d attempts, timeout %ds).",
+            tap_source, target, attempt, step.timeout,
         )
         return False
 
@@ -1052,7 +1120,9 @@ class QAOrchestrator:
 
         value = self.vision.read_text(screenshot_path, target)
         if value is None:
-            logger.error("read_text: '%s' 텍스트를 찾지 못했습니다.", target)
+            self._last_failure_reason = f"read_text: '{target}' 텍스트를 찾지 못함"
+            logger.error(self._last_failure_reason)
+            self._save_read_debug(screenshot_path, target, self._last_failure_reason, False)
             return False
 
         logger.info("read_text: '%s' = %s", target, value)
@@ -1060,54 +1130,95 @@ class QAOrchestrator:
         if not hasattr(result, "context"):
             result.context = {}
 
+        detail = f"'{target}' = '{value}'"
         if save_as:
             result.context[save_as] = value
+            detail += f" — '{save_as}'로 저장"
 
+        ok = True
         if compare_with:
             prev = result.context.get(compare_with)
             if prev is None:
-                logger.warning("read_text: compare_with '%s' 값이 없습니다.", compare_with)
-                return False
-
+                self._last_failure_reason = f"read_text: compare_with '{compare_with}' 값이 없습니다."
+                ok = False
             # 숫자 증감 검증 (재화 지급/차감 확인용) — 단순 변경 여부보다 강한 검증
-            if expect_increase or expect_decrease:
+            elif expect_increase or expect_decrease:
                 prev_n, curr_n = self._to_number(prev), self._to_number(value)
                 if prev_n is None or curr_n is None:
-                    self._last_failure_reason = (
-                        f"read_text: 숫자 비교 불가 ({prev!r} → {value!r})"
-                    )
-                    logger.error(self._last_failure_reason)
-                    return False
-                if expect_increase and curr_n <= prev_n:
-                    self._last_failure_reason = (
-                        f"read_text: 증가 기대했으나 {prev_n:g} → {curr_n:g}"
-                    )
-                    logger.error(self._last_failure_reason)
-                    return False
-                if expect_decrease and curr_n >= prev_n:
-                    self._last_failure_reason = (
-                        f"read_text: 감소 기대했으나 {prev_n:g} → {curr_n:g}"
-                    )
-                    logger.error(self._last_failure_reason)
-                    return False
-                logger.info("read_text 증감 확인: %g → %g (%+g)", prev_n, curr_n, curr_n - prev_n)
-                return True
+                    self._last_failure_reason = f"read_text: 숫자 비교 불가 ({prev!r} → {value!r})"
+                    ok = False
+                elif expect_increase and curr_n <= prev_n:
+                    self._last_failure_reason = f"read_text: 증가 기대했으나 {prev_n:g} → {curr_n:g}"
+                    ok = False
+                elif expect_decrease and curr_n >= prev_n:
+                    self._last_failure_reason = f"read_text: 감소 기대했으나 {prev_n:g} → {curr_n:g}"
+                    ok = False
+                else:
+                    delta = curr_n - prev_n
+                    detail = (f"'{target}' {prev_n:g} → {curr_n:g} ({delta:+g}) — "
+                              + ("증가 확인" if expect_increase else "감소 확인"))
+            else:
+                changed = prev != value
+                if expect_changed is True and not changed:
+                    self._last_failure_reason = f"read_text: 변경 기대했으나 동일함 ({value})"
+                    ok = False
+                elif expect_changed is False and changed:
+                    self._last_failure_reason = f"read_text: 유지 기대했으나 변경됨 ({prev} → {value})"
+                    ok = False
+                else:
+                    detail = f"'{target}' {prev} → {value} ({'변경됨' if changed else '유지됨'})"
 
-            changed = prev != value
-            if expect_changed is True and not changed:
-                logger.error("read_text: PID 변경 기대했으나 동일함 (%s)", value)
-                return False
-            if expect_changed is False and changed:
-                logger.error("read_text: PID 유지 기대했으나 변경됨 (%s → %s)", prev, value)
-                return False
-            logger.info(
-                "read_text 비교: %s → %s (%s)",
-                prev,
-                value,
-                "변경됨" if changed else "유지됨",
-            )
+        if ok:
+            self._last_pass_detail = detail
+            logger.info("read_text 통과: %s", detail)
+        else:
+            logger.error(self._last_failure_reason)
+        # 증거 스크린샷 — 읽은 값/비교 결과를 라벨로 새겨 리포트 갤러리에 노출
+        self._save_read_debug(
+            screenshot_path, target, detail if ok else self._last_failure_reason, ok)
+        return ok
 
-        return True
+    def _save_read_debug(self, screenshot_path: Path, target: str,
+                         detail: str, passed: bool) -> None:
+        """read_text 증거 이미지 저장 — 읽은 값과 판정 근거를 이미지에 새겨
+        taps 갤러리(find_and_tap_debug.jsonl)에 함께 노출한다."""
+        try:
+            debug_dir = self.config.paths.debug_dir
+            taps_dir = debug_dir / "taps"
+            taps_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            status = "PASS" if passed else "FAIL"
+            safe_target = "".join(
+                c if c.isalnum() or c in "._- " else "_" for c in (target or "")
+            ).strip().replace(" ", "_")[:40] or "none"
+            img_path = taps_dir / f"{ts}_{self._file_tag}_read_{safe_target}_{status}.png"
+
+            img = Image.open(screenshot_path).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            color = (0, 200, 0) if passed else (255, 40, 40)
+            draw.text((5, 5), f"read_text {status}: {detail}", fill=color)
+            img.save(img_path)
+
+            record = {
+                "timestamp": ts,
+                "device": self._file_tag,
+                "target": f"[읽기] {target}",
+                "tap": None,
+                "bbox": None,
+                "confidence": 1.0,
+                "resolution": self._resolution,
+                "package": self._current_package,
+                "verified": passed,
+                "failure_reason": "" if passed else detail,
+                "pass_reason": detail if passed else "",
+                "debug_image": str(img_path),
+                "source_screenshot": str(screenshot_path),
+            }
+            with open(debug_dir / "find_and_tap_debug.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            logger.info("┌─ read_text 증거 저장: %s", img_path.name)
+        except Exception as e:
+            logger.warning("read_text 증거 저장 실패: %s", e)
 
     @staticmethod
     def _to_number(text) -> Optional[float]:
