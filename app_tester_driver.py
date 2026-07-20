@@ -147,19 +147,42 @@ class AppTesterDriver:
             if not any(h in blob for h in _CONSENT_HINTS):
                 return
             logger.info("데이터 수집 동의 화면 감지 (시도 %d)", attempt + 1)
-            box = next((n for n in nodes if n["checkable"] and not n["checked"]), None)
-            if box:
-                self.adb.tap(box["cx"], box["cy"])
-                time.sleep(1)
-            elif attempt == 0 and not any(n["checkable"] for n in nodes):
-                # 체크박스가 XML에 안 잡히는 화면 → Vision 폴백
-                self._vision_tap("데이터 수집 동의 체크박스", "consent")
+            checked_already = any(n["checkable"] and n["checked"] for n in nodes)
+            if checked_already:
+                logger.info("│  체크박스 이미 체크됨 — 확인 버튼만 탐색")
+            else:
+                box = next((n for n in nodes if n["checkable"] and not n["checked"]), None)
+                if box:
+                    self.adb.tap(box["cx"], box["cy"])
+                    logger.info("│  체크박스 탭 (%d, %d)", box["cx"], box["cy"])
+                    time.sleep(1)
+                else:
+                    # 체크박스가 XML에 checkable로 안 잡히는 기종(Compose 등) —
+                    # "…동의합니다" 라벨 텍스트를 대신 탭 (라벨 탭도 체크박스를 토글함)
+                    label = next(
+                        (n for n in nodes
+                         if ("동의" in n["text"] or "agree" in n["text"].lower()
+                             or "동의" in n["desc"] or "agree" in n["desc"].lower())
+                         and not _is_consent_confirm(n["text"])
+                         and not _is_consent_confirm(n["desc"])), None)
+                    if label:
+                        self.adb.tap(label["cx"], label["cy"])
+                        logger.info("│  동의 라벨 탭 (%d, %d): %s",
+                                    label["cx"], label["cy"],
+                                    (label["text"] or label["desc"])[:40])
+                        time.sleep(1)
+                    elif attempt == 0:
+                        logger.info("│  체크박스/동의 라벨 미발견 — Vision 폴백")
+                        self._vision_tap("데이터 수집 동의 체크박스", "consent")
             confirm = next(
                 (n for n in self._nodes()
                  if _is_consent_confirm(n["text"]) or _is_consent_confirm(n["desc"])), None)
             if confirm:
                 self.adb.tap(confirm["cx"], confirm["cy"])
+                logger.info("│  확인 버튼 탭: %s", confirm["text"] or confirm["desc"])
                 time.sleep(1.5)
+            else:
+                logger.warning("│  확인 버튼 미발견 — 재시도")
 
     # ── 공개 API ────────────────────────────────────────────
     @staticmethod

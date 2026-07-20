@@ -44,10 +44,16 @@ def main() -> int:
         if not nodes:
             print("❌ ui_dump에서 텍스트 노드를 얻지 못함 — Vision 폴백이 필요한 화면")
             return 1
-        print(f"✅ 텍스트 노드 {len(nodes)}개:")
+        print(f"✅ 노드 {len(nodes)}개:")
         for n in nodes:
-            label = n["text"] or f"(desc) {n['desc']}"
-            print(f"  [{n['cx']},{n['cy']}] {label}")
+            label = n["text"] or (f"(desc) {n['desc']}" if n["desc"] else "")
+            marks = []
+            if n["checkable"]:
+                marks.append("☑" if n["checked"] else "☐")
+            if n["rid"]:
+                marks.append(f"id={n['rid']}")
+            suffix = f"  [{' '.join(marks)}]" if marks else ""
+            print(f"  [{n['cx']},{n['cy']}] {label}{suffix}")
         return 0
 
     if args.apps:
