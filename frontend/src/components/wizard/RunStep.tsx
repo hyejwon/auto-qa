@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { isAxiosError } from 'axios'
 import { Play, Square, RefreshCw, Loader2, ArrowLeft, FileText, Save, Pencil, Braces, Sparkles, Plus, GripVertical, X } from 'lucide-react'
 import { templateApi, testApi, apkApi, planApi, wsUrl, debugSince } from '../../api/client'
 import { stepsToYaml } from '../../lib/template'
@@ -438,7 +439,17 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
       PACKAGE_ACTIONS.has(s.action) && !s.target ? { ...s, target: selectedPackage } : s
     ))
     const pkg = runSteps.find((s) => s.action === 'launch_app' && s.target)?.target ?? selectedPackage
-    await testApi.run({ title: title || '테스트 실행', package: pkg, steps: runSteps, session_id: sid, device })
+    try {
+      await testApi.run({ title: title || '테스트 실행', package: pkg, steps: runSteps, session_id: sid, device })
+    } catch (e) {
+      const detail = isAxiosError(e)
+        ? (e.response?.data as { detail?: string } | undefined)?.detail ?? e.message
+        : e instanceof Error ? e.message : String(e)
+      setStatus(`❌ 실행 시작 실패: ${detail}`)
+      setRunning(false)
+      setStopping(false)
+      ws.close()
+    }
   }
 
   const handleStop = async () => {

@@ -184,6 +184,7 @@ class QAOrchestrator:
 
                     self._last_failure_reason = ""
                     self._last_pass_detail = ""
+                    self._last_tap_performed = False
                     step_skipped = False
                     label = step.description or step.action
                     self._current_step_number = idx + 1
@@ -248,7 +249,11 @@ class QAOrchestrator:
                                             tap_ok_verify_fail = True
 
                             if not success:
-                                if (step.params or {}).get("optional"):
+                                optional_target_missing = (
+                                    (step.params or {}).get("optional")
+                                    and not self._last_tap_performed
+                                )
+                                if optional_target_missing:
                                     # 선택 스텝: 조건부 팝업처럼 안 나올 수도 있는 대상 — 실패해도 건너뛰고 계속
                                     step_skipped = True
                                     logger.info("└─ ⏭️ 건너뜀 (선택 스텝 — 대상 미노출)")
@@ -906,6 +911,7 @@ class QAOrchestrator:
             coords = {**coords, "x": tap_x, "y": tap_y}
             logger.info("tap_point=center — '%s' 확인 후 화면 정중앙 (%d, %d) 탭", target, tap_x, tap_y)
         self.adb.tap(coords["x"], coords["y"])
+        self._last_tap_performed = True
         self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
         self._auto_register_common(target, coords["x"], coords["y"])
         self._current_screen_type = ""
@@ -976,6 +982,7 @@ class QAOrchestrator:
                   "x2": node["x2"], "y2": node["y2"]}
         logger.info("계정 이메일 XML 정확 일치 탭: '%s' → (%d, %d)", email, coords["x"], coords["y"])
         self.adb.tap(coords["x"], coords["y"])
+        self._last_tap_performed = True
         self._current_screen_type = ""
         verified = self._verify_find_and_tap_outcome(step, tap_source="XML")
         if not verified:

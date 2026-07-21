@@ -11,7 +11,6 @@ steps:
   target: 약관 알림 팝업 내 동의합니다 영역
   params:
     optional: true
-    expect_visible: 계정 선택 팝업
   description: 약관 동의 클릭 — 최초 로그인/계정 삭제 후에만 노출, 재로그인 시 건너뜀
   timeout: 10
   retry: 2

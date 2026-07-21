@@ -599,6 +599,9 @@ _apptester_fetch_guard = threading.Lock()
 _apptester_fetch_locks: dict[str, threading.Lock] = {}
 _apptester_device_locks_guard = threading.Lock()
 _apptester_device_locks: dict[str, threading.Lock] = {}
+APPTESTER_TEST_WAIT_TIMEOUT_SEC = float(
+    os.getenv("APPTESTER_TEST_WAIT_TIMEOUT_SEC", "180")
+)
 
 
 def _apptester_device_lock(device_id: str) -> threading.Lock:
@@ -610,6 +613,24 @@ def _apptester_device_lock(device_id: str) -> threading.Lock:
 def _new_apptester_session() -> str:
     """동일 초에 들어온 요청도 서로 다른 세션으로 구분한다."""
     return f"apptester_{uuid4().hex[:12]}"
+
+
+def _acquire_test_device_lock(device_id: str, session_id: str) -> Optional[str]:
+    """App Tester UI 조작 완료를 기다린 뒤 테스트 디바이스 락을 획득한다."""
+    operation_lock = _apptester_device_lock(device_id)
+    if operation_lock.locked():
+        logger.info(
+            "테스트 세션 %s: App Tester 작업 완료 대기 (최대 %.0f초)",
+            session_id, APPTESTER_TEST_WAIT_TIMEOUT_SEC,
+        )
+    acquired = operation_lock.acquire(timeout=APPTESTER_TEST_WAIT_TIMEOUT_SEC)
+    if not acquired:
+        with _device_locks_guard:
+            return _device_locks.get(device_id) or "App Tester 작업 대기 시간 초과"
+    try:
+        return _acquire_device_lock(device_id, session_id)
+    finally:
+        operation_lock.release()
 
 
 def _load_apptester_cache() -> dict[str, list]:
@@ -1463,7 +1484,9 @@ async def run_test(req: RunTestRequest):
     target_device = req.device.strip() or (get_device().get("device_id") or "")
     if not target_device:
         raise HTTPException(status_code=503, detail="연결된 디바이스가 없습니다.")
-    holder = _acquire_device_lock(target_device, session_id)
+    holder = await asyncio.to_thread(
+        _acquire_test_device_lock, target_device, session_id
+    )
     if holder:
         raise HTTPException(
             status_code=409,
@@ -1654,7 +1677,9 @@ async def run_pipeline(req: RunPipelineRequest):
     target_device = req.device.strip() or (get_device().get("device_id") or "")
     if not target_device:
         raise HTTPException(status_code=503, detail="연결된 디바이스가 없습니다.")
-    holder = _acquire_device_lock(target_device, session_id)
+    holder = await asyncio.to_thread(
+        _acquire_test_device_lock, target_device, session_id
+    )
     if holder:
         raise HTTPException(
             status_code=409,
