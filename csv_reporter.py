@@ -22,6 +22,20 @@ def _score_pct(value: Any) -> str:
         return _safe_text(value)
 
 
+def _duration_seconds(start: Any, end: Any) -> str:
+    if not start or not end:
+        return ""
+    try:
+        def parse(value: Any) -> datetime:
+            if isinstance(value, datetime):
+                return value
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+        return f"{(parse(end) - parse(start)).total_seconds():.3f}"
+    except Exception:
+        return ""
+
+
 def _safe_filename(value: str) -> str:
     safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in value)
     return safe.strip("_")[:60] or "qa_report"
@@ -32,7 +46,7 @@ def build_test_result_csv(
     output_dir: Path,
     taps: list[dict[str, Any]] | None = None,
 ) -> Path:
-    """Create a CSV file for one QA run result and return its path."""
+    """Create an audit-oriented CSV with one row per step evidence item."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     test_id = _safe_text(result.get("test_id")) or "run"
@@ -40,113 +54,131 @@ def build_test_result_csv(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = output_dir / f"{_safe_filename(test_id)}_{_safe_filename(title)}_{timestamp}.csv"
 
-    eval_out = result.get("eval_output") or {}
-    flow = eval_out.get("flow") or {}
-    vision = eval_out.get("vision") or {}
     steps = result.get("step_results") or []
-    tap_rows = taps or []
-    screenshots = result.get("screenshots") or []
-    screenshots_joined = ";".join(_safe_text(v) for v in screenshots)
+    evidence_rows = sorted(taps or [], key=lambda item: _safe_text(item.get("timestamp")))
+    pipeline_templates = ((result.get("pipeline") or {}).get("templates") or [])
 
     headers = [
         "test_id",
         "title",
-        "status",
+        "run_status",
         "start_time",
         "end_time",
-        "steps_passed",
-        "steps_executed",
-        "error_message",
-        "final_score",
-        "needs_alert",
-        "flow_score",
-        "flow_severity",
-        "flow_reason",
-        "vision_score",
-        "low_confidence_steps",
+        "duration_seconds",
+        "run_error",
+        "template_name",
         "step",
-        "step_label",
-        "step_passed",
-        "step_pass_reason",
-        "step_failure_reason",
+        "step_action",
+        "step_description",
+        "step_target",
+        "step_status",
+        "result_reason",
         "vision_confidence",
-        "tap_target",
-        "tap_verified",
-        "tap_confidence",
-        "tap_failure_reason",
-        "tap_debug_image",
-        "all_screenshots",
+        "evidence_index",
+        "evidence_phase",
+        "evidence_time",
+        "evidence_target",
+        "evidence_result",
+        "evidence_confidence",
+        "evidence_reason",
+        "evidence_image",
     ]
 
     def base_row() -> dict[str, Any]:
         return {
             "test_id": result.get("test_id"),
             "title": result.get("title"),
-            "status": result.get("status"),
+            "run_status": result.get("status"),
             "start_time": result.get("start_time"),
             "end_time": result.get("end_time"),
-            "steps_passed": result.get("steps_passed"),
-            "steps_executed": result.get("steps_executed"),
-            "error_message": result.get("error_message"),
-            "final_score": _score_pct(eval_out.get("final_score")),
-            "needs_alert": eval_out.get("needs_alert"),
-            "flow_score": _score_pct(flow.get("score")),
-            "flow_severity": flow.get("severity"),
-            "flow_reason": flow.get("reason"),
-            "vision_score": _score_pct(vision.get("score")),
-            "low_confidence_steps": ";".join(map(str, vision.get("low_confidence_steps") or [])),
-            "all_screenshots": screenshots_joined,
+            "duration_seconds": _duration_seconds(result.get("start_time"), result.get("end_time")),
+            "run_error": result.get("error_message"),
         }
 
-    # 탭 디버그 기록을 스텝에 매칭 — 순번 조인은 read_text 등 탭 없는 스텝과
-    # 재시도(스텝당 다수 row)에서 어긋나므로, target 기준으로 순서 소비하며 매칭.
-    # (같은 target의 연속 row는 마지막 것 = 최종 시도 결과를 사용)
-    tap_i = 0
+    def template_for_step(step_number: Any) -> str:
+        try:
+            number = int(step_number)
+        except (TypeError, ValueError):
+            return ""
+        names = [
+            _safe_text(template.get("name"))
+            for template in pipeline_templates
+            if int(template.get("start_step", 0)) <= number <= int(template.get("end_step", -1))
+        ]
+        return " + ".join(name for name in names if name)
 
-    def _tap_for_step(step: dict) -> dict:
-        nonlocal tap_i
-        if "action" not in step:  # 구버전 결과 폴백: 기존 순번 조인
-            idx = step.get("step", 1) - 1
-            return tap_rows[idx] if 0 <= idx < len(tap_rows) else {}
-        if step.get("action") != "find_and_tap":
-            return {}
-        target = step.get("target") or ""
-        matched: dict = {}
-        j = tap_i
-        while j < len(tap_rows):
-            if tap_rows[j].get("target") == target:
-                matched = tap_rows[j]
-                j += 1
-                while j < len(tap_rows) and tap_rows[j].get("target") == target:
-                    matched = tap_rows[j]
-                    j += 1
-                tap_i = j
+    used_evidence: set[int] = set()
+
+    def evidence_for_step(step: dict[str, Any]) -> list[dict[str, Any]]:
+        step_number = step.get("step")
+        direct = [
+            (index, evidence)
+            for index, evidence in enumerate(evidence_rows)
+            if evidence.get("step_number") is not None
+            and str(evidence.get("step_number")) == str(step_number)
+        ]
+        if direct:
+            used_evidence.update(index for index, _ in direct)
+            return [evidence for _, evidence in direct]
+
+        action = _safe_text(step.get("action"))
+        target = _safe_text(step.get("target"))
+        matched: list[dict[str, Any]] = []
+        for index, evidence in enumerate(evidence_rows):
+            if index in used_evidence or evidence.get("step_number") is not None:
+                continue
+            evidence_action = _safe_text(evidence.get("action"))
+            evidence_target = _safe_text(evidence.get("target"))
+            if action == "dismiss_popups":
+                is_match = evidence_action == "dismiss_popups"
+            elif action == "find_and_tap":
+                is_match = evidence_action in ("", "find_and_tap") and evidence_target == target
+            else:
+                is_match = False
+            if not is_match:
+                continue
+            used_evidence.add(index)
+            matched.append(evidence)
+            if action == "find_and_tap" and step.get("passed") and evidence.get("verified") is True:
                 break
-            j += 1
         return matched
 
     rows: list[dict[str, Any]] = []
     if steps:
         for step in steps:
-            tap = _tap_for_step(step)
-            row = base_row()
-            passed_display: Any = step.get("passed")
-            if step.get("skipped"):
-                passed_display = "SKIPPED"
-            row.update({
-                "step": step.get("step"),
-                "step_label": step.get("label"),
-                "step_passed": passed_display,
-                "step_pass_reason": step.get("pass_reason"),
-                "step_failure_reason": step.get("failure_reason"),
-                "vision_confidence": _score_pct(step.get("vision_confidence")),
-                "tap_target": tap.get("target"),
-                "tap_verified": tap.get("verified"),
-                "tap_confidence": _score_pct(tap.get("confidence")),
-                "tap_failure_reason": tap.get("failure_reason"),
-                "tap_debug_image": tap.get("image"),
-            })
-            rows.append(row)
+            action = _safe_text(step.get("action"))
+            step_status = "SKIPPED" if step.get("skipped") else ("PASS" if step.get("passed") else "FAIL")
+            reason = step.get("pass_reason") if step.get("passed") else step.get("failure_reason")
+            vision_confidence = (
+                _score_pct(step.get("vision_confidence"))
+                if action in {"find_and_tap", "verify", "read_text"}
+                else ""
+            )
+            matched_evidence = evidence_for_step(step) or [{}]
+            for evidence_index, evidence in enumerate(matched_evidence, start=1):
+                row = base_row()
+                verified = evidence.get("verified")
+                evidence_result = "PASS" if verified is True else ("FAIL" if verified is False else "")
+                evidence_reason = evidence.get("pass_reason") if verified is True else evidence.get("failure_reason")
+                row.update({
+                    "template_name": template_for_step(step.get("step")),
+                    "step": step.get("step"),
+                    "step_action": action,
+                    "step_description": step.get("label"),
+                    "step_target": step.get("target"),
+                    "step_status": step_status,
+                    "result_reason": reason,
+                    "vision_confidence": vision_confidence,
+                    "evidence_index": evidence_index if evidence else "",
+                    "evidence_phase": evidence.get("evidence_phase"),
+                    "evidence_time": evidence.get("evidence_captured_at") or evidence.get("timestamp"),
+                    "evidence_target": evidence.get("target"),
+                    "evidence_result": evidence_result,
+                    "evidence_confidence": _score_pct(evidence.get("confidence")),
+                    "evidence_reason": evidence_reason,
+                    "evidence_image": evidence.get("image"),
+                })
+                rows.append(row)
     else:
         rows.append(base_row())
 

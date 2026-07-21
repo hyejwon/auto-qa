@@ -1,18 +1,19 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2, ChevronUp, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, GripVertical } from 'lucide-react'
 import type { Step } from '../../types'
 import { ACTION_CHOICES, TARGET_ACTIONS } from '../../types'
 
 interface Props {
   steps: Step[]
   ids: string[]
+  stepGroupNames?: Record<string, string>
   selectedPackage: string
   apks?: string[]
   disabled?: boolean
   onChange: (steps: Step[], ids: string[]) => void
 }
 
-const PKG_ACTIONS = new Set(['launch_app', 'uninstall_app', 'skip_tutorial', 'tutorial_pass', 'enter_sr_debugger', 'close_app'])
+const PKG_ACTIONS = new Set(['launch_app', 'uninstall_app', 'skip_tutorial', 'enter_sr_debugger', 'close_app'])
 const APK_ACTIONS = new Set(['install_app'])
 
 function newId() {
@@ -78,19 +79,26 @@ function ParamsJsonEditor({
   )
 }
 
-export default function StepEditor({ steps, ids, selectedPackage, apks = [], disabled, onChange }: Props) {
+export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPackage, apks = [], disabled, onChange }: Props) {
+  const [draggedId, setDraggedId] = useState('')
+  const [dropHint, setDropHint] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
   const update = (nextSteps: Step[], nextIds: string[] = ids) => onChange(nextSteps, nextIds)
 
   const setStep = (i: number, s: Step) =>
     update(steps.map((p, idx) => (idx === i ? s : p)))
 
-  const move = (i: number, dir: -1 | 1) => {
-    const j = i + dir
-    if (j < 0 || j >= steps.length) return
-    const ns = [...steps], ni = [...ids]
-    ;[ns[i], ns[j]] = [ns[j], ns[i]]
-    ;[ni[i], ni[j]] = [ni[j], ni[i]]
-    update(ns, ni)
+  const moveStep = (sourceId: string, targetId: string, edge: 'before' | 'after') => {
+    const sourceIndex = ids.indexOf(sourceId)
+    const targetIndex = ids.indexOf(targetId)
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
+    const insertionBoundary = targetIndex + (edge === 'after' ? 1 : 0)
+    const nextIds = [...ids]
+    nextIds.splice(sourceIndex, 1)
+    const insertionIndex = sourceIndex < insertionBoundary ? insertionBoundary - 1 : insertionBoundary
+    nextIds.splice(insertionIndex, 0, sourceId)
+    const stepById = new Map(ids.map((id, index) => [id, steps[index]]))
+    const nextSteps = nextIds.map((id) => stepById.get(id)).filter((step): step is Step => !!step)
+    update(nextSteps, nextIds)
   }
 
   const del = (i: number) =>
@@ -104,10 +112,20 @@ export default function StepEditor({ steps, ids, selectedPackage, apks = [], dis
   const changeAction = (i: number, action: string) => {
     const s = steps[i]
     let target = s.target ?? ''
+    let params = s.params || {}
     if (APK_ACTIONS.has(action)) target = apks[0] ?? ''
     else if (PKG_ACTIONS.has(action)) target = selectedPackage || target || ''
     else if (!TARGET_ACTIONS.has(action)) target = ''
-    setStep(i, { ...s, action, target })
+    if (action === 'dismiss_popups' && s.action !== action) {
+      params = {
+        stop_when_visible: '',
+        max_count: 4,
+        timeout_seconds: 30,
+        quiet_seconds: 1.5,
+        rules: [{ target: '', action: 'tap_center' }],
+      }
+    }
+    setStep(i, { ...s, action, target, params })
   }
 
   return (
@@ -117,17 +135,50 @@ export default function StepEditor({ steps, ids, selectedPackage, apks = [], dis
         const hasTarget = TARGET_ACTIONS.has(s.action) || PKG_ACTIONS.has(s.action)
         const p = s.params || {}
         return (
-          <div key={ids[i]} className="flex gap-2 p-2.5 bg-gray-800 border border-gray-700 rounded-lg items-start">
-            <div className="flex flex-col gap-0.5 mt-0.5">
-              <button disabled={disabled || i === 0} onClick={() => move(i, -1)}
-                className="p-0.5 text-gray-500 hover:text-gray-200 disabled:opacity-30"><ChevronUp size={14} /></button>
+          <div key={ids[i]}
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes('application/x-autoqa-step')) return
+              e.preventDefault()
+              if (draggedId === ids[i]) return
+              const rect = e.currentTarget.getBoundingClientRect()
+              setDropHint({ id: ids[i], edge: e.clientY < rect.top + rect.height / 2 ? 'before' : 'after' })
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              const sourceId = draggedId || e.dataTransfer.getData('application/x-autoqa-step')
+              const edge = dropHint?.id === ids[i] ? dropHint.edge : 'before'
+              moveStep(sourceId, ids[i], edge)
+              setDraggedId('')
+              setDropHint(null)
+            }}
+            className={`relative flex gap-2 p-2.5 bg-gray-800 border rounded-lg items-start transition-colors ${
+              draggedId === ids[i] ? 'opacity-40 border-cyan-600' : 'border-gray-700'
+            } ${dropHint?.id === ids[i] && dropHint.edge === 'before' ? 'before:absolute before:left-0 before:right-0 before:-top-1 before:h-0.5 before:bg-cyan-400' : ''}
+            ${dropHint?.id === ids[i] && dropHint.edge === 'after' ? 'after:absolute after:left-0 after:right-0 after:-bottom-1 after:h-0.5 after:bg-cyan-400' : ''}`}>
+            <div className="flex flex-col items-center gap-1 mt-0.5">
+              <button type="button" draggable={!disabled}
+                disabled={disabled}
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('application/x-autoqa-step', ids[i])
+                  setDraggedId(ids[i])
+                }}
+                onDragEnd={() => { setDraggedId(''); setDropHint(null) }}
+                className="p-0.5 text-gray-500 hover:text-cyan-300 cursor-grab active:cursor-grabbing disabled:cursor-default disabled:opacity-30"
+                title="스텝 이동">
+                <GripVertical size={15} />
+              </button>
               <span className="text-[10px] text-center text-gray-500">{i + 1}</span>
-              <button disabled={disabled || i === steps.length - 1} onClick={() => move(i, 1)}
-                className="p-0.5 text-gray-500 hover:text-gray-200 disabled:opacity-30"><ChevronDown size={14} /></button>
             </div>
 
             <div className="flex-1 min-w-0 space-y-1.5">
               <div className="flex flex-wrap gap-1.5">
+                {stepGroupNames[ids[i]] && (
+                  <span title={stepGroupNames[ids[i]]}
+                    className="max-w-[8rem] truncate rounded border border-blue-900 bg-blue-950/50 px-1.5 py-1 text-[10px] text-blue-300">
+                    [{stepGroupNames[ids[i]]}]
+                  </span>
+                )}
                 <select value={s.action} disabled={disabled}
                   onChange={(e) => changeAction(i, e.target.value)}
                   className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500">
@@ -154,28 +205,37 @@ export default function StepEditor({ steps, ids, selectedPackage, apks = [], dis
 
               <div className="flex flex-wrap gap-1.5">
                 {s.action === 'wait' ? (
-                  <input type="number" min={1} disabled={disabled}
-                    value={(p.seconds as number) ?? 2}
-                    onChange={(e) => setStep(i, { ...s, params: { ...p, seconds: Number(e.target.value) } })}
-                    placeholder="초"
-                    className="w-24 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500" />
+                  <label className="flex w-28 flex-col gap-0.5 text-[10px] text-gray-400">
+                    <span>대기 시간 (초)</span>
+                    <input type="number" min={0} step={0.5} disabled={disabled}
+                      value={(p.seconds as number) ?? 2}
+                      aria-label="대기 시간(초)"
+                      onChange={(e) => setStep(i, { ...s, params: { ...p, seconds: Number(e.target.value) } })}
+                      className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-purple-500" />
+                  </label>
                 ) : s.action === 'scroll' ? (
                   <>
-                    <select disabled={disabled}
-                      value={(p.direction as string) ?? 'down'}
-                      onChange={(e) => setStep(i, { ...s, params: { ...p, direction: e.target.value } })}
-                      className="w-32 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500">
-                      <option value="down">아래로</option>
-                      <option value="up">위로</option>
-                      <option value="top">맨 위까지</option>
-                      <option value="bottom">맨 아래까지</option>
-                    </select>
+                    <label className="flex w-32 flex-col gap-0.5 text-[10px] text-gray-400">
+                      <span>스크롤 방향</span>
+                      <select disabled={disabled}
+                        value={(p.direction as string) ?? 'down'}
+                        onChange={(e) => setStep(i, { ...s, params: { ...p, direction: e.target.value } })}
+                        className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-purple-500">
+                        <option value="down">아래로</option>
+                        <option value="up">위로</option>
+                        <option value="top">맨 위까지</option>
+                        <option value="bottom">맨 아래까지</option>
+                      </select>
+                    </label>
                     {((p.direction as string) ?? 'down') === 'down' || (p.direction as string) === 'up' ? (
-                      <input type="number" min={1} max={20} disabled={disabled}
-                        value={(p.times as number) ?? 1}
-                        onChange={(e) => setStep(i, { ...s, params: { ...p, times: Number(e.target.value) || 1 } })}
-                        placeholder="횟수"
-                        className="w-20 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-purple-500" />
+                      <label className="flex w-20 flex-col gap-0.5 text-[10px] text-gray-400">
+                        <span>반복 (회)</span>
+                        <input type="number" min={1} max={20} disabled={disabled}
+                          value={(p.times as number) ?? 1}
+                          aria-label="스크롤 반복 횟수"
+                          onChange={(e) => setStep(i, { ...s, params: { ...p, times: Number(e.target.value) || 1 } })}
+                          className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-purple-500" />
+                      </label>
                     ) : null}
                   </>
                 ) : (
@@ -190,16 +250,22 @@ export default function StepEditor({ steps, ids, selectedPackage, apks = [], dis
                       className="flex-1 min-w-[130px] bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-orange-500" />
                   </>
                 )}
-                <input type="number" min={1} disabled={disabled}
-                  value={s.timeout ?? 30}
-                  onChange={(e) => setStep(i, { ...s, timeout: Number(e.target.value) || 1 })}
-                  placeholder="timeout"
-                  className="w-24 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-sky-500" />
-                <input type="number" min={1} disabled={disabled}
-                  value={s.retry ?? 1}
-                  onChange={(e) => setStep(i, { ...s, retry: Number(e.target.value) || 1 })}
-                  placeholder="retry"
-                  className="w-20 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-sky-500" />
+                <label className="flex w-28 flex-col gap-0.5 text-[10px] text-gray-400">
+                  <span>제한 시간 (초)</span>
+                  <input type="number" min={1} disabled={disabled}
+                    value={s.timeout ?? 30}
+                    aria-label="스텝 제한 시간(초)"
+                    onChange={(e) => setStep(i, { ...s, timeout: Number(e.target.value) || 1 })}
+                    className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-sky-500" />
+                </label>
+                <label className="flex w-24 flex-col gap-0.5 text-[10px] text-gray-400">
+                  <span>재시도 (회)</span>
+                  <input type="number" min={1} disabled={disabled}
+                    value={s.retry ?? 1}
+                    aria-label="스텝 재시도 횟수"
+                    onChange={(e) => setStep(i, { ...s, retry: Number(e.target.value) || 1 })}
+                    className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-sky-500" />
+                </label>
               </div>
 
               <details className="rounded border border-gray-700 bg-gray-900/60">

@@ -1,0 +1,43 @@
+title: 계정 삭제
+description: ''
+package: com.percent.aos.cooptd
+steps:
+- action: find_and_tap
+  target: 좌측 상단 햄버거 메뉴 버튼
+  description: 햄버거 메뉴 버튼 클릭
+  timeout: 10
+  retry: 2
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+    wait_seconds: 2
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 버튼 클릭
+  timeout: 10
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: verify
+  target: 설정 팝업
+  description: 설정 팝업 정상 출력 확인
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 계정연동
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 계정삭제
+  timeout: 10
+  retry: 2
+  params:
+    expect_visible: 정말로 삭제하시겠습니까 팝업
+- action: find_and_tap
+  target: 정말로 삭제하시겠습니까 팝업의 계정 삭제 버튼
+  description: 계정 삭제 확인 후 로그인 화면 복귀
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: Google 로그인 버튼
+    wait_seconds: 5
+preconditions: []

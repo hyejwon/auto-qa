@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import threading
 import json
 import unicodedata
@@ -149,6 +150,14 @@ class QAOrchestrator:
             self._current_screen_type = ""
             self._stop_event = stop_event  # _wait_for_screen_stable 에서 참조
 
+            # stayon은 화면 꺼짐만 방지하며 보안 키가드는 해제하지 못한다.
+            # PIN 화면을 테스트 화면으로 오판하기 전에 실행 시작 시 잠금을 처리한다.
+            if not self.adb.ensure_screen_on():
+                raise RuntimeError(
+                    "테스트 기기 화면 잠금을 해제하지 못했습니다. "
+                    ".env에 ADB_UNLOCK_PIN을 설정하거나 QA 기기의 화면 잠금을 제거하세요."
+                )
+
             # preconditions: google_account:<email> 형식 처리
             for precond in testcase.preconditions:
                 if precond.startswith("google_account:"):
@@ -177,6 +186,9 @@ class QAOrchestrator:
                     self._last_pass_detail = ""
                     step_skipped = False
                     label = step.description or step.action
+                    self._current_step_number = idx + 1
+                    self._current_step_label = str(label)
+                    self._current_step_action = getattr(step.action, "value", str(step.action))
                     target_info = f"  → 대상: {step.target}" if step.target else ""
                     logger.info("")
                     logger.info(f"┌─ [{idx + 1}/{total}] {label}")
@@ -205,8 +217,20 @@ class QAOrchestrator:
                                         )
                                         time.sleep(2)
                                         if self._verify_find_and_tap_outcome(step, tap_source="Retry"):
+                                            confidence = max(
+                                                confidence,
+                                                getattr(self, "_last_post_verify_confidence", 0.0),
+                                            )
                                             result.steps_passed += 1
                                             success = True
+                                            self._last_failure_reason = ""
+                                            expected = self._to_target_list(
+                                                (step.params or {}).get("expect_visible")
+                                            )
+                                            self._last_pass_detail = (
+                                                f"'{step.target or ''}' 탭 후 검증 재시도 성공"
+                                                + (f" → '{', '.join(expected)}' 노출 확인" if expected else "")
+                                            )
                                             logger.info("└─ ✅ 완료 (검증 재시도 성공)")
                                             break
                                     else:
@@ -302,6 +326,7 @@ class QAOrchestrator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         screenshot_path = self.config.paths.screenshots_dir / f"screenshot_{self._file_tag}_{timestamp}.png"
         self.adb.screenshot(screenshot_path)
+        self._publish_live_screenshot(screenshot_path)
         result.screenshots.append(str(screenshot_path))
 
         try:
@@ -328,6 +353,9 @@ class QAOrchestrator:
 
             elif step.action == ActionType.BACK:
                 return self._execute_back_step(step), 1.0
+
+            elif step.action == ActionType.DISMISS_POPUPS:
+                return self._dismiss_popups(step, screenshot_path), 1.0
 
             elif step.action == ActionType.HOME:
                 return self.adb.press_home(), 1.0
@@ -492,24 +520,179 @@ class QAOrchestrator:
 
         return False
 
+    def _dismiss_popups(self, step, initial_screenshot: Path) -> bool:
+        """명시된 팝업만 반복해서 닫고 최종 화면이 안정되면 성공한다."""
+        params = step.params or {}
+        stop_targets = self._to_target_list(
+            params.get("stop_when_visible") or params.get("expect_visible") or step.target
+        )
+        raw_rules = params.get("rules")
+        if not stop_targets:
+            self._last_failure_reason = "dismiss_popups: stop_when_visible이 필요합니다."
+            return False
+        if not isinstance(raw_rules, list) or not raw_rules:
+            self._last_failure_reason = "dismiss_popups: rules가 1개 이상 필요합니다."
+            return False
+
+        allowed_actions = {"back", "tap", "tap_center"}
+        rules: list[dict] = []
+        for index, rule in enumerate(raw_rules, start=1):
+            if not isinstance(rule, dict):
+                self._last_failure_reason = f"dismiss_popups: rules[{index}]가 object가 아닙니다."
+                return False
+            target = str(rule.get("target") or "").strip()
+            action = str(rule.get("action") or "").strip()
+            if not target or action not in allowed_actions:
+                self._last_failure_reason = (
+                    f"dismiss_popups: rules[{index}]에는 target과 "
+                    f"action({', '.join(sorted(allowed_actions))})이 필요합니다."
+                )
+                return False
+            rules.append({"target": target, "action": action})
+
+        try:
+            max_count = max(0, min(20, int(params.get("max_count", 4))))
+        except (TypeError, ValueError):
+            max_count = 4
+        timeout_seconds = self._to_float(params.get("timeout_seconds"), float(step.timeout))
+        quiet_seconds = self._to_float(params.get("quiet_seconds"), 1.5)
+        poll_interval = max(0.1, self._to_float(params.get("poll_interval_seconds"), 0.5))
+
+        deadline = time.monotonic() + timeout_seconds
+        stable_since: Optional[float] = None
+        dismissed = 0
+        initial_wait = self._to_float(params.get("initial_wait_seconds"), self.POST_TAP_DELAY_SEC)
+        remaining = max(0.1, deadline - time.monotonic())
+        screenshot_path = self._wait_for_screen_stable(
+            timeout=min(self.STABILITY_TIMEOUT_SEC, remaining),
+            min_wait=initial_wait,
+        )
+
+        while time.monotonic() <= deadline:
+            rule, coords = self._find_dismiss_popup_rule(screenshot_path, rules)
+            if rule:
+                stable_since = None
+                if dismissed >= max_count:
+                    self._last_failure_reason = (
+                        f"dismiss_popups: 최대 처리 횟수 {max_count}회를 초과했습니다 "
+                        f"(추가 팝업: '{rule['target']}')."
+                    )
+                    return False
+
+                action = rule["action"]
+                self._save_interrupt_debug(screenshot_path, {
+                    "is_interrupt": True,
+                    "kind": "dismiss_popups",
+                    "close_method": action,
+                    "description": rule["target"],
+                    "rule": rule,
+                })
+                if action == "back":
+                    success = self.adb.press_back(delay=0)
+                elif action == "tap_center":
+                    success = self.adb.tap(self.adb.width // 2, self.adb.height // 2, delay=0)
+                else:
+                    success = bool(coords) and self.adb.tap(coords["x"], coords["y"], delay=0)
+
+                if not success:
+                    self._last_failure_reason = (
+                        f"dismiss_popups: '{rule['target']}' 팝업의 {action} 실행에 실패했습니다."
+                    )
+                    return False
+
+                dismissed += 1
+                self._current_screen_type = ""
+                logger.info(
+                    "dismiss_popups %d/%d: '%s' -> %s",
+                    dismissed, max_count, rule["target"], action,
+                )
+                remaining = max(0.1, deadline - time.monotonic())
+                screenshot_path = self._wait_for_screen_stable(
+                    timeout=min(self.STABILITY_TIMEOUT_SEC, remaining)
+                )
+                continue
+
+            if self._dismiss_stop_visible(screenshot_path, stop_targets):
+                now = time.monotonic()
+                if stable_since is None:
+                    stable_since = now
+                if now - stable_since >= quiet_seconds:
+                    self._last_failure_reason = ""
+                    self._last_pass_detail = (
+                        f"팝업 {dismissed}개 처리 후 '{', '.join(stop_targets)}' 안정 상태 확인"
+                    )
+                    self._save_interrupt_debug(screenshot_path, {
+                        "is_interrupt": False,
+                        "kind": "dismiss_popups",
+                        "evidence_phase": "final_verification",
+                        "description": ", ".join(stop_targets),
+                        "result": "PASS",
+                    })
+                    return True
+            else:
+                stable_since = None
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_interval, remaining))
+            screenshot_path = self._capture_runtime_screenshot(prefix="dismiss_popups")
+
+        self._last_failure_reason = (
+            f"dismiss_popups: {dismissed}개 처리 후 제한시간 {timeout_seconds:.1f}초 안에 "
+            f"최종 화면 '{', '.join(stop_targets)}'을 확인하지 못했습니다."
+        )
+        return False
+
+    def _find_dismiss_popup_rule(
+        self,
+        screenshot_path: Path,
+        rules: list[dict],
+    ) -> tuple[Optional[dict], Optional[dict]]:
+        """현재 화면과 일치하는 첫 번째 팝업 규칙과 좌표를 반환한다."""
+        for rule in rules:
+            try:
+                result = self.vision_lite.find_element(
+                    screenshot_path, rule["target"], self.config.paths.debug_dir
+                )
+            except Exception as exc:
+                logger.warning("dismiss_popups rule detection failed for '%s': %s", rule["target"], exc)
+                continue
+            if result.success and result.bbox:
+                coords = result.bbox.to_pixels(self.adb.width, self.adb.height)
+                return rule, coords
+        return None, None
+
+    def _dismiss_stop_visible(self, screenshot_path: Path, targets: list[str]) -> bool:
+        for target in targets:
+            visible, _ = self._verify_screen(screenshot_path, target)
+            if not visible:
+                return False
+        return True
+
     def _verify_expected_targets(
         self,
         screenshot_path: Path,
         expect_visible: list[str],
         expect_hidden: list[str],
     ) -> bool:
+        verification_confidence = 1.0
         for target in expect_visible:
-            success, _ = self._verify_screen(screenshot_path, target)
+            success, confidence = self._verify_screen(screenshot_path, target)
+            verification_confidence = min(verification_confidence, confidence)
             if not success:
+                self._last_expected_confidence = confidence
                 logger.warning("Expected visible target '%s' was not found.", target)
                 return False
 
         for target in expect_hidden:
-            success, _ = self._verify_screen(screenshot_path, target)
+            success, confidence = self._verify_screen(screenshot_path, target)
             if success:
+                self._last_expected_confidence = confidence
                 logger.warning("Expected hidden target '%s' is still visible.", target)
                 return False
 
+        self._last_expected_confidence = verification_confidence
         return True
 
     @staticmethod
@@ -529,6 +712,8 @@ class QAOrchestrator:
     @staticmethod
     def _uses_internal_retry(step) -> bool:
         params = step.params or {}
+        if step.action == ActionType.DISMISS_POPUPS:
+            return True
         if step.action == ActionType.BACK:
             return bool(params.get("expect_visible") or params.get("expect_hidden") or step.target)
         return False
@@ -615,6 +800,13 @@ class QAOrchestrator:
             Image.open(screenshot_path).convert("RGB").save(img_path)
             record = {
                 "timestamp": ts,
+                "evidence_captured_at": datetime.fromtimestamp(
+                    screenshot_path.stat().st_mtime
+                ).isoformat(timespec="milliseconds"),
+                "evidence_phase": analysis.get("evidence_phase", "popup_detection"),
+                "step_number": getattr(self, "_current_step_number", None),
+                "step_label": getattr(self, "_current_step_label", ""),
+                "step_action": getattr(self, "_current_step_action", ""),
                 "device": self._file_tag,
                 "analysis": analysis,
                 "debug_image": str(img_path),
@@ -627,6 +819,7 @@ class QAOrchestrator:
 
     def _find_and_tap(self, step) -> bool | str:
         """공통 캐시 → 게임 캐시 → Vision 순으로 좌표 탐색. 해상도별 관리."""
+        self._last_post_verify_screenshot = None
         target = step.target
         if not target:
             logger.error("find_and_tap action requires target")
@@ -926,11 +1119,11 @@ class QAOrchestrator:
 
     def _save_tap_debug(self, screenshot_path: Path, target: str, coords: Optional[dict],
                         confidence: float, verified: bool) -> None:
-        """find_and_tap 디버그 아티팩트 저장 — 버튼을 제대로 눌렀는지 추적용.
+        """find_and_tap 디버그 아티팩트 저장 — 탭 또는 후조건 판정 시점 증거.
 
-        - screenshots_debug/taps/{ts}_{target}_{PASS|FAIL|NOTFOUND}.png : bbox + 실제 탭 지점 표시
+        - screenshots_debug/taps/{ts}_{target}_{PASS|FAIL|NOTFOUND}.png : 판정에 사용한 프레임
         - screenshots_debug/find_and_tap_debug.jsonl                    : 스텝별 한 줄 요약 로그
-        coords가 None이면 대상을 아예 못 찾은 경우 — 실패 당시 화면만 라벨과 함께 남긴다.
+        후조건이 있으면 탭 전 화면이 아닌 최종 검증 화면을 남긴다.
         """
         try:
             debug_dir = self.config.paths.debug_dir
@@ -942,13 +1135,17 @@ class QAOrchestrator:
             safe_target = "".join(
                 c if c.isalnum() or c in "._- " else "_" for c in (target or "")
             ).strip().replace(" ", "_")[:40] or "none"
+            post_verify_path = getattr(self, "_last_post_verify_screenshot", None)
+            has_post_verify = bool(post_verify_path and Path(post_verify_path).exists())
+            evidence_path = Path(post_verify_path) if has_post_verify else screenshot_path
+            evidence_phase = "post_verification" if has_post_verify else "pre_tap"
             img_path = taps_dir / f"{ts}_{self._file_tag}_{safe_target}_{status}.png"
 
-            # 주석 이미지: bbox 사각형 + 실제 탭 지점 크로스헤어 + 라벨
-            img = Image.open(screenshot_path).convert("RGB")
+            # 후조건이 있으면 실제 PASS/FAIL 판정 프레임을 증거로 남긴다.
+            img = Image.open(evidence_path).convert("RGB")
             draw = ImageDraw.Draw(img)
             color = (0, 200, 0) if verified else (255, 40, 40)
-            if coords:
+            if coords and not has_post_verify:
                 x1, y1 = coords["x1"], coords["y1"]
                 x2, y2 = coords["x2"], coords["y2"]
                 cx, cy = coords["x"], coords["y"]
@@ -959,13 +1156,29 @@ class QAOrchestrator:
                 draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=3)
                 label = f"{target} | tap=({cx},{cy}) conf={confidence:.2f} {status}"
                 draw.text((max(x1, 5), max(y1 - 16, 2)), label, fill=color)
+            elif has_post_verify:
+                label = f"POST VERIFY {status}: {target}"
+                draw.rectangle([0, 0, img.width, 28], fill=(0, 0, 0))
+                draw.text((6, 6), label, fill=color)
             else:
                 label = f"NOT FOUND: {target} | conf={confidence:.2f} | {self._last_failure_reason}"
                 draw.text((5, 5), label, fill=color)
             img.save(img_path)
 
+            try:
+                evidence_captured_at = datetime.fromtimestamp(
+                    evidence_path.stat().st_mtime
+                ).isoformat(timespec="milliseconds")
+            except OSError:
+                evidence_captured_at = ""
+
             record = {
                 "timestamp": ts,
+                "evidence_captured_at": evidence_captured_at,
+                "evidence_phase": evidence_phase,
+                "step_number": getattr(self, "_current_step_number", None),
+                "step_label": getattr(self, "_current_step_label", ""),
+                "step_action": getattr(self, "_current_step_action", "find_and_tap"),
                 "device": self._file_tag,
                 "target": target,
                 "tap": {"x": coords["x"], "y": coords["y"]} if coords else None,
@@ -978,6 +1191,7 @@ class QAOrchestrator:
                 "failure_reason": "" if verified else self._last_failure_reason,
                 "debug_image": str(img_path),
                 "source_screenshot": str(screenshot_path),
+                "verification_screenshot": str(post_verify_path) if has_post_verify else "",
             }
             with open(debug_dir / "find_and_tap_debug.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -994,13 +1208,22 @@ class QAOrchestrator:
         target = step.target or ""
         expect_visible = self._to_target_list(params.get("expect_visible"))
         expect_hidden = self._to_target_list(params.get("expect_hidden"))
+        self._last_post_verify_confidence = 0.0
+        self._last_post_verify_screenshot = None
 
         if not expect_visible and not expect_hidden:
+            self._last_post_verify_confidence = 1.0
             logger.info(
                 "%s tap for target '%s' — no expect_visible/hidden, skipping verification.",
                 tap_source, target,
             )
             return True
+
+        if tap_source != "Retry":
+            wait_seconds = self._to_float(params.get("wait_seconds"), 0.0)
+            if wait_seconds > 0:
+                logger.info("Post-tap verification wait: %.1fs", wait_seconds)
+                time.sleep(wait_seconds)
 
         deadline = time.time() + step.timeout
         attempt = 0
@@ -1009,7 +1232,11 @@ class QAOrchestrator:
             stable_screenshot = self._wait_for_screen_stable(
                 timeout=min(self.STABILITY_TIMEOUT_SEC, deadline - time.time())
             )
+            self._last_post_verify_screenshot = stable_screenshot
             if self._verify_expected_targets(stable_screenshot, expect_visible, expect_hidden):
+                self._last_post_verify_confidence = getattr(
+                    self, "_last_expected_confidence", 1.0
+                )
                 logger.info("%s tap verified for '%s' (attempt %d).", tap_source, target, attempt)
                 return True
 
@@ -1076,6 +1303,8 @@ class QAOrchestrator:
         count = 0
         for d in (self.config.paths.screenshots_dir, self.config.paths.debug_dir):
             for f in d.glob("*.png"):
+                if d == self.config.paths.screenshots_dir and f.name.startswith("live_"):
+                    continue
                 try:
                     f.unlink()
                     count += 1
@@ -1088,7 +1317,18 @@ class QAOrchestrator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         path = self.config.paths.debug_dir / f"{prefix}_{self._file_tag}_{timestamp}.png"
         self.adb.screenshot(path)
+        self._publish_live_screenshot(path)
         return path
+
+    def _publish_live_screenshot(self, source_path: Path) -> None:
+        """판정에 사용할 가장 최신 캡처를 실행 중 미리보기에 원자적으로 반영한다."""
+        try:
+            live_path = self.config.paths.screenshots_dir / f"live_{self._file_tag}.png"
+            temp_path = live_path.with_suffix(".tmp")
+            shutil.copyfile(source_path, temp_path)
+            temp_path.replace(live_path)
+        except Exception as exc:
+            logger.warning("Live screenshot publish failed: %s", exc)
 
     def _verify_screen(self, screenshot_path: Path, target: str) -> tuple[bool, float]:
         if not target:

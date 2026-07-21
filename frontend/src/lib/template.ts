@@ -29,6 +29,10 @@ export function stepsToYaml(title: string, pkg: string, steps: Step[], params: T
     lines.push(`parameters:`)
     for (const p of params) {
       lines.push(`  - name: ${q(p.name)}`)
+      if (p.label) lines.push(`    label: ${q(p.label)}`)
+      if (p.description) lines.push(`    description: ${q(p.description)}`)
+      if (p.placeholder) lines.push(`    placeholder: ${q(p.placeholder)}`)
+      if (p.example) lines.push(`    example: ${q(p.example)}`)
       if (p.default != null) lines.push(`    default: ${q(String(p.default))}`)
     }
   }

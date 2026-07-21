@@ -1,0 +1,22 @@
+title: 앱 종료 후 재실행
+description: 실행 중인 앱을 완전히 종료한 뒤 같은 앱을 다시 실행한다.
+package: ''
+parameters:
+- name: package
+  label: 앱 패키지명
+  description: 종료한 뒤 다시 실행할 Android 앱의 패키지명
+  example: com.percent.aos.cooptd
+  default: ''
+steps:
+- action: close_app
+  target: '{{package}}'
+  description: 앱을 완전히 종료
+  timeout: 10
+  retry: 2
+- action: launch_app
+  target: '{{package}}'
+  description: 종료한 앱을 다시 실행
+  timeout: 20
+  retry: 2
+expected_results:
+- 지정한 앱이 종료된 뒤 정상적으로 다시 실행되어야 한다.

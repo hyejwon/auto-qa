@@ -1079,7 +1079,13 @@ def preflight_check(device: str = ""):
         out = _adb_shell(did, ["shell", "dumpsys", "power"])
         awake = "mWakefulness=Awake" in out or "Display Power: state=ON" in out
         out_win = _adb_shell(did, ["shell", "dumpsys", "window", "policy"])
-        locked = "isStatusBarKeyguard=true" in out_win or "mKeyguardShowing=true" in out_win.lower()
+        out_win_lower = out_win.lower()
+        locked = any(token in out_win_lower for token in (
+            "isstatusbarkeyguard=true",
+            "mkeyguardshowing=true",
+            "keyguardshowing=true",
+            "showingandnotoccluded=true",
+        ))
         if awake and not locked:
             checks.append({"name": "화면 잠금 해제", "status": "ok", "detail": "화면 켜짐 / 잠금 해제됨"})
         elif not awake:
@@ -1164,40 +1170,91 @@ def screen_snapshot(device: str = ""):
 # ─────────────────────────────────────────────
 @app.get("/api/debug/taps")
 def list_tap_debug(since: str = "", limit: int = 100):
-    """find_and_tap 탭 검증 디버그 이미지 목록 (최근순).
+    """탭 및 dismiss_popups 판정 이미지 목록 (최근순).
 
     타임스탬프는 'YYYYMMDD_HHMMSS_mmm' 형식이라 문자열 비교로 정렬/필터가 가능하다.
     since 이후 기록만 반환하면 방금 실행한 세션의 스샷만 리포트에 표시할 수 있다.
     """
     import json as _json
-    jsonl = cfg.paths.debug_dir / "find_and_tap_debug.jsonl"
-    if not jsonl.exists():
-        return {"taps": []}
     taps: list[dict] = []
-    try:
-        for line in jsonl.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = _json.loads(line)
-            except Exception:
-                continue
-            ts = rec.get("timestamp", "")
-            if since and ts < since:
-                continue
-            name = Path(rec.get("debug_image", "")).name
-            taps.append({
-                "timestamp": ts,
-                "target": rec.get("target"),
-                "confidence": rec.get("confidence"),
-                "verified": rec.get("verified"),
-                "failure_reason": rec.get("failure_reason", ""),
-                "pass_reason": rec.get("pass_reason", ""),
-                "image": f"/debug/taps/{name}" if name else "",
-            })
-    except Exception as e:
-        return {"taps": [], "error": str(e)}
+    find_jsonl = cfg.paths.debug_dir / "find_and_tap_debug.jsonl"
+    interrupt_jsonl = cfg.paths.debug_dir / "interrupt_debug.jsonl"
+
+    if find_jsonl.exists():
+        try:
+            for line in find_jsonl.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _json.loads(line)
+                except Exception:
+                    continue
+                ts = rec.get("timestamp", "")
+                if since and ts < since:
+                    continue
+                name = Path(rec.get("debug_image", "")).name
+                taps.append({
+                    "timestamp": ts,
+                    "evidence_captured_at": rec.get("evidence_captured_at", ""),
+                    "evidence_phase": rec.get("evidence_phase", "pre_tap"),
+                    "step_number": rec.get("step_number"),
+                    "step_label": rec.get("step_label", ""),
+                    "action": rec.get("step_action", "find_and_tap"),
+                    "target": rec.get("target"),
+                    "confidence": rec.get("confidence"),
+                    "verified": rec.get("verified"),
+                    "failure_reason": rec.get("failure_reason", ""),
+                    "pass_reason": rec.get("pass_reason", ""),
+                    "image": f"/debug/taps/{name}" if name else "",
+                })
+        except Exception as e:
+            return {"taps": [], "error": str(e)}
+
+    if interrupt_jsonl.exists():
+        try:
+            for line in interrupt_jsonl.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _json.loads(line)
+                except Exception:
+                    continue
+                ts = rec.get("timestamp", "")
+                if since and ts < since:
+                    continue
+                analysis = rec.get("analysis") or {}
+                kind = analysis.get("kind", "interrupt_recovery")
+                action = rec.get("step_action") or (
+                    "dismiss_popups" if kind == "dismiss_popups" else "interrupt_recovery"
+                )
+                phase = rec.get("evidence_phase") or analysis.get("evidence_phase") or "popup_detection"
+                description = analysis.get("description") or kind
+                close_method = analysis.get("close_method", "")
+                is_final = phase == "final_verification"
+                name = Path(rec.get("debug_image", "")).name
+                taps.append({
+                    "timestamp": ts,
+                    "evidence_captured_at": rec.get("evidence_captured_at", ""),
+                    "evidence_phase": phase,
+                    "step_number": rec.get("step_number"),
+                    "step_label": rec.get("step_label", ""),
+                    "action": action,
+                    "target": description,
+                    "confidence": None,
+                    "verified": analysis.get("result") != "FAIL",
+                    "failure_reason": analysis.get("failure_reason", ""),
+                    "pass_reason": (
+                        f"'{description}' 최종 확인" if is_final
+                        else f"'{description}' 감지" + (f" → {close_method}" if close_method else "")
+                    ),
+                    "image": f"/debug/taps/{name}" if name else "",
+                })
+        except Exception as e:
+            return {"taps": [], "error": str(e)}
+
+    taps.sort(key=lambda item: item.get("timestamp", ""))
     taps = taps[-limit:]
     taps.reverse()
     return {"taps": taps}
@@ -1420,7 +1477,7 @@ def _start_test_run(req: RunTestRequest, target_device: str):
 
     steps = req.steps
     for step in steps:
-        if step.get("action") in ("launch_app", "uninstall_app") and step.get("target"):
+        if step.get("action") in ("launch_app", "close_app", "uninstall_app") and step.get("target"):
             step.setdefault("params", {})["package"] = step["target"]
 
     pkg = req.package or next((s.get("target") for s in steps if s.get("action") == "launch_app" and s.get("target")), "")
@@ -1612,9 +1669,9 @@ def _start_pipeline_run(req: RunPipelineRequest, target_device: str):
     # 플랫 스텝 리스트가 직접 제공된 경우 바로 사용
     if req.steps:
         all_steps = req.steps
-        # launch_app / uninstall_app: target → params.package 정규화
+        # 앱 제어 스텝: target → params.package 정규화
         for s in all_steps:
-            if s.get("action") in ("launch_app", "uninstall_app") and s.get("target"):
+            if s.get("action") in ("launch_app", "close_app", "uninstall_app") and s.get("target"):
                 s.setdefault("params", {})["package"] = s["target"]
         phase_labels: list[str] = []
     else:
@@ -1642,7 +1699,7 @@ def _start_pipeline_run(req: RunPipelineRequest, target_device: str):
                     "target": node_data.get("target") or None,
                     "description": node_data.get("description") or node_data.get("label") or "",
                 }
-                if action in ("launch_app", "uninstall_app") and step.get("target"):
+                if action in ("launch_app", "close_app", "uninstall_app") and step.get("target"):
                     step.setdefault("params", {})["package"] = step["target"]
                 if action == "wait" and node_data.get("seconds") is not None:
                     step.setdefault("params", {})["seconds"] = node_data["seconds"]
@@ -1663,7 +1720,7 @@ def _start_pipeline_run(req: RunPipelineRequest, target_device: str):
                         tmpl = yaml.safe_load(f)
                     steps = tmpl.get("steps", [])
                 for s in steps:
-                    if s.get("action") in ("launch_app", "uninstall_app") and s.get("target"):
+                    if s.get("action") in ("launch_app", "close_app", "uninstall_app") and s.get("target"):
                         s.setdefault("params", {})["package"] = s["target"]
                 all_steps.extend(steps)
                 phase_labels.append(label)

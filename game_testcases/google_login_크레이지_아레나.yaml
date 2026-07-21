@@ -2,8 +2,6 @@ title: google login 크레이지 아레나
 description: ''
 package: ''
 steps:
-- action: install_app
-  target: crazy arena.apk
 - action: launch_app
   target: com.percent.aos.arenago2
 - action: wait

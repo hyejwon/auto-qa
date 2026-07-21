@@ -43,6 +43,9 @@ export interface Step {
 export interface TemplateParam {
   name: string
   label?: string
+  description?: string
+  placeholder?: string
+  example?: string
   default?: string
 }
 
@@ -108,6 +111,11 @@ export interface TestResult {
 
 export interface TapDebug {
   timestamp: string
+  evidence_captured_at?: string
+  evidence_phase?: 'pre_tap' | 'post_verification' | 'popup_detection' | 'final_verification'
+  step_number?: number | null
+  step_label?: string
+  action?: string
   target: string | null
   confidence: number | null
   verified: boolean
@@ -150,17 +158,17 @@ export const ACTION_CHOICES = [
   'scroll',
   'wait',
   'back',
+  'dismiss_popups',
   'home',
   'launch_app',
   'close_app',
   'install_app',
   'uninstall_app',
   'skip_tutorial',
-  'tutorial_pass',
   'enter_sr_debugger',
   'swipe',
   'input_text',
 ]
 
 // target(대상 UI 요소/텍스트)을 입력받는 액션
-export const TARGET_ACTIONS = new Set(['find_and_tap', 'verify', 'read_text', 'input_text', 'skip_tutorial', 'tutorial_pass'])
+export const TARGET_ACTIONS = new Set(['find_and_tap', 'verify', 'read_text', 'input_text', 'skip_tutorial'])

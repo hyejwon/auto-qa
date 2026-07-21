@@ -38,7 +38,7 @@ steps:
 - action: find_and_tap
   target: Google Play 원탭 구매 버튼
   params:
-    expect_visible: 구매 완료
+    expect_visible: 원탭 구매
     wait_seconds: 8
   description: 원탭 구매 버튼 탭 및 결제 완료 대기
   timeout: 40

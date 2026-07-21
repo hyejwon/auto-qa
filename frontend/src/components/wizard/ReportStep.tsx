@@ -15,6 +15,21 @@ function scorePct(v?: number) {
   return v == null ? '—' : `${Math.round(v * 100)}%`
 }
 
+function evidenceTime(value?: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const hms = date.toLocaleTimeString('ko-KR', { hour12: false })
+  return `${hms}.${String(date.getMilliseconds()).padStart(3, '0')}`
+}
+
+function evidencePhaseLabel(phase?: TapDebug['evidence_phase']) {
+  if (phase === 'post_verification') return '후조건 판정'
+  if (phase === 'popup_detection') return '팝업 감지'
+  if (phase === 'final_verification') return '최종 화면 판정'
+  return '클릭 전'
+}
+
 export default function ReportStep({ result, since, adaptive, onRerun, onRestart }: Props) {
   const [taps, setTaps] = useState<TapDebug[]>([])
   const [zoom, setZoom] = useState<string | null>(null)
@@ -201,10 +216,10 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
           </div>
         )}
 
-        {/* 디버그 탭 스크린샷 */}
+        {/* 탭 및 후조건 판정 스크린샷 */}
         <div>
           <h3 className="text-xs text-gray-400 mb-2 flex items-center gap-1.5">
-            <ImageIcon size={13} /> 탭 검증 스크린샷 ({taps.length})
+            <ImageIcon size={13} /> 판정 스크린샷 ({taps.length})
           </h3>
           {taps.length === 0 ? (
             <p className="text-xs text-gray-600 py-6 text-center border border-dashed border-gray-800 rounded-lg">
@@ -212,7 +227,13 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
             </p>
           ) : (
             <div className="grid grid-cols-3 gap-2">
-              {taps.map((t) => (
+              {taps.map((t) => {
+                const inferredStep = t.step_number ?? (
+                  t.action === 'dismiss_popups'
+                    ? result.step_results.find((step) => step.action === 'dismiss_popups')?.step
+                    : undefined
+                )
+                return (
                 <button key={t.timestamp + t.image} onClick={() => setZoom(t.image)}
                   className={`text-left rounded-lg overflow-hidden border ${
                     t.verified ? 'border-emerald-800' : 'border-red-800'
@@ -220,6 +241,10 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
                   <img src={t.image} alt={t.target || ''} loading="lazy" className="w-full h-36 object-cover bg-gray-950" />
                   <div className="px-2 py-1 bg-gray-900">
                     <p className="text-[11px] text-gray-300 truncate">{t.target}</p>
+                    <p className="text-[10px] text-gray-500 truncate">
+                      {inferredStep ? `step ${inferredStep} · ` : ''}{evidencePhaseLabel(t.evidence_phase)}
+                      {t.evidence_captured_at ? ` · ${evidenceTime(t.evidence_captured_at)}` : ''}
+                    </p>
                     <p className={`text-[10px] truncate ${t.verified ? 'text-emerald-400' : 'text-red-400'}`}
                       title={t.verified ? (t.pass_reason || '') : (t.failure_reason || '')}>
                       {t.verified
@@ -228,7 +253,8 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
                     </p>
                   </div>
                 </button>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

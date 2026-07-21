@@ -151,10 +151,20 @@ class ADBController:
             raise
 
     def _apply_stay_awake(self):
-        """QA 기기 화면이 테스트 중 꺼지지 않도록 stayon 설정 (충전/USB/무선 연결 시 항상 켜짐)"""
+        """QA 기기 화면이 테스트 중 꺼지지 않도록 화면 유지 설정을 적용한다."""
         try:
             self._execute(["shell", "svc", "power", "stayon", "true"])
-            logger.info("Applied 'svc power stayon true' — screen stays on while powered")
+            # USB/AC/무선 충전 중 화면 유지. 일부 Windows 테스트 기기에서
+            # svc 설정만 재연결 후 풀리는 경우가 있어 settings 값도 함께 고정한다.
+            self._execute([
+                "shell", "settings", "put", "global",
+                "stay_on_while_plugged_in", "7",
+            ])
+            self._execute([
+                "shell", "settings", "put", "system",
+                "screen_off_timeout", "2147483647",
+            ])
+            logger.info("Applied stay-awake settings while powered")
         except Exception as e:
             # 실패해도 테스트는 계속 — launch_app의 ensure_screen_on이 폴백
             logger.warning(f"stayon setting failed (non-fatal): {e}")
@@ -379,10 +389,25 @@ class ADBController:
     def is_locked(self) -> bool:
         """잠금화면(키가드) 표시 여부. 확인 불가 시 False (잠기지 않음으로 간주)."""
         try:
-            out = self._execute(["shell", "dumpsys", "window"])
-            for token in ("mKeyguardShowing=true", "keyguardShowing=true",
-                          "isKeyguardShowing=true", "mShowingLockscreen=true"):
-                if token in out:
+            out = "\n".join([
+                self._execute(["shell", "dumpsys", "window"]),
+                self._execute(["shell", "dumpsys", "window", "policy"]),
+            ])
+            normalized = out.lower()
+            for token in (
+                "mkeyguardshowing=true",
+                "keyguardshowing=true",
+                "iskeyguardshowing=true",
+                "isstatusbarkeyguard=true",
+                "mshowinglockscreen=true",
+                "showingandnotoccluded=true",
+            ):
+                if token in normalized:
+                    return True
+            # 최신 Android의 KeyguardServiceDelegate 출력 형식 대응.
+            if "keyguardservicedelegate" in normalized:
+                section = normalized.split("keyguardservicedelegate", 1)[1][:1000]
+                if re.search(r"\bshowing\s*=\s*true\b", section):
                     return True
             return False
         except Exception as e:
@@ -417,9 +442,14 @@ class ADBController:
             time.sleep(1)
             pin = os.getenv("ADB_UNLOCK_PIN", "").strip()
             if pin and self.is_locked():
+                if not pin.isdigit():
+                    logger.error("ADB_UNLOCK_PIN은 숫자 PIN만 지원합니다.")
+                    return False
                 self._execute(["shell", "input", "text", pin])
                 self._execute(["shell", "input", "keyevent", "KEYCODE_ENTER"])
                 time.sleep(1)
+                self._execute(["shell", "wm", "dismiss-keyguard"])
+                time.sleep(0.5)
 
             if self.is_screen_on() and not self.is_locked():
                 logger.info("Screen was off/locked — unlocked%s", " with PIN" if pin else "")

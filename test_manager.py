@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     WAIT = "wait"
     VERIFY = "verify"
     BACK = "back"
+    DISMISS_POPUPS = "dismiss_popups"
     HOME = "home"
     LAUNCH_APP = "launch_app"
     CLOSE_APP = "close_app"

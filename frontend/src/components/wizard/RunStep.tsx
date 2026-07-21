@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Play, Square, RefreshCw, Loader2, ArrowLeft, FileText, Save, Pencil, Braces, Sparkles, Plus, Layers, X } from 'lucide-react'
+import { Play, Square, RefreshCw, Loader2, ArrowLeft, FileText, Save, Pencil, Braces, Sparkles, Plus, GripVertical, X } from 'lucide-react'
 import { templateApi, testApi, apkApi, planApi, wsUrl, debugSince } from '../../api/client'
 import { stepsToYaml } from '../../lib/template'
 import { extractParams, substituteSteps } from '../../lib/params'
@@ -16,6 +16,32 @@ interface Props {
 
 type Mode = 'select' | 'create'
 
+const PACKAGE_ACTIONS = new Set([
+  'launch_app',
+  'close_app',
+  'uninstall_app',
+  'skip_tutorial',
+  'enter_sr_debugger',
+])
+
+const PACKAGE_TOKEN = /^\{\{\s*package\s*\}\}$/
+
+const KNOWN_PARAM_DEFINITIONS: Record<string, Omit<TemplateParam, 'name'>> = {
+  package: {
+    label: '앱 패키지명',
+    description: '실행할 Android 앱의 패키지명',
+    example: 'com.percent.aos.cooptd',
+  },
+}
+
+function fallbackParamDefinition(name: string): TemplateParam {
+  return {
+    name,
+    ...KNOWN_PARAM_DEFINITIONS[name],
+    label: KNOWN_PARAM_DEFINITIONS[name]?.label ?? name.replace(/[._-]+/g, ' '),
+  }
+}
+
 interface PipelineSegment {
   id: string
   name: string
@@ -23,6 +49,12 @@ interface PipelineSegment {
 }
 
 interface PipelinePreviewSegment {
+  id: string
+  name: string
+  stepNumbers: number[]
+}
+
+interface TemplateBlock {
   id: string
   name: string
   stepNumbers: number[]
@@ -51,6 +83,29 @@ function makePipelinePreview(ids: string[], segments: PipelineSegment[]): Pipeli
   return out
 }
 
+function makeTemplateBlocks(ids: string[], segments: PipelineSegment[]): TemplateBlock[] {
+  const positions = new Map(ids.map((id, index) => [id, index + 1]))
+  return segments
+    .map((segment) => ({
+      id: segment.id,
+      name: segment.name,
+      stepNumbers: segment.stepIds
+        .map((id) => positions.get(id))
+        .filter((value): value is number => value !== undefined)
+        .sort((a, b) => a - b),
+    }))
+    .filter((segment) => segment.stepNumbers.length > 0)
+    .sort((a, b) => a.stepNumbers[0] - b.stepNumbers[0])
+}
+
+function formatStepNumbers(numbers: number[]) {
+  if (!numbers.length) return ''
+  const contiguous = numbers.every((value, index) => index === 0 || value === numbers[index - 1] + 1)
+  return contiguous && numbers.length > 1
+    ? `step ${numbers[0]}-${numbers[numbers.length - 1]}`
+    : `step ${numbers.join(', ')}`
+}
+
 export default function RunStep({ device, selectedPackage, onBack, onComplete }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   const [templates, setTemplates] = useState<string[]>([])
@@ -65,9 +120,12 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   const [stopping, setStopping] = useState(false)
   const [saving, setSaving] = useState(false)
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
+  const [paramDefinitions, setParamDefinitions] = useState<Record<string, TemplateParam>>({})
   const [apks, setApks] = useState<string[]>([])
   const [scenario, setScenario] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [draggedSegmentId, setDraggedSegmentId] = useState('')
+  const [segmentDropHint, setSegmentDropHint] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const sessionRef = useRef('')
@@ -88,7 +146,14 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
   useEffect(() => () => wsRef.current?.close(), [])
 
   const paramNames = useMemo(() => extractParams(steps), [steps])
-  const pipelinePreview = useMemo(() => makePipelinePreview(stepIds, pipelineSegments), [pipelineSegments, stepIds])
+  const templateBlocks = useMemo(() => makeTemplateBlocks(stepIds, pipelineSegments), [pipelineSegments, stepIds])
+  const stepGroupNames = useMemo(() => {
+    const groups: Record<string, string> = {}
+    for (const segment of pipelineSegments) {
+      for (const id of segment.stepIds) groups[id] = segment.name
+    }
+    return groups
+  }, [pipelineSegments])
 
   const resetEditing = () => {
     setSteps([])
@@ -98,6 +163,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     setSelected('')
     setStatus('')
     setParamValues({})
+    setParamDefinitions({})
   }
 
   const switchMode = (m: Mode) => { if (m !== mode) { setMode(m); resetEditing() } }
@@ -131,33 +197,117 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     pipeline: pipelineRef.current ?? undefined,
   })
 
-  const handleTemplateLoad = async (append: boolean) => {
+  const handleTemplateLoad = async () => {
     const name = selected
     if (!name) { setStatus('⚠️ 테스트케이스를 선택하세요.'); return }
     const res = await templateApi.get(name)
     const t = res.template
-    const loaded = cloneSteps(t.steps || [])
+    const loaded = cloneSteps(t.steps || []).map((step) => {
+      const isPackageStep = PACKAGE_ACTIONS.has(step.action)
+      const needsSelectedPackage = !step.target || PACKAGE_TOKEN.test(step.target)
+      return selectedPackage && isPackageStep && needsSelectedPackage
+        ? { ...step, target: selectedPackage }
+        : step
+    })
     const ids = loaded.map(() => newId())
     const label = t.title || name
+    const loadedParamNames = extractParams(loaded)
     const defaults = templateDefaults(t.parameters)
+    const definitions = Object.fromEntries(loadedParamNames.map((paramName) => {
+      const defined = t.parameters?.find((param) => param.name === paramName)
+      return [paramName, defined ?? fallbackParamDefinition(paramName)]
+    }))
+    const usesPackageParam = loadedParamNames.includes('package')
+    const initialParams = selectedPackage && usesPackageParam
+      ? { ...defaults, package: selectedPackage }
+      : defaults
     const segment: PipelineSegment = { id: segmentId(), name: label, stepIds: ids }
 
-    if (append && steps.length) {
-      setTitle((prev) => prev.trim() ? `${prev.trim()} + ${label}` : label)
+    if (steps.length) {
+      setTitle((prev) => {
+        const current = prev.trim()
+        if (!current) return label
+        return `${current} + ${label}`
+      })
       setSteps((prev) => [...prev, ...loaded])
       setStepIds((prev) => [...prev, ...ids])
       setPipelineSegments((prev) => [...prev, segment])
-      setParamValues((prev) => ({ ...defaults, ...prev }))
-      setStatus(`➕ '${label}' 스텝 ${loaded.length}개를 뒤에 붙였습니다.`)
+      setParamValues((prev) => ({ ...initialParams, ...prev, ...(selectedPackage && usesPackageParam ? { package: selectedPackage } : {}) }))
+      setParamDefinitions((prev) => ({ ...prev, ...definitions }))
+      setStatus(`'${label}' 스텝 ${loaded.length}개를 추가했습니다.`)
     } else {
       setTitle(label)
       setSteps(loaded)
       setStepIds(ids)
       setPipelineSegments([segment])
-      setParamValues(defaults)
+      setParamValues(initialParams)
+      setParamDefinitions(definitions)
       setStatus('✏️ 값을 수정한 뒤 실행하거나 저장할 수 있습니다.')
     }
     setLogs([])
+  }
+
+  const moveTemplateSegment = (sourceId: string, targetId: string, edge: 'before' | 'after') => {
+    if (!sourceId || sourceId === targetId) return
+    const orderedIds = templateBlocks.map((segment) => segment.id)
+    const withoutSource = orderedIds.filter((id) => id !== sourceId)
+    const targetIndex = withoutSource.indexOf(targetId)
+    if (targetIndex < 0) return
+    const insertionIndex = targetIndex + (edge === 'after' ? 1 : 0)
+    const nextSegmentOrder = [...withoutSource]
+    nextSegmentOrder.splice(insertionIndex, 0, sourceId)
+
+    const ownerByStep = new Map<string, string>()
+    for (const segment of pipelineSegments) {
+      for (const id of segment.stepIds) ownerByStep.set(id, segment.id)
+    }
+    const idsBySegment = new Map<string, string[]>()
+    for (const id of stepIds) {
+      const owner = ownerByStep.get(id)
+      if (!owner) continue
+      idsBySegment.set(owner, [...(idsBySegment.get(owner) ?? []), id])
+    }
+    const nextIds = nextSegmentOrder.flatMap((id) => idsBySegment.get(id) ?? [])
+    const knownIds = new Set(nextIds)
+    nextIds.push(...stepIds.filter((id) => !knownIds.has(id)))
+    const stepById = new Map(stepIds.map((id, index) => [id, steps[index]]))
+    const nextSteps = nextIds.map((id) => stepById.get(id)).filter((step): step is Step => !!step)
+
+    setStepIds(nextIds)
+    setSteps(nextSteps)
+    const segmentById = new Map(pipelineSegments.map((segment) => [segment.id, segment]))
+    const nextSegments = nextSegmentOrder
+      .map((id) => segmentById.get(id))
+      .filter((segment): segment is PipelineSegment => !!segment)
+    setPipelineSegments(nextSegments)
+    const orderedNames = nextSegments.filter((segment) => segment.name !== '직접 추가').map((segment) => segment.name)
+    if (orderedNames.length) setTitle(orderedNames.join(' + '))
+    setStatus('템플릿 순서를 변경했습니다.')
+  }
+
+  const removeTemplateSegment = (segmentId: string) => {
+    const segment = pipelineSegments.find((item) => item.id === segmentId)
+    if (!segment) return
+    const removedIds = new Set(segment.stepIds)
+    const nextIds = stepIds.filter((id) => !removedIds.has(id))
+    const nextSteps = steps.filter((_, index) => !removedIds.has(stepIds[index]))
+    const nextSegments = pipelineSegments.filter((item) => item.id !== segmentId)
+    const orderedNames = makeTemplateBlocks(nextIds, nextSegments)
+      .filter((item) => item.name !== '직접 추가')
+      .map((item) => item.name)
+    const nextParamNames = new Set(extractParams(nextSteps))
+
+    setStepIds(nextIds)
+    setSteps(nextSteps)
+    setPipelineSegments(nextSegments)
+    setTitle(orderedNames.join(' + '))
+    setParamValues((values) => Object.fromEntries(
+      Object.entries(values).filter(([name]) => nextParamNames.has(name))
+    ))
+    setParamDefinitions((definitions) => Object.fromEntries(
+      Object.entries(definitions).filter(([name]) => nextParamNames.has(name))
+    ))
+    setStatus(`'${segment.name}' 템플릿과 소속 스텝을 삭제했습니다.`)
   }
 
   const handleClearLoaded = () => {
@@ -166,6 +316,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     setPipelineSegments([])
     setTitle('')
     setParamValues({})
+    setParamDefinitions({})
     setStatus('🧹 선택한 테스트 구성을 비웠습니다.')
     setLogs([])
   }
@@ -210,6 +361,9 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
       setPipelineSegments([{ id: segmentId(), name: label, stepIds: ids }])
       const defaults: Record<string, string> = {}
       setParamValues(defaults)
+      setParamDefinitions(Object.fromEntries(
+        extractParams(generated).map((name) => [name, fallbackParamDefinition(name)])
+      ))
       setStatus(`✅ 스텝 ${res.steps_count}개 생성 — 검토·수정 후 실행하거나 저장하세요.`)
     } catch (e) {
       setStatus(`❌ 생성 실패: ${e instanceof Error ? e.message : String(e)}`)
@@ -224,7 +378,11 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     setSaving(true)
     try {
       // 현재 입력값을 파라미터 기본값으로 저장 (플레이스홀더는 스텝에 그대로 보존)
-      const params: TemplateParam[] = paramNames.map((name) => ({ name, default: paramValues[name] ?? '' }))
+      const params: TemplateParam[] = paramNames.map((name) => ({
+        ...(paramDefinitions[name] ?? fallbackParamDefinition(name)),
+        name,
+        default: paramValues[name] ?? '',
+      }))
       const yaml = stepsToYaml(title.trim(), selectedPackage, steps, params)
       const res = await templateApi.save(title.trim(), yaml)
       if (res.success) {
@@ -274,9 +432,11 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     }
     ws.onerror = () => { setStatus('❌ WebSocket 연결 오류'); setRunning(false) }
 
-    // 파라미터 치환 후, launch_app 스텝에 target이 없으면 선택한 게임 패키지로 보정
+    // 파라미터 치환 후, 앱 제어 스텝은 앞 단계에서 선택한 게임 패키지로 보정
     const resolved = substituteSteps(steps, paramValues)
-    const runSteps = resolved.map((s) => (s.action === 'launch_app' && !s.target ? { ...s, target: selectedPackage } : s))
+    const runSteps = resolved.map((s) => (
+      PACKAGE_ACTIONS.has(s.action) && !s.target ? { ...s, target: selectedPackage } : s
+    ))
     const pkg = runSteps.find((s) => s.action === 'launch_app' && s.target)?.target ?? selectedPackage
     await testApi.run({ title: title || '테스트 실행', package: pkg, steps: runSteps, session_id: sid, device })
   }
@@ -305,8 +465,8 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
 
         {mode === 'select' && (
           <div className="flex-none rounded-lg border border-gray-800 bg-gray-900/60 p-2.5 space-y-2">
-            <div className="flex items-end gap-2">
-              <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="flex-1 min-w-[180px]">
                 <label className="block text-xs text-gray-400 mb-1">테스트케이스</label>
                 <select value={selected} onChange={(e) => setSelected(e.target.value)} disabled={running}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60">
@@ -314,13 +474,9 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
                   {templates.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
-              <button onClick={() => handleTemplateLoad(false)} disabled={running || !selected}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs text-gray-200 disabled:opacity-50 transition-colors">
-                <Layers size={14} /> 교체
-              </button>
-              <button onClick={() => handleTemplateLoad(true)} disabled={running || !selected}
+              <button onClick={handleTemplateLoad} disabled={running || !selected}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 text-xs font-medium disabled:opacity-50 transition-colors">
-                <Plus size={14} /> 뒤에 붙이기
+                <Plus size={14} /> 불러오기
               </button>
               <button onClick={loadTemplates} disabled={running}
                 className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white disabled:opacity-50 transition-colors"
@@ -328,19 +484,50 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
                 <RefreshCw size={16} />
               </button>
             </div>
-            {pipelinePreview.length > 0 && (
+            {templateBlocks.length > 0 && (
               <div className="flex items-start gap-2 min-h-7">
                 <div className="flex-1 min-w-0 flex flex-wrap items-center gap-1">
-                  {pipelinePreview.map((segment) => (
-                    <div key={segment.id} className="flex flex-wrap items-center gap-1">
-                      <span className="px-2 py-1 rounded bg-blue-950/50 border border-blue-800/60 text-[11px] font-medium text-blue-200">
-                        [{segment.name}]
-                      </span>
-                      {segment.stepNumbers.map((n) => (
-                        <span key={`${segment.id}_${n}`} className="px-1.5 py-1 rounded bg-gray-800 border border-gray-700 text-[11px] text-gray-300">
-                          step {n}
-                        </span>
-                      ))}
+                  {templateBlocks.map((segment) => (
+                    <div key={segment.id}
+                      draggable={!running}
+                      onDragStart={(e) => {
+                        e.dataTransfer.effectAllowed = 'move'
+                        e.dataTransfer.setData('application/x-autoqa-template', segment.id)
+                        setDraggedSegmentId(segment.id)
+                      }}
+                      onDragOver={(e) => {
+                        if (!e.dataTransfer.types.includes('application/x-autoqa-template')) return
+                        e.preventDefault()
+                        if (draggedSegmentId === segment.id) return
+                        const rect = e.currentTarget.getBoundingClientRect()
+                        setSegmentDropHint({ id: segment.id, edge: e.clientX < rect.left + rect.width / 2 ? 'before' : 'after' })
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        const sourceId = draggedSegmentId || e.dataTransfer.getData('application/x-autoqa-template')
+                        const edge = segmentDropHint?.id === segment.id ? segmentDropHint.edge : 'before'
+                        moveTemplateSegment(sourceId, segment.id, edge)
+                        setDraggedSegmentId('')
+                        setSegmentDropHint(null)
+                      }}
+                      onDragEnd={() => { setDraggedSegmentId(''); setSegmentDropHint(null) }}
+                      title="템플릿 이동"
+                      className={`relative flex max-w-full items-center gap-1 px-2 py-1 rounded border text-[11px] select-none transition-colors ${
+                        draggedSegmentId === segment.id
+                          ? 'opacity-40 border-blue-500 bg-blue-950/60'
+                          : 'border-blue-800/60 bg-blue-950/50 text-blue-200'
+                      } ${running ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${segmentDropHint?.id === segment.id && segmentDropHint.edge === 'before' ? 'before:absolute before:-left-1 before:top-0 before:bottom-0 before:w-0.5 before:bg-cyan-400' : ''}
+                      ${segmentDropHint?.id === segment.id && segmentDropHint.edge === 'after' ? 'after:absolute after:-right-1 after:top-0 after:bottom-0 after:w-0.5 after:bg-cyan-400' : ''}`}>
+                      <GripVertical size={12} className="text-blue-400 cursor-grab active:cursor-grabbing" />
+                      <span className="max-w-[14rem] truncate font-medium">[{segment.name}]</span>
+                      <span className="flex-none text-blue-400/70">{formatStepNumbers(segment.stepNumbers)}</span>
+                      <button type="button" draggable={false} disabled={running}
+                        onClick={(e) => { e.stopPropagation(); removeTemplateSegment(segment.id) }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className="ml-0.5 flex-none rounded p-0.5 text-blue-400/70 hover:bg-red-950 hover:text-red-300 disabled:opacity-40"
+                        title="템플릿과 소속 스텝 삭제">
+                        <X size={12} />
+                      </button>
                     </div>
                   ))}
                   <span className="px-2 py-1 text-[11px] text-gray-500">총 {steps.length} 스텝</span>
@@ -388,24 +575,43 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
             <p className="text-xs text-indigo-300 flex items-center gap-1.5">
               <Braces size={13} /> 파라미터 — 실행 시 값을 채웁니다
             </p>
-            {paramNames.map((name) => (
-              <div key={name} className="flex items-center gap-2">
-                <span className="flex-none w-28 truncate text-xs font-mono text-indigo-300">{`{{${name}}}`}</span>
-                <input
-                  value={paramValues[name] ?? ''}
-                  disabled={running}
-                  onChange={(e) => setParamValues((v) => ({ ...v, [name]: e.target.value }))}
-                  placeholder={`${name} 값`}
-                  className="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 disabled:opacity-50"
-                />
-              </div>
-            ))}
+            {paramNames.map((name) => {
+              const definition = paramDefinitions[name] ?? fallbackParamDefinition(name)
+              const placeholder = definition.placeholder
+                || (definition.example ? `예: ${definition.example}` : `${definition.label} 입력`)
+
+              return (
+                <div key={name} className="grid grid-cols-[9rem_minmax(0,1fr)] items-start gap-2 rounded border border-indigo-900/50 bg-gray-950/40 p-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-medium text-indigo-200">{definition.label}</p>
+                    <p className="truncate text-[10px] font-mono text-indigo-400">{`{{${name}}}`}</p>
+                  </div>
+                  <div className="min-w-0 space-y-1">
+                    <input
+                      value={paramValues[name] ?? ''}
+                      disabled={running}
+                      onChange={(e) => setParamValues((v) => ({ ...v, [name]: e.target.value }))}
+                      placeholder={placeholder}
+                      className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                    />
+                    {(definition.description || definition.example) && (
+                      <p className="text-[10px] leading-4 text-gray-500">
+                        {definition.description}
+                        {definition.description && definition.example ? ' · ' : ''}
+                        {definition.example ? `예시: ${definition.example}` : ''}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
 
         {/* 스텝 편집기 (기존 선택도 값 수정 가능) */}
         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin pr-1">
-          <StepEditor steps={steps} ids={stepIds} selectedPackage={selectedPackage} apks={apks} disabled={running} onChange={handleEditorChange} />
+          <StepEditor steps={steps} ids={stepIds} stepGroupNames={stepGroupNames}
+            selectedPackage={selectedPackage} apks={apks} disabled={running} onChange={handleEditorChange} />
         </div>
 
         <div className="text-xs text-gray-500 flex items-center gap-1.5 flex-none">

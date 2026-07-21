@@ -454,7 +454,13 @@ def preflight_check():
         out = _adb_shell(did, ["shell", "dumpsys", "power"])
         awake = "mWakefulness=Awake" in out or "Display Power: state=ON" in out
         out_win = _adb_shell(did, ["shell", "dumpsys", "window", "policy"])
-        locked = "isStatusBarKeyguard=true" in out_win or "mKeyguardShowing=true" in out_win.lower()
+        out_win_lower = out_win.lower()
+        locked = any(token in out_win_lower for token in (
+            "isstatusbarkeyguard=true",
+            "mkeyguardshowing=true",
+            "keyguardshowing=true",
+            "showingandnotoccluded=true",
+        ))
         if awake and not locked:
             checks.append({"name": "화면 잠금 해제", "status": "ok", "detail": "화면 켜짐 / 잠금 해제됨"})
         elif not awake:

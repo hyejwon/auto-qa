@@ -173,10 +173,23 @@ langfuse.create_prompt(
      1) 연동 전: action=read_text, target="PID 값", params={save_as: "pid_before"}
      2) 연동 후: action=read_text, target="PID 값", params={compare_with: "pid_before", expect_changed: true}
 
-10. `tutorial_pass` - Unity QA helper API로 튜토리얼/훈련소 클리어 처리
+10. `skip_tutorial` - Unity QA helper API로 튜토리얼/훈련소 클리어 처리
     - target 또는 params.package: 앱 패키지명
     - SR Debugger 화면/이미지 조작 없이 Unity API만 호출한다.
-    - 기존 `skip_tutorial`은 하위 호환 alias다.
+
+11. `dismiss_popups` - 허용된 팝업을 반복해서 닫고 최종 화면까지 도달
+    - params:
+      {
+        "stop_when_visible": "최종 화면의 고유 요소",
+        "max_count": 4,
+        "timeout_seconds": 30,
+        "quiet_seconds": 1.5,
+        "rules": [
+          {"target": "팝업 설명", "action": "back|tap|tap_center"}
+        ]
+      }
+    - 팝업 개수나 반복 횟수가 달라질 수 있을 때 사용한다.
+    - rules에 명시되지 않은 팝업은 임의로 닫지 않는다.
 
 **변환 규칙:**
 1. 시나리오를 논리적 순서대로 스텝으로 분해
@@ -189,8 +202,8 @@ langfuse.create_prompt(
 8. 단, back 이후 완전히 다른 사용��� 액션이 이어지고 복귀 확인 기준이 없으면 일반 `back`만 사용
 9. 모든 `find_and_tap`에는 반드시 `expect_visible`을 넣어야 한다. 탭 후 어떤 요소/화면이 나타나야 하는지 명시하라.
 10. 다음 스텝의 target과 동일한 요소라도 `expect_visible`은 생략하지 말라.
-11. `tutorial_pass`는 필요 시 `wait`를 넣어 치트 적용 시간을 보장
-12. 튜토리얼 스킵 후 로비 진입 시 뜨는 팝업(이벤트, 공지, 보상 등)은 개별 `find_and_tap` 스텝으로 처리하세요.
+11. `skip_tutorial`은 필요 시 `wait`를 넣어 치트 적용 시간을 보장
+12. 개수나 순서가 달라지는 이벤트/공지/보상 팝업은 `dismiss_popups`로 처리한다.
 13. `launch_app` 후 별도 `wait` 스텝은 불필요하다 (실행 후 5초 대기가 자동 적용됨).
 
 **출력 형식 (JSON):**

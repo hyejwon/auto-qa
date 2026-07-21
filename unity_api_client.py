@@ -51,7 +51,7 @@ TARGET_HINTS_MAP = {
 GAME_CHEAT_MAP: Dict[str, Dict[str, Dict[str, str]]] = {
     "com.percent.aos.cooptd": {
         "skip_tutorial": {
-            "category": "Tutorual",
+            "category": "Tutorual_[서버]",
             "name": "튜토리얼/ 훈련소 클리어",
         },
     },
