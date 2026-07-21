@@ -259,8 +259,8 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
                 {projects.map((p) => {
                   const isInstalled = p.installed || (!!p.package && installedSet.has(p.package))
                   return (
-                    <button key={p.name} onClick={() => handleSelectProject(p)}
-                      className="text-left px-4 py-3 rounded-xl border bg-gray-900 border-gray-800 hover:border-violet-600 transition-colors">
+                    <button key={p.name} onClick={() => handleSelectProject(p)} disabled={phoneBusy}
+                      className="text-left px-4 py-3 rounded-xl border bg-gray-900 border-gray-800 hover:border-violet-600 disabled:cursor-not-allowed disabled:opacity-50 transition-colors">
                       <div className="flex items-center gap-1.5">
                         <p className="text-sm font-medium text-gray-100 truncate">{p.name}</p>
                         <span className={`flex-none text-[10px] px-1.5 py-0.5 rounded-full ${

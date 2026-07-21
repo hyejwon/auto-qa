@@ -12,6 +12,7 @@ import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from dotenv import load_dotenv
@@ -596,6 +597,19 @@ def _installed_packages(device_id: str) -> set[str]:
 _APPTESTER_CACHE_PATH = cfg.paths.project_root / "apptester_cache.json"
 _apptester_fetch_guard = threading.Lock()
 _apptester_fetch_locks: dict[str, threading.Lock] = {}
+_apptester_device_locks_guard = threading.Lock()
+_apptester_device_locks: dict[str, threading.Lock] = {}
+
+
+def _apptester_device_lock(device_id: str) -> threading.Lock:
+    """같은 디바이스의 App Tester UI 조작을 순서대로 실행한다."""
+    with _apptester_device_locks_guard:
+        return _apptester_device_locks.setdefault(device_id, threading.Lock())
+
+
+def _new_apptester_session() -> str:
+    """동일 초에 들어온 요청도 서로 다른 세션으로 구분한다."""
+    return f"apptester_{uuid4().hex[:12]}"
 
 
 def _load_apptester_cache() -> dict[str, list]:
@@ -685,15 +699,16 @@ def apptester_apps(device: str = "", refresh: bool = False):
     did = device_info["device_id"]
 
     def fetch() -> list:
-        session = f"apptester_{int(datetime.now().timestamp())}"
-        holder = _acquire_device_lock(did, session)
-        if holder:
-            raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
-        try:
-            driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
-            return driver.list_games()
-        finally:
-            _release_device_lock(did, session)
+        with _apptester_device_lock(did):
+            session = _new_apptester_session()
+            holder = _acquire_device_lock(did, session)
+            if holder:
+                raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
+            try:
+                driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
+                return driver.list_games()
+            finally:
+                _release_device_lock(did, session)
 
     try:
         result, _ = _apptester_fetch(f"{did}|apps", refresh, fetch)
@@ -732,15 +747,16 @@ def apptester_builds(package: str = "", game: str = "", device: str = "", refres
     did = device_info["device_id"]
 
     def fetch() -> list:
-        session = f"apptester_{int(datetime.now().timestamp())}"
-        holder = _acquire_device_lock(did, session)
-        if holder:
-            raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
-        try:
-            driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
-            return driver.list_builds(game_name)
-        finally:
-            _release_device_lock(did, session)
+        with _apptester_device_lock(did):
+            session = _new_apptester_session()
+            holder = _acquire_device_lock(did, session)
+            if holder:
+                raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
+            try:
+                driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
+                return driver.list_builds(game_name)
+            finally:
+                _release_device_lock(did, session)
 
     try:
         builds, cached = _apptester_fetch(
@@ -767,24 +783,25 @@ def apptester_install(req: AppTesterInstallRequest):
     if device_info["status"] != "connected":
         raise HTTPException(status_code=503, detail="디바이스 미연결")
     did = device_info["device_id"]
-    session = f"apptester_{int(datetime.now().timestamp())}"
-    holder = _acquire_device_lock(did, session)
-    if holder:
-        raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
-    try:
-        before = set() if req.package else _installed_packages(did)
-        driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
-        ok, msg = driver.install_build(game_name, req.version)
-        pkg = req.package
-        if ok and not pkg:
-            after = _installed_packages(did)
-            new = after - before
-            pkg = next(iter(new)) if len(new) == 1 else _guess_package(game_name, after)
-        return {"success": ok, "message": msg, "package": pkg}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
-    finally:
-        _release_device_lock(did, session)
+    with _apptester_device_lock(did):
+        session = _new_apptester_session()
+        holder = _acquire_device_lock(did, session)
+        if holder:
+            raise HTTPException(status_code=409, detail=f"디바이스 사용 중 (세션 {holder})")
+        try:
+            before = set() if req.package else _installed_packages(did)
+            driver = AppTesterDriver(did, cfg.paths.debug_dir / "apptester")
+            ok, msg = driver.install_build(game_name, req.version)
+            pkg = req.package
+            if ok and not pkg:
+                after = _installed_packages(did)
+                new = after - before
+                pkg = next(iter(new)) if len(new) == 1 else _guess_package(game_name, after)
+            return {"success": ok, "message": msg, "package": pkg}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+        finally:
+            _release_device_lock(did, session)
 
 
 # ─────────────────────────────────────────────

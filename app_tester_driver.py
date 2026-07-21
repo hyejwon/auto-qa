@@ -47,6 +47,14 @@ _CONSENT_CONFIRM = ("확인", "동의", "계속", "시작하기", "ok", "continu
 # "이 기기에서 테스트 시작" 같은 버튼은 부분 일치로 매칭
 _CONSENT_CONFIRM_SUBSTR = ("테스트 시작", "start testing")
 
+# 시스템 패키지 설치 화면의 진행 버튼. 위험 고지 팝업의 버튼을
+# 일반 설치 버튼보다 먼저 탐색해 두 화면이 겹쳐 잡혀도 확실히 진행한다.
+_INSTALL_ACTION_LABELS = (
+    "무시하고 설치", "install anyway",
+    "그래도 설치", "continue installing",
+    "설치", "install", "확인", "ok", "업데이트", "update",
+)
+
 
 def _is_consent_confirm(text: str) -> bool:
     t = text.strip().lower()
@@ -368,24 +376,59 @@ class AppTesterDriver:
         while time.time() < deadline:
             time.sleep(8)
             nodes = self._nodes()
-            texts = {n["text"] for n in nodes} | {n["desc"] for n in nodes}
-            self._tap_download_near(nodes, ver_key)
-            # 설치 진행 계열 버튼이 보이면 누른다 (XML 기준 정확 매칭)
-            for label in ("설치", "Install", "확인", "업데이트"):
-                node = next((n for n in nodes
-                             if n["text"] == label or n["desc"] == label), None)
-                if node:
-                    self.adb.tap(node["cx"], node["cy"])
-                    time.sleep(2)
-            if any(t in ("열기", "Open") for t in texts):
+            texts = {
+                self._normalized_label(value)
+                for n in nodes for value in (n["text"], n["desc"])
+            }
+            if any(t in ("열기", "open") for t in texts):
                 # 설치 화면 정리 — '완료'를 눌러 닫고 복귀
                 done = next((n for n in nodes
-                             if n["text"] in ("완료", "Done")), None)
+                             if any(value in ("완료", "done")
+                                    for value in self._node_labels(n))), None)
                 if done:
                     self.adb.tap(done["cx"], done["cy"])
                     time.sleep(1)
                 return True, f"버전 {version} 설치 완료"
+
+            # '알 수 없는 앱' 고지의 '무시하고 설치'를 포함해
+            # 한 폴링당 한 버튼만 누르고 다음 UI 트리를 다시 읽는다.
+            action = self._find_install_action(nodes)
+            if action:
+                label, node = action
+                logger.info("시스템 설치 버튼 탭: %s", label)
+                self.adb.tap(node["cx"], node["cy"])
+                time.sleep(2)
+                continue
+
+            if self._tap_download_near(nodes, ver_key):
+                continue
         return False, f"설치 완료 확인 실패 (제한시간 {download_timeout}초) — 화면 확인 필요"
+
+    @staticmethod
+    def _normalized_label(value: str) -> str:
+        return " ".join((value or "").split()).casefold()
+
+    @classmethod
+    def _node_labels(cls, node: dict) -> tuple[str, ...]:
+        return tuple(filter(None, (
+            cls._normalized_label(node.get("text", "")),
+            cls._normalized_label(node.get("desc", "")),
+        )))
+
+    @classmethod
+    def _find_install_action(cls, nodes: list[dict]) -> Optional[tuple[str, dict]]:
+        """시스템 패키지 설치 화면에서 눌러야 할 버튼을 우선순위로 반환."""
+        labeled = [
+            (value, node)
+            for node in nodes
+            for value in cls._node_labels(node)
+        ]
+        for label in _INSTALL_ACTION_LABELS:
+            normalized = cls._normalized_label(label)
+            node = next((node for value, node in labeled if value == normalized), None)
+            if node:
+                return label, node
+        return None
 
     @staticmethod
     def _is_download_label(n: dict) -> bool:
