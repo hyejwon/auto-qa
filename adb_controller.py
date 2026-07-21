@@ -16,6 +16,36 @@ logger = logging.getLogger(__name__)
 _UI_BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 
+def is_keyguard_locked(window_dump: str) -> bool:
+    """dumpsys window 출력에서 현재 키가드 표시 여부를 보수적으로 판정한다."""
+    normalized = (window_dump or "").lower()
+
+    # 일부 제조사 ROM은 잠금 해제 후에도 KeyguardServiceDelegate의
+    # showing 계열 값을 잠시 true로 유지한다. 현재 포커스가 일반 앱이면
+    # 실제 키가드가 화면을 덮고 있지 않은 것으로 우선 판정한다.
+    focus_match = re.search(r"mcurrentfocus\s*=\s*([^\r\n]+)", normalized)
+    if focus_match:
+        focused_window = focus_match.group(1)
+        lock_window_tokens = (
+            "keyguard",
+            "lockscreen",
+            "notification shade",
+            "notificationshade",
+            "statusbar",
+            "com.android.systemui",
+        )
+        has_app_window = "window{" in focused_window and "null" not in focused_window
+        if has_app_window and not any(token in focused_window for token in lock_window_tokens):
+            return False
+
+    return any(token in normalized for token in (
+        "mkeyguardshowing=true",
+        "iskeyguardshowing=true",
+        "isstatusbarkeyguard=true",
+        "mshowinglockscreen=true",
+    ))
+
+
 def parse_ui_nodes(xml_text: str) -> list[dict]:
     """uiautomator dump XML → 텍스트/설명/체크박스 노드 목록 (좌표 포함).
 
@@ -393,23 +423,7 @@ class ADBController:
                 self._execute(["shell", "dumpsys", "window"]),
                 self._execute(["shell", "dumpsys", "window", "policy"]),
             ])
-            normalized = out.lower()
-            for token in (
-                "mkeyguardshowing=true",
-                "keyguardshowing=true",
-                "iskeyguardshowing=true",
-                "isstatusbarkeyguard=true",
-                "mshowinglockscreen=true",
-                "showingandnotoccluded=true",
-            ):
-                if token in normalized:
-                    return True
-            # 최신 Android의 KeyguardServiceDelegate 출력 형식 대응.
-            if "keyguardservicedelegate" in normalized:
-                section = normalized.split("keyguardservicedelegate", 1)[1][:1000]
-                if re.search(r"\bshowing\s*=\s*true\b", section):
-                    return True
-            return False
+            return is_keyguard_locked(out)
         except Exception as e:
             logger.warning(f"Lock state check failed: {e}")
             return False
