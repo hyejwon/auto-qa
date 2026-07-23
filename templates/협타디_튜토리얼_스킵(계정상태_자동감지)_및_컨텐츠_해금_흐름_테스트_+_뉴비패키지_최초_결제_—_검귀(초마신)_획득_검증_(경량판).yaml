@@ -6,6 +6,10 @@ description: >
   전부 건너뛴다. 건너뛰기 버튼이 보이면 튜토리얼 미완료 계정이므로 기존대로 스킵 API 호출 →
   앱 재시작 → 건너뛰기 확인 → 컨텐츠 해금 팝업 정리를 그대로 진행한 뒤 뉴비패키지 최초 결제
   검증으로 이어간다.
+  ⚠️ 완전 신규(웨이브 0을 한 번도 안 깬) 계정은 1차 스킵 API 호출로 튜토리얼 대사만 넘어가고
+  그 뒤 실제 웨이브 0 전투 튜토리얼 화면에서 멈춘다(2026-07-23 실기기 확인) — 이 경우를 대비해
+  스킵 API 호출/재부팅/건너뛰기 확인을 한 번 더 반복한다(2차). 이미 웨이브 0을 깬 계정은
+  1차 이후 바로 컨텐츠 해금 팝업/전투 탭에 도달하므로 2차는 자동으로 건너뛴다.
 package: com.percent.aos.cooptd
 steps:
 # 로그인이 끝나기 전에 skip_tutorial API를 호출하면 앱이 바로 재부팅되어 버린다
@@ -20,28 +24,28 @@ steps:
   retry: 3
 - action: skip_tutorial
   target: com.percent.aos.cooptd
-  description: (계정이 아직 튜토리얼을 안 끝냈을 때만) 튜토리얼 스킵 API 호출 — 전투 탭이 이미 보이면 건너뜀
+  description: (계정이 아직 튜토리얼을 안 끝냈을 때만) 튜토리얼 스킵 API 호출 1차 — 전투 탭이 이미 보이면 건너뜀
   timeout: 20
   retry: 2
   params:
     skip_if_visible: 하단 네비게이션 전투 탭
 - action: close_app
   target: com.percent.aos.cooptd
-  description: (튜토리얼 스킵을 진행했을 때만) 재부팅을 위한 앱 종료 — 전투 탭이 이미 보이면 건너뜀
+  description: (튜토리얼 스킵을 진행했을 때만) 재부팅을 위한 앱 종료 1차 — 전투 탭이 이미 보이면 건너뜀
   timeout: 10
   retry: 2
   params:
     skip_if_visible: 하단 네비게이션 전투 탭
 - action: launch_app
   target: com.percent.aos.cooptd
-  description: (튜토리얼 스킵을 진행했을 때만) 앱 재실행 — 전투 탭이 이미 보이면 건너뜀
+  description: (튜토리얼 스킵을 진행했을 때만) 앱 재실행 1차 — 전투 탭이 이미 보이면 건너뜀
   timeout: 20
   retry: 2
   params:
     skip_if_visible: 하단 네비게이션 전투 탭
 - action: find_and_tap
   target: 건너뛰기 버튼
-  description: (나올 경우) 튜토리얼 건너뛰기 버튼 클릭 — 이미 스킵된 계정이면 이 버튼/팝업 자체가 안 뜬다
+  description: (나올 경우) 튜토리얼 건너뛰기 버튼 클릭 1차 — 이미 스킵된 계정이면 이 버튼/팝업 자체가 안 뜬다
   timeout: 10
   retry: 2
   params:
@@ -49,7 +53,73 @@ steps:
     expect_visible: 정말로 건너뛰시겠습니까 팝업
 - action: find_and_tap
   target: 예 버튼
-  description: (나올 경우) 건너뛰기 확인 팝업에서 예 클릭
+  description: (나올 경우) 건너뛰기 확인 팝업에서 예 클릭 1차
+  timeout: 10
+  retry: 2
+  params:
+    optional: true
+    expect_hidden: 정말로 건너뛰시겠습니까 팝업
+    wait_seconds: 1
+# ⚠️ 완전 신규 계정(웨이브 0을 한 번도 안 깬 계정)은 위 1차 스킵으로 튜토리얼 "대사"만
+# 넘어가고, 실제 웨이브 0 전투 튜토리얼 화면(가이드 알콩이가 마물 배치를 안내하는 실제
+# 플레이 화면)에서 멈춘다 — 팝업이 아니라 스킵 API가 아직 못 넘은 다음 튜토리얼 관문이라
+# dismiss_popups로는 처리 불가(2026-07-23 실기기에서 0개 처리 후 타임아웃 확인). 이 경우
+# skip_tutorial API를 한 번 더 호출하고 재부팅하면 전투 탭까지 정상적으로 넘어간다.
+# ⚠️ 컨텐츠 해금 팝업은 VIP 상점 → 루키의 도전 → 이벤트 팝업 1 → 이벤트 팝업 2 순으로
+# 최대 4개까지 연속으로 뜨는데, 팝업 사이에 다음 팝업이 렌더링되기까지 약간의 지연이 있다.
+# quiet_seconds: 0이면 그 전환 순간에 잠깐 보이는 배경 화면(햄버거 메뉴 버튼)만으로도
+# "안정됨"으로 오판해 다음 팝업이 뜨기 전에 완료 처리해버려 마지막 팝업(들)을 놓친다
+# (2026-07-23 실기기 확인 — 이벤트 팝업 1까지만 닫고 멈춤). quiet_seconds를 늘려서
+# 햄버거 메뉴가 최소 그 시간만큼 계속 보여야 진짜로 끝난 것으로 인정하도록 했다.
+- action: dismiss_popups
+  description: (1차 스킵 후) VIP 상점의 좌측 하단 뒤로가기 버튼을 누르고 반복되는 컨텐츠 해금 안내 닫기 — 전투 탭이 이미 보이면 건너뜀. 완전 신규 계정이면 컨텐츠 해금 팝업 자체가 없어 실패하지만 optional 처리해 2차 스킵으로 넘어간다
+  timeout: 45
+  retry: 1
+  params:
+    optional: true
+    skip_if_visible: 하단 네비게이션 전투 탭
+    stop_when_visible: 우측 상단 햄버거 메뉴 버튼
+    max_count: 4
+    timeout_seconds: 40
+    initial_wait_seconds: 1
+    quiet_seconds: 1.5
+    rules:
+    - target: VIP 상점 좌측 하단 뒤로가기 버튼
+      action: tap
+    - target: 새로운 컨텐츠가 해금되었어요 팝업
+      action: tap_center
+- action: skip_tutorial
+  target: com.percent.aos.cooptd
+  description: (1차 스킵으로 전투 탭에 도달 못 했을 때만) 튜토리얼 스킵 API 재호출 2차 — 완전 신규 계정의 웨이브 0 전투 튜토리얼 관문 처리용
+  timeout: 20
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: close_app
+  target: com.percent.aos.cooptd
+  description: (2차 스킵을 진행했을 때만) 재부팅을 위한 앱 종료 2차
+  timeout: 10
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: launch_app
+  target: com.percent.aos.cooptd
+  description: (2차 스킵을 진행했을 때만) 앱 재실행 2차
+  timeout: 20
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: find_and_tap
+  target: 건너뛰기 버튼
+  description: (나올 경우) 튜토리얼 건너뛰기 버튼 클릭 2차 — 재부팅 후 컷신이 다시 뜨는 경우 대비
+  timeout: 10
+  retry: 2
+  params:
+    optional: true
+    expect_visible: 정말로 건너뛰시겠습니까 팝업
+- action: find_and_tap
+  target: 예 버튼
+  description: (나올 경우) 건너뛰기 확인 팝업에서 예 클릭 2차
   timeout: 10
   retry: 2
   params:
@@ -57,7 +127,7 @@ steps:
     expect_hidden: 정말로 건너뛰시겠습니까 팝업
     wait_seconds: 1
 - action: dismiss_popups
-  description: (튜토리얼 스킵을 진행했을 때만) VIP 상점의 좌측 하단 뒤로가기 버튼을 누르고 반복되는 컨텐츠 해금 안내 닫기 — 전투 탭이 이미 보이면 건너뜀
+  description: (튜토리얼 스킵을 진행했을 때만) VIP 상점의 좌측 하단 뒤로가기 버튼을 누르고 반복되는 컨텐츠 해금 안내 닫기 최종 — 전투 탭이 이미 보이면 건너뜀
   timeout: 120
   retry: 1
   params:
@@ -66,7 +136,7 @@ steps:
     max_count: 4
     timeout_seconds: 120
     initial_wait_seconds: 1
-    quiet_seconds: 0
+    quiet_seconds: 1.5
     rules:
     - target: VIP 상점 좌측 하단 뒤로가기 버튼
       action: tap

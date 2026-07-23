@@ -126,6 +126,12 @@ class UnityAPIClient:
             port = self.adb.forward_port(37772)
             if port:
                 return f"http://127.0.0.1:{port}"
+            # forward_port 실패 시 여기서 바로 return self.base_url로 빠지면 포워딩이
+            # 전혀 없을 수도, 다른 기기가 남긴 37772 stale 포워딩을 그대로 잘못 타서
+            # 엉뚱한 기기에 치트가 쏠릴 수도 있다(2026-07-23 확인) — 고정 포트로라도
+            # 이 기기 앞으로 포워딩을 다시 강제해준다.
+            self.adb.ensure_forward(local_port=37772, remote_port=37772)
+            return self.base_url
         if self.adb and self._explicit_base:
             self.adb.ensure_forward(local_port=self._local_port, remote_port=37772)
         return self.base_url

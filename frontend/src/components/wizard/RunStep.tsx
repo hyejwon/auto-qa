@@ -129,6 +129,8 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete, r
   const [generating, setGenerating] = useState(false)
   const [draggedSegmentId, setDraggedSegmentId] = useState('')
   const [segmentDropHint, setSegmentDropHint] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
+  const [refreshingTemplates, setRefreshingTemplates] = useState(false)
+  const [templatesRefreshed, setTemplatesRefreshed] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const sessionRef = useRef('')
@@ -139,6 +141,21 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete, r
   const loadTemplates = async () => {
     const res = await templateApi.list()
     setTemplates(res.templates)
+  }
+
+  // 새로고침 아이콘 버튼 전용 — 서버에서 목록을 다시 읽어오는 동안/직후 눈에 보이는
+  // 반응이 전혀 없어 "안 눌리는 버튼"처럼 보인다는 피드백을 받아 로딩 스피너 +
+  // 잠깐 동안의 "갱신됨" 표시를 추가했다.
+  const handleRefreshTemplates = async () => {
+    setRefreshingTemplates(true)
+    setTemplatesRefreshed(false)
+    try {
+      await loadTemplates()
+      setTemplatesRefreshed(true)
+      setTimeout(() => setTemplatesRefreshed(false), 1500)
+    } finally {
+      setRefreshingTemplates(false)
+    }
   }
 
   useEffect(() => {
@@ -501,11 +518,14 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete, r
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 text-xs font-medium disabled:opacity-50 transition-colors">
                 <Plus size={14} /> 불러오기
               </button>
-              <button onClick={loadTemplates} disabled={running}
+              <button onClick={handleRefreshTemplates} disabled={running || refreshingTemplates}
                 className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white disabled:opacity-50 transition-colors"
                 title="목록 새로고침">
-                <RefreshCw size={16} />
+                {refreshingTemplates ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
               </button>
+              {templatesRefreshed && (
+                <span className="text-xs text-emerald-400">✓ 목록 갱신됨</span>
+              )}
             </div>
             {templateBlocks.length > 0 && (
               <div className="flex items-start gap-2 min-h-7">

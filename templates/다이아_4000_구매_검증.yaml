@@ -33,26 +33,57 @@ steps:
   timeout: 30
   retry: 2
 
-# 4) Google Play 시트에서 원탭 구매 → 테스트 결제 진행.
-#    테스트 카드 '항상 승인' 환경 기준이며 실제 청구되지 않아야 한다.
+# 4) Google Play 시트에서 원탭 구매 → 테스트 결제 진행. 결제 완료 후 다음 화면은
+#    구매 인증 팝업 / 바로 획득 화면 두 갈래라서 여기서는 화면 검증을 하지 않는다.
 - action: find_and_tap
   target: Google Play 원탭 구매 버튼
   params:
-    expect_visible: 원탭 구매
     wait_seconds: 8
   description: 원탭 구매 버튼 탭 및 결제 완료 대기
   timeout: 40
   retry: 2
 
-# 5) 구매 완료 팝업 또는 확인 버튼을 닫고 다이아 상점으로 복귀한다.
+# 4-1) [조건부] Google Play 결제 완료 확인 화면이 나오면 닫는다. 안 나오면 건너뜀.
 - action: find_and_tap
-  target: 구매 완료 확인 버튼
+  target: Google Play 결제 완료 화면의 확인 버튼
   params:
-    expect_visible: 보유 다이아 수량
+    optional: true
+    wait_seconds: 2
+  description: (나올 경우) Google Play 결제 완료 확인 닫기
+  timeout: 12
+  retry: 1
+
+# 4-2) [조건부] 구매 인증 팝업이 나오면 '요구 안함' 선택 → '확인' 버튼까지 한 스텝(then_tap).
+#    안 나오면 스텝 전체를 건너뛴다. '요구 안함'을 선택해야 다음 결제부터 인증 없이
+#    진행되어 자동화 친화적 상태가 유지된다.
+- action: find_and_tap
+  target: 구매 인증 팝업의 '요구 안함' 옵션 버튼
+  params:
+    optional: true
+    then_tap: 구매 인증 팝업의 '확인' 버튼
     wait_seconds: 3
-  description: 구매 완료 확인 후 상점 화면 복귀
-  timeout: 20
-  retry: 2
+  description: (나올 경우) 구매 인증 팝업에서 '요구 안함' 선택 후 확인
+  timeout: 15
+  retry: 1
+
+# 5) 결제 후 획득 창이 나온다 — 팝업 개수는 계정의 최초 결제 여부에 따라 다르다.
+#    일반 구매는 재화 획득 화면 1개뿐이지만, 이 계정의 실제 첫 결제라면 상점에 뜨는
+#    '첫 결제 보너스! 초마신 검귀 100% 증정!' 배너 특전이 적용되어 재화 획득 → 초마신전용
+#    유물 획득 → 검귀(초마신) 획득까지 팝업 3개가 연속으로 뜬다(2026-07-22 실기기 확인,
+#    뉴비패키지_최초결제_검귀획득_검증.yaml 참고). 몇 개가 뜨든 상점 화면(다이아 수량
+#    노출)이 보일 때까지 반복해서 닫는 dismiss_popups를 쓴다.
+- action: dismiss_popups
+  params:
+    stop_when_visible: 보유 다이아 수량
+    max_count: 4
+    timeout_seconds: 40
+    quiet_seconds: 1.5
+    rules:
+    - target: 아이템 획득 팝업의 안내 문구 ('터치하세요' 또는 '계속하려면 화면을 눌러주세요')
+      action: tap
+  description: 획득 팝업(들) 정리 후 상점 복귀 (최초 결제 계정이면 팝업 최대 3개)
+  timeout: 45
+  retry: 1
 
 # 6) 구매 후 보유 다이아 수량이 변경되었는지 확인한다.
 - action: read_text
@@ -69,3 +100,4 @@ expected_results:
 - 다이아 4000개 12000 KRW 상품 선택 시 Google Play 원탭 구매 버튼이 노출되어야 한다.
 - 테스트 결제 완료 후 보유 다이아 수량이 구매 전과 달라져야 한다.
 - 테스트 결제 계정은 라이선스 테스터 또는 샌드박스 환경이어야 한다.
+- 계정의 실제 첫 결제라면 '첫 결제 보너스' 특전으로 획득 팝업이 3개까지 연속 노출될 수 있으며, 몇 개든 정상적으로 닫히고 상점으로 복귀해야 한다.
