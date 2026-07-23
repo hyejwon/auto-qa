@@ -70,6 +70,10 @@ export interface StepResult {
   failure_reason?: string
   pass_reason?: string
   vision_confidence?: number
+  evidence_image?: string
+  evidence_timestamp?: string
+  evidence_captured_at?: string
+  evidence_phase?: 'pre_tap' | 'post_verification'
 }
 
 export interface EvalOutput {
@@ -87,6 +91,15 @@ export interface EvalOutput {
   }
 }
 
+// read_text/read_screen/read_items의 compare_with 결과 — 재화/아이템 전후 비교 표용
+export interface EconomyRow {
+  name: string
+  before: string
+  after: string
+  delta?: string | null
+  passed: boolean
+}
+
 export interface TestResult {
   test_id?: string
   status: 'PASS' | 'FAIL'
@@ -98,6 +111,7 @@ export interface TestResult {
   error_message?: string
   screenshots?: string[]
   step_results: StepResult[]
+  economy_summary?: EconomyRow[]
   eval_output?: EvalOutput | null
   pipeline?: {
     templates: {
@@ -155,6 +169,8 @@ export const ACTION_CHOICES = [
   'find_and_tap',
   'verify',
   'read_text',
+  'read_items',
+  'read_screen',
   'scroll',
   'wait',
   'back',
@@ -171,4 +187,4 @@ export const ACTION_CHOICES = [
 ]
 
 // target(대상 UI 요소/텍스트)을 입력받는 액션
-export const TARGET_ACTIONS = new Set(['find_and_tap', 'verify', 'read_text', 'input_text', 'skip_tutorial'])
+export const TARGET_ACTIONS = new Set(['find_and_tap', 'verify', 'read_text', 'read_items', 'input_text', 'skip_tutorial'])

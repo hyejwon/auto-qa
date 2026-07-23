@@ -151,7 +151,7 @@ def build_test_result_csv(
             reason = step.get("pass_reason") if step.get("passed") else step.get("failure_reason")
             vision_confidence = (
                 _score_pct(step.get("vision_confidence"))
-                if action in {"find_and_tap", "verify", "read_text"}
+                if action in {"find_and_tap", "verify", "read_text", "read_items", "read_screen"}
                 else ""
             )
             matched_evidence = evidence_for_step(step) or [{}]

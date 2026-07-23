@@ -102,6 +102,12 @@ export const apptesterApi = {
         timeout: 180_000, // 폰 화면을 읽어오므로 수십 초 걸림
       })
       .then((r) => ({ apps: Array.isArray(r.data?.apps) ? r.data.apps : [] })),
+  installedVersion: (pkg: string, device?: string) =>
+    api
+      .get<{ version: string }>('/apptester/installed_version', {
+        params: { package: pkg, device: device ?? '' },
+      })
+      .then((r) => r.data.version || ''),
   builds: (game: string, device?: string, refresh = false) =>
     api
       .get<{ builds: AppTesterBuild[]; cached?: boolean }>('/apptester/builds', {

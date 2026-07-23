@@ -22,6 +22,8 @@ class ActionType(str, Enum):
     LAUNCH_APP = "launch_app"
     CLOSE_APP = "close_app"
     READ_TEXT = "read_text"
+    READ_ITEMS = "read_items"
+    READ_SCREEN = "read_screen"
     SKIP_TUTORIAL = "skip_tutorial"
     TUTORIAL_PASS = "tutorial_pass"
     ENTER_SR_DEBUGGER = "enter_sr_debugger"
@@ -63,6 +65,9 @@ class TestResult(BaseModel):
     screenshots: List[str] = []
     step_results: List[Dict] = []  # 스텝별 통과 여부
     context: Dict = {}  # read_text 등으로 저장한 값
+    economy_summary: List[Dict] = []  # read_text/read_screen/read_items의 compare_with 결과 —
+    # 리포트 화면에 재화/아이템 전후 비교 표로 보여주기 위한 구조화된 목록
+    # [{"name", "before", "after", "delta", "passed"}, ...]
     langfuse_trace_id: Optional[str] = None
     eval_output: Optional[Dict] = None
     

@@ -44,6 +44,8 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
   const [testerBuilds, setTesterBuilds] = useState<AppTesterBuild[]>([])
   const [selectedTesterBuild, setSelectedTesterBuild] = useState('')
   const [testerLoading, setTesterLoading] = useState(false)
+  // 기기에 실제 설치된 버전 (versionName) — 상세 헤더의 설치 배지 옆에 표시
+  const [installedVersion, setInstalledVersion] = useState('')
 
   const load = async () => {
     try {
@@ -203,6 +205,17 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
   const isDetail = !!selectedProject || !!selectedPackage
   const projectInstalled = !!currentProject
     && (currentProject.installed || (!!currentProject.package && installedSet.has(currentProject.package)))
+  const headerPackage = currentProject ? currentProject.package : selectedPackage
+  const headerInstalled = currentProject ? projectInstalled : selectedInstalled
+
+  // 상세 헤더에 표시할 기기 설치 버전 조회 — 설치된 패키지가 바뀔 때만
+  useEffect(() => {
+    setInstalledVersion('')
+    if (!connected || !headerInstalled || !headerPackage) return
+    apptesterApi.installedVersion(headerPackage, selectedDevice)
+      .then(setInstalledVersion)
+      .catch(() => setInstalledVersion(''))
+  }, [connected, headerInstalled, headerPackage, selectedDevice])
 
   return (
     <div className="max-w-3xl mx-auto w-full flex flex-col gap-5 overflow-y-auto scrollbar-thin">
@@ -291,11 +304,13 @@ export default function GameSelectStep({ device: selectedDevice, selectedPackage
               <p className="text-sm font-medium text-gray-100 flex items-center gap-1.5 truncate">
                 {currentProject ? currentProject.name : gameLabel(selectedPackage)}
                 <span className={`flex-none text-[10px] px-1.5 py-0.5 rounded-full ${
-                  (currentProject ? projectInstalled : selectedInstalled)
-                    ? 'bg-emerald-900/50 text-emerald-300' : 'bg-gray-800 text-gray-500'
+                  headerInstalled ? 'bg-emerald-900/50 text-emerald-300' : 'bg-gray-800 text-gray-500'
                 }`}>
-                  {(currentProject ? projectInstalled : selectedInstalled) ? '설치됨' : '미설치'}
+                  {headerInstalled ? '설치됨' : '미설치'}
                 </span>
+                {headerInstalled && installedVersion && (
+                  <span className="flex-none text-[10px] text-gray-500">{installedVersion}</span>
+                )}
               </p>
               <p className="text-xs text-gray-500 truncate">
                 {currentProject ? (currentProject.package || '패키지 미확인 — 설치 시 자동 감지') : selectedPackage}

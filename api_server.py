@@ -240,6 +240,13 @@ def _startup_device_manager():
 
 
 def _test_result_summary(result) -> dict:
+    step_results = []
+    for item in result.step_results or []:
+        step = dict(item)
+        evidence_image = step.get("evidence_image")
+        if evidence_image:
+            step["evidence_image"] = f"/debug/taps/{Path(evidence_image).name}"
+        step_results.append(step)
     return {
         "test_id": result.test_id,
         "status": result.status,
@@ -250,7 +257,8 @@ def _test_result_summary(result) -> dict:
         "steps_executed": result.steps_executed,
         "error_message": result.error_message,
         "screenshots": result.screenshots or [],
-        "step_results": result.step_results or [],
+        "step_results": step_results,
+        "economy_summary": result.economy_summary or [],
         "eval_output": result.eval_output,
     }
 
@@ -592,6 +600,21 @@ def _installed_packages(device_id: str) -> set[str]:
             for line in out.splitlines() if line.startswith("package:")}
 
 
+def _installed_version(device_id: str, package: str) -> str:
+    """기기에 실제 설치된 패키지의 버전 조회 — 빌드 목록과 같은 'versionName (versionCode)' 형식.
+    (없으면 빈 문자열)
+    """
+    if not package:
+        return ""
+    out = _adb_shell(device_id, ["shell", "dumpsys", "package", package], timeout=8)
+    name_m = re.search(r"versionName=(\S+)", out)
+    if not name_m:
+        return ""
+    name = name_m.group(1)
+    code_m = re.search(r"versionCode=(\d+)", out)
+    return f"{name} ({code_m.group(1)})" if code_m else name
+
+
 # 폰 화면 조회 결과 캐시 — 조회가 수십 초 걸리므로 처음 한 번만 읽고 재사용.
 # refresh=true 요청 시에만 다시 폰을 읽는다. (서버 재시작 시 초기화)
 _APPTESTER_CACHE_PATH = cfg.paths.project_root / "apptester_cache.json"
@@ -750,6 +773,18 @@ def apptester_apps(device: str = "", refresh: bool = False):
         g["package"] = pkg
         g["installed"] = bool(pkg) and pkg in installed
     return {"apps": games}
+
+
+@app.get("/api/apptester/installed_version")
+def apptester_installed_version(package: str = "", device: str = ""):
+    """기기에 실제 설치된 패키지의 versionName 조회 (프로젝트 상세 헤더용)"""
+    if not package:
+        return {"version": ""}
+    device_info = get_device(device)
+    if device_info["status"] != "connected":
+        raise HTTPException(status_code=503, detail="디바이스 미연결")
+    did = device_info["device_id"]
+    return {"version": _installed_version(did, package)}
 
 
 @app.get("/api/apptester/builds")
@@ -935,6 +970,25 @@ def _resolve_template_path(name: str) -> Path | None:
     return None
 
 
+def _inject_required_tab_step(steps: list, required_tab: str) -> list:
+    """템플릿이 required_tab(예: '전투')을 선언하면, 실행 전 그 탭으로 자동 이동하는
+    스텝을 맨 앞에 끼워 넣는다. 다른 탭(마물/유물/상점 등)에 있다가 이 템플릿을 실행해
+    시작 화면 불일치로 실패하는 걸 방지한다 (2026-07-23 계정_삭제 템플릿 실패로 확인된 문제).
+    이미 그 탭이면 다시 탭해도 무해하다 — tab_shortcut이 고정 좌표로 즉시 처리한다.
+    """
+    if not required_tab:
+        return steps
+    nav_step = {
+        "action": "find_and_tap",
+        "target": f"하단 네비게이션 '{required_tab}' 탭",
+        "description": f"[자동] {required_tab} 탭으로 이동 (템플릿 시작 화면 보장)",
+        "timeout": 15,
+        "retry": 2,
+        "params": {"tab_shortcut": required_tab, "expect_visible": required_tab, "wait_seconds": 2},
+    }
+    return [nav_step] + list(steps)
+
+
 @app.get("/api/templates")
 def list_templates():
     try:
@@ -956,6 +1010,9 @@ def get_template(name: str):
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
+        required_tab = data.get("required_tab") if isinstance(data, dict) else None
+        if required_tab and isinstance(data.get("steps"), list):
+            data["steps"] = _inject_required_tab_step(data["steps"], required_tab)
         return {"template": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1334,9 +1391,30 @@ def unity_tutorial_pass(req: TutorialPassRequest):
 # ─────────────────────────────────────────────
 # 플랜 생성 API
 # ─────────────────────────────────────────────
-def _template_library_text() -> str:
-    """templates/ 폴더의 검증된 템플릿 전체를 플래너 참조용 텍스트로 직렬화"""
+# 게임별 UI 참고 정보 — 플래너가 탭 순서/이름을 추측(환각)하지 않도록 명시.
+# 자연어 시나리오에 "전투 탭으로 이동" 같은 문구가 있어도 실제 위치를 몰라
+# 엉뚱한 탭(예: 유물)으로 스텝을 생성하는 문제가 있었음 (2026-07-22 확인).
+GAME_UI_NOTES: dict[str, str] = {
+    "com.percent.aos.cooptd": (
+        "cooptd 하단 네비게이션 탭 순서 (왼쪽부터 고정): "
+        "1.상점 2.마물 3.전투(=로비) 4.유물 5.뽑기. "
+        "탭 이름이나 순서를 임의로 추측하지 말고 반드시 이 순서를 그대로 따르세요. "
+        "탭 이동 스텝의 target은 '하단 네비게이션 N번째 탭 (아이콘 설명)' 형식을 쓰세요. "
+        "우측 상단 햄버거 메뉴(설정/계정연동/계정삭제/로그아웃 등으로 이어짐)는 '전투' 탭에서만 "
+        "보인다 — 계정/설정 관련 시나리오는 required_tab을 '전투'로 채우세요. "
+        "계정 삭제와 로그아웃 둘 다 설정 팝업에 바로 버튼이 있는 게 아니라, 먼저 초록색 "
+        "'연결됨' 버튼(설정 팝업 하단 우측, 계정 연동 상태 표시)을 눌러야 '계정삭제'/'로그아웃' "
+        "옵션이 나온다 (2026-07-23 확인) — '계정연동'이라는 문구 자체는 없다."
+    ),
+}
+
+
+def _template_library_text(package: str = "") -> str:
+    """templates/ 폴더의 검증된 템플릿 + 게임별 UI 참고 정보를 플래너 참조용 텍스트로 직렬화"""
     parts = []
+    note = GAME_UI_NOTES.get(package)
+    if note:
+        parts.append(f"### 게임 UI 참고 정보 (반드시 준수)\n{note}")
     for f in sorted(cfg.paths.templates_dir.glob("*.yaml")):
         try:
             body = f.read_text(encoding="utf-8").strip()
@@ -1354,17 +1432,24 @@ def generate_plan(req: GeneratePlanRequest):
         planner = PlannerNode(
             project=cfg.gemini.project,
             location=cfg.gemini.location,
-            model=cfg.gemini.model,
+            model=cfg.gemini.planner_model,
         )
         plan = planner.create_test_plan(
             req.scenario.strip(), req.package.strip(),
-            template_library=_template_library_text(),
+            template_library=_template_library_text(req.package.strip()),
         )
+        steps = [s.model_dump() for s in plan.steps]
+        if plan.required_tab:
+            # 계정/설정처럼 특정 탭(전투 등)에서 시작해야 하는 시나리오는 플래너가
+            # required_tab만 채우면 여기서 자동 이동 스텝을 맨 앞에 끼워 넣는다 —
+            # 저장된 템플릿(get_template)과 동일한 로직 재사용 (2026-07-23).
+            steps = _inject_required_tab_step(steps, plan.required_tab)
         yaml_data = {
             "title": plan.title,
             "description": plan.description,
             "package": plan.package,
-            "steps": [s.model_dump() for s in plan.steps],
+            "required_tab": plan.required_tab,
+            "steps": steps,
             "expected_results": plan.expected_results,
         }
         yaml_str = yaml.dump(yaml_data, allow_unicode=True, sort_keys=False)
@@ -1758,6 +1843,9 @@ def _start_pipeline_run(req: RunPipelineRequest, target_device: str):
                     with open(tpl_path, encoding="utf-8") as f:
                         tmpl = yaml.safe_load(f)
                     steps = tmpl.get("steps", [])
+                    required_tab = tmpl.get("required_tab")
+                    if required_tab:
+                        steps = _inject_required_tab_step(steps, required_tab)
                 for s in steps:
                     if s.get("action") in ("launch_app", "close_app", "uninstall_app") and s.get("target"):
                         s.setdefault("params", {})["package"] = s["target"]

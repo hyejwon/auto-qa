@@ -1,0 +1,236 @@
+title: 협타디 튜토리얼 스킵(계정 상태 자동 감지) 및 컨텐츠 해금 흐름 테스트 + 뉴비패키지 최초 결제 — 검귀(초마신) 획득 검증
+  (경량판)
+description: >
+  로그인 후 화면을 보고 계정 상태를 자동 판별한다 — 전투 탭이 바로 보이면 이미 튜토리얼을
+  끝낸 계정이므로 skip_tutorial API 호출/앱 재시작/건너뛰기 버튼 탭/컨텐츠 해금 팝업 정리까지
+  전부 건너뛴다. 건너뛰기 버튼이 보이면 튜토리얼 미완료 계정이므로 기존대로 스킵 API 호출 →
+  앱 재시작 → 건너뛰기 확인 → 컨텐츠 해금 팝업 정리를 그대로 진행한 뒤 뉴비패키지 최초 결제
+  검증으로 이어간다.
+package: com.percent.aos.cooptd
+steps:
+# 로그인이 끝나기 전에 skip_tutorial API를 호출하면 앱이 바로 재부팅되어 버린다
+# (2026-07-23 확인) — 로그인 직후 화면이 안정될 때까지 먼저 확인하고 넘어간다.
+# 로그인 후 화면은 계정 상태에 따라 둘 중 하나: 전투 탭(이미 튜토리얼 완료) 또는
+# 건너뛰기 버튼(튜토리얼 미완료, 진행 필요) — 어느 쪽이든 로그인이 끝났다는 뜻이다.
+- action: verify
+  target: 로그인 완료 후 화면 — 하단 네비게이션 전투 탭(이미 튜토리얼 완료된 계정) 또는 튜토리얼 건너뛰기 버튼(튜토리얼 진행해야 하는 계정) 중 하나가 안정적으로 보이는 상태
+  params: {}
+  description: 로그인 완료 확인 (skip_tutorial API를 로그인 도중 호출하면 앱이 재부팅되므로 먼저 안정화 대기)
+  timeout: 30
+  retry: 3
+- action: skip_tutorial
+  target: com.percent.aos.cooptd
+  description: (계정이 아직 튜토리얼을 안 끝냈을 때만) 튜토리얼 스킵 API 호출 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 20
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: close_app
+  target: com.percent.aos.cooptd
+  description: (튜토리얼 스킵을 진행했을 때만) 재부팅을 위한 앱 종료 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 10
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: launch_app
+  target: com.percent.aos.cooptd
+  description: (튜토리얼 스킵을 진행했을 때만) 앱 재실행 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 20
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: find_and_tap
+  target: 건너뛰기 버튼
+  description: (나올 경우) 튜토리얼 건너뛰기 버튼 클릭 — 이미 스킵된 계정이면 이 버튼/팝업 자체가 안 뜬다
+  timeout: 10
+  retry: 2
+  params:
+    optional: true
+    expect_visible: 정말로 건너뛰시겠습니까 팝업
+- action: find_and_tap
+  target: 예 버튼
+  description: (나올 경우) 건너뛰기 확인 팝업에서 예 클릭
+  timeout: 10
+  retry: 2
+  params:
+    optional: true
+    expect_hidden: 정말로 건너뛰시겠습니까 팝업
+    wait_seconds: 1
+- action: dismiss_popups
+  description: (튜토리얼 스킵을 진행했을 때만) VIP 상점의 좌측 하단 뒤로가기 버튼을 누르고 반복되는 컨텐츠 해금 안내 닫기 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 120
+  retry: 1
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+    stop_when_visible: 우측 상단 햄버거 메뉴 버튼
+    max_count: 4
+    timeout_seconds: 120
+    initial_wait_seconds: 1
+    quiet_seconds: 0
+    rules:
+    - target: VIP 상점 좌측 하단 뒤로가기 버튼
+      action: tap
+    - target: 새로운 컨텐츠가 해금되었어요 팝업
+      action: tap_center
+- action: read_screen
+  target: 화면 최상단 다이아·실버 수량 (동시 확인)
+  description: 구매 전 다이아·실버 수량 동시 저장
+  timeout: 15
+  retry: 2
+  params:
+    items:
+    - name: diamond
+      description: 다이아 수량
+      save_as: diamond_before
+    - name: silver
+      description: 실버 수량
+      save_as: silver_before
+- action: find_and_tap
+  target: 하단 네비게이션 5번째(맨 오른쪽) 탭 (노란색 티켓/지폐 모양 아이콘)
+  description: 뽑기 티켓 탭으로 이동 (보상 확인용 사전 스냅샷)
+  timeout: 15
+  retry: 2
+  params:
+    tab_shortcut: 뽑기
+    expect_visible: 뽑기
+    wait_seconds: 2
+- action: read_text
+  target: 뽑기 화면 상단 '핵심 보상' 미리보기 줄이 아닌, 그 아래 별도 표시줄의 노란색 뽑기 티켓 아이콘 옆 실제 보유 수량
+  description: 구매 전 뽑기 티켓 수량 저장
+  timeout: 10
+  retry: 2
+  params:
+    save_as: tickets_before
+- action: find_and_tap
+  target: 하단 상점 탭
+  description: 상점 진입 및 뉴비패키지 노출 확인
+  timeout: 20
+  retry: 2
+  params:
+    tab_shortcut: 상점
+    expect_visible: 뉴비패키지
+    wait_seconds: 2
+- action: find_and_tap
+  target: 뉴비패키지 5500 KRW 가격 버튼
+  description: 뉴비패키지 상품 선택 및 Google Play 결제 시트 확인
+  timeout: 30
+  retry: 2
+  params:
+    expect_visible: Google Play 원탭 구매 버튼
+    wait_seconds: 4
+- action: find_and_tap
+  target: Google Play 원탭 구매 버튼
+  description: 원탭 구매 버튼 탭 및 결제 완료 대기
+  timeout: 40
+  retry: 2
+  params:
+    wait_seconds: 8
+- action: find_and_tap
+  target: Google Play 결제 완료 화면의 확인 버튼
+  description: (나올 경우) Google Play 결제 완료 확인 닫기
+  timeout: 12
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 2
+- action: find_and_tap
+  target: 구매 인증 팝업의 '요구 안함' 옵션 버튼
+  description: (나올 경우) 구매 인증 팝업에서 '요구 안함' 선택 후 확인
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    then_tap: 구매 인증 팝업의 '확인' 버튼
+    wait_seconds: 3
+- action: find_and_tap
+  target: 화면 하단의 '계속하려면 화면을 눌러주세요' 또는 '터치하세요' 안내 문구 (다이아·실버·뽑기티켓이 함께 표시된 획득 화면, 보상
+    아이콘이 아닌 텍스트 부분)
+  description: ① 다이아·실버·뽑기티켓 획득 팝업 닫기 (1/2)
+  timeout: 15
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: find_and_tap
+  target: 화면 하단의 '계속하려면 화면을 눌러주세요' 또는 '터치하세요' 안내 문구 (초마신전용 유물 획득 화면, 보상 아이콘이 아닌 텍스트
+    부분)
+  description: ② 초마신전용 유물 획득 팝업 닫기 (2/2)
+  timeout: 15
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: verify
+  target: 초마신 획득! 문구와 NEW 리본이 붙은 붉은 악마 캐릭터 카드, 카드 아래 검귀 텍스트
+  description: 최초 결제 완료 후 검귀(초마신) 획득 팝업 노출 확인
+  timeout: 15
+  retry: 2
+- action: dismiss_popups
+  description: 남은 획득 팝업 정리 후 상점 화면 복귀
+  timeout: 55
+  retry: 1
+  params:
+    stop_when_visible: 화면 최상단 다이아 수량
+    max_count: 4
+    timeout_seconds: 50
+    quiet_seconds: 1.5
+    rules:
+    - target: 화면 하단의 '계속하려면 화면을 눌러주세요' 또는 '터치하세요' 안내 문구 (보상 아이콘이 아닌 텍스트 부분)
+      action: tap
+- action: read_screen
+  target: 화면 최상단 다이아·실버 수량 (동시 확인)
+  description: 다이아 증가 검증 + 실버 변화 기록 (동시 확인)
+  timeout: 15
+  retry: 2
+  params:
+    items:
+    - name: diamond
+      description: 다이아 수량
+      compare_with: diamond_before
+      expect_increase: true
+    - name: silver
+      description: 실버 수량
+      compare_with: silver_before
+- action: find_and_tap
+  target: 하단 네비게이션 2번째 탭 (주황색 돼지코/마물 얼굴 모양 아이콘, 상점 탭 바로 오른쪽)
+  description: 마물 탭으로 이동
+  timeout: 15
+  retry: 2
+  params:
+    tab_shortcut: 마물
+    expect_visible: 마물
+    wait_seconds: 2
+- action: read_screen
+  target: 마신석 수량 + 검귀 카드 보유 여부 (동시 확인)
+  description: 마신석 참고 기록 + 검귀(초마신) 보유 확인 (안 보이면 촘촘히 스크롤하며 재탐색)
+  timeout: 90
+  retry: 2
+  params:
+    items:
+    - name: soulstone
+      description: 마물 탭 화면 상단 재화 표시줄의 첫번째(왼쪽) 숫자 (마신석 추정, 뉴비패키지 보상 아님 — 참고 기록만, 검증 안 함)
+      optional: true
+    - name: geomgwi
+      description: 검귀 카드 — 카드 아이콘 아트와 테두리가 컬러/선명하면 보유, 회색/흑백(그레이스케일)이면 미보유 (카드 우측 상단에 뜨는 강화 재료 알림 배지는 보유 여부와 무관하니 무시)
+    scroll_search: true
+    # 마물 탭 카드 한 행 높이는 화면 높이의 약 17%(실측, 2026-07-22) — 기본 스크롤(35%,
+    # 약 2행씩 점프)은 카드가 화면 경계에 걸쳐 vision이 놓칠 위험이 있어, 한 행보다 조금
+    # 작게(15%) 촘촘히 스크롤하도록 줄이고 그만큼 max_scrolls를 늘렸다.
+    scroll_fraction: 0.15
+    max_scrolls: 20
+- action: find_and_tap
+  target: 하단 네비게이션 5번째(맨 오른쪽) 탭 (노란색 티켓/지폐 모양 아이콘)
+  description: 뽑기 티켓 탭 재이동
+  timeout: 15
+  retry: 2
+  params:
+    tab_shortcut: 뽑기
+    expect_visible: 뽑기
+    wait_seconds: 2
+- action: read_text
+  target: 뽑기 화면 상단 '핵심 보상' 미리보기 줄이 아닌, 그 아래 별도 표시줄의 노란색 뽑기 티켓 아이콘 옆 실제 보유 수량
+  description: 뽑기 티켓 증가 검증
+  timeout: 10
+  retry: 2
+  params:
+    compare_with: tickets_before
+    expect_increase: true
+preconditions: []

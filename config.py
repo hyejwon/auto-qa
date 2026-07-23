@@ -41,6 +41,9 @@ class PathConfig:
 class GeminiConfig:
     """Gemini API 설정"""
     model: str = "gemini-3.1-flash-lite"
+    # 자연어 시나리오 → 테스트 스텝 생성(PlannerNode) 전용 모델. vision(찾기/읽기) 모델과는
+    # 분리해서, 여기만 바꿔도 vision 정확도/속도/비용에 영향이 없다 (2026-07-23).
+    planner_model: str = "gemini-3.1-pro-preview"
     temperature: float = 0.1
     max_retries: int = 3
     gateway_url: str = "https://llm-gateway.111percent.net/llm/google"

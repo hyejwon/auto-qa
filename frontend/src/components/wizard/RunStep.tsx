@@ -13,6 +13,8 @@ interface Props {
   selectedPackage: string
   onBack: () => void
   onComplete: (result: TestResult, since: string, adaptive?: AdaptiveRun) => void
+  // 0보다 큰 값으로 바뀔 때마다 편집 중이던 스텝을 초기화 (처음으로 버튼 등 완전 재시작용)
+  resetSignal?: number
 }
 
 type Mode = 'select' | 'create'
@@ -107,7 +109,7 @@ function formatStepNumbers(numbers: number[]) {
     : `step ${numbers.join(', ')}`
 }
 
-export default function RunStep({ device, selectedPackage, onBack, onComplete }: Props) {
+export default function RunStep({ device, selectedPackage, onBack, onComplete, resetSignal }: Props) {
   const [mode, setMode] = useState<Mode>('select')
   const [templates, setTemplates] = useState<string[]>([])
   const [selected, setSelected] = useState('')
@@ -166,6 +168,16 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete }:
     setParamValues({})
     setParamDefinitions({})
   }
+
+  // 이 컴포넌트는 보고서 화면과 오갈 때도 언마운트되지 않고 유지되어 방금 돌린 기록이 남는다 —
+  // "처음으로"처럼 완전 재시작이 필요할 때만 부모가 resetSignal을 올려서 편집 내용을 비운다.
+  useEffect(() => {
+    if (!resetSignal) return
+    setMode('select')
+    setScenario('')
+    resetEditing()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetSignal])
 
   const switchMode = (m: Mode) => { if (m !== mode) { setMode(m); resetEditing() } }
 

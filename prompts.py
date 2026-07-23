@@ -28,6 +28,32 @@ box_2d는 [ymin, xmin, ymax, xmax] 형식으로, 0~1000 범위로 정규화해�
   "confidence": 0.0~1.0
 }}"""
 
+FIND_ELEMENTS_PROMPT = """이 게임 화면에서 아래 UI 요소를 각각 독립적으로 찾아주세요.
+
+{targets_json}
+
+box_2d는 [ymin, xmin, ymax, xmax] 형식으로, 0~1000 범위로 정규화해서 반환하세요.
+
+**규칙:**
+1. 모든 index를 반드시 한 번씩 반환
+2. 화면에 실제로 보이는 요소만 found=true
+3. 찾을 수 없으면 found=false, box_2d=null
+4. 버튼은 장식/로고가 아닌 실제 터치 가능한 영역 전체를 선택
+5. 서로 유사한 요소도 target 설명과 일치하는지 각각 판정
+
+**반환 형식 (JSON만):**
+{{
+  "elements": [
+    {{
+      "index": 0,
+      "found": true,
+      "box_2d": [ymin, xmin, ymax, xmax] or null,
+      "description": "찾은 요소 설명",
+      "confidence": 0.0~1.0
+    }}
+  ]
+}}"""
+
 ANALYZE_SCREEN_STATE_PROMPT = """이 게임 화면을 분석해줘.
 
 screen_type은 반드시 아래 값 중 하나만 사용해:
@@ -93,6 +119,43 @@ EXTRACT_ITEMS_PROMPT = """이 화면에서 '{items_description}'에 해당하는
 {{
   "items": [
     {{"text": "항목 대표 텍스트", "info": "부가 정보 (없으면 빈 문자열)"}}
+  ]
+}}"""
+
+READ_ITEM_STATES_PROMPT = """이 화면에서 '{items_description}'에 해당하는 항목들을 순서대로 모두 추출하고,
+각 항목의 보유 여부를 판단해줘.
+
+**규칙:**
+1. 화면에 실제로 보이는 항목만 (추측 금지)
+2. 각 항목의 이름(name)을 그대로 반환
+3. 보유 여부(owned)는 설명에 제시된 시각적 기준(색상/자물쇠 아이콘/흐림 처리/배지 등)으로 판단
+4. 판단 근거가 애매하면 info에 이유를 남기고 owned는 false로 처리
+5. 항목이 없으면 빈 배열
+
+**반환 형식 (JSON만):**
+{{
+  "items": [
+    {{"name": "항목 이름", "owned": true/false, "info": "판단 근거"}}
+  ]
+}}"""
+
+READ_SCREEN_BATCH_PROMPT = """이 게임 화면에서 아래 항목들을 한 번에 각각 확인해줘.
+
+**확인할 항목 목록:**
+{items_block}
+
+**항목별 규칙:**
+1. 각 항목은 "값을 읽어야 하는 항목"(숫자/텍스트)이거나 "보이는지만 확인하는 항목"(조건부 존재 확인)이다 —
+   항목 설명에 구체적인 판단 기준이 있으면 그대로 따른다.
+2. 값을 읽는 항목은 found=true로, value에 화면에 보이는 텍스트를 그대로 담는다.
+3. 존재만 확인하는 항목은 조건이 충족되면 found=true, value는 null로 둔다.
+4. 화면에서 확인할 수 없거나 조건이 충족되지 않으면 found=false, value는 null.
+5. 각 항목의 name은 입력받은 그대로 정확히 반환한다 (누락/오타 금지).
+
+**반환 형식 (JSON만):**
+{{
+  "items": [
+    {{"name": "항목 name", "found": true/false, "value": "값 또는 null"}}
   ]
 }}"""
 

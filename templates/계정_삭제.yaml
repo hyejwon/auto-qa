@@ -1,9 +1,14 @@
 title: 계정 삭제
 description: ''
 package: com.percent.aos.cooptd
+# required_tab: 이 템플릿 실행 전 자동으로 '전투' 탭으로 이동하는 스텝이 맨 앞에 끼워진다
+# (api_server.py의 _inject_required_tab_step, 2026-07-23 추가) — 마물/유물/상점 등 다른
+# 탭에 있다가 이 템플릿을 실행해 햄버거 메뉴를 못 찾고 실패하는 문제를 자동으로 방지한다.
+required_tab: 전투
 steps:
+# ⚠️ 햄버거 메뉴 버튼은 화면 좌측이 아니라 우측 상단에 있다 (기존 문구 오류 수정, 2026-07-23).
 - action: find_and_tap
-  target: 좌측 상단 햄버거 메뉴 버튼
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
   description: 햄버거 메뉴 버튼 클릭
   timeout: 10
   retry: 2
@@ -23,9 +28,12 @@ steps:
   timeout: 10
   retry: 2
 - action: find_and_tap
-  target: 계정연동
+  target: 초록색 '연결됨' 버튼 (계정 연동 상태 표시, 설정 팝업 하단 우측)
+  description: 계정 연동 상태(연결됨) 버튼 클릭 — '계정연동'이라는 문구는 없고 이 버튼이 그 역할 (2026-07-23 확인)
   timeout: 10
   retry: 2
+  params:
+    expect_visible: 계정삭제
 - action: find_and_tap
   target: 계정삭제
   timeout: 10

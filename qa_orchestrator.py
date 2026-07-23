@@ -28,6 +28,23 @@ load_dotenv()
 langfuse = get_client()
 logger = logging.getLogger(__name__)
 
+# 하단 네비게이션처럼 화면이 바뀌어도 항상 같은 자리에 있는 탭의 좌표 바로가기.
+# find_and_tap의 params.tab_shortcut에 이름을 넣으면 vision 호출 없이 바로 탭하고,
+# (expect_visible 등으로) 검증에 실패하면 자동으로 일반 vision 탐색으로 폴백한다.
+# 좌표는 실기기(1080x2316)에서 element_cache.db에 쌓인 값 기준 (2026-07-22 확인).
+FIXED_TAB_COORDS: dict[str, dict[str, dict[str, tuple[int, int]]]] = {
+    "com.percent.aos.cooptd": {
+        "1080x2316": {
+            "상점": (113, 2209),
+            "마물": (330, 2205),
+            "전투": (539, 2230),
+            "유물": (765, 2208),
+            "뽑기": (970, 2207),
+        },
+    },
+}
+
+
 class QAOrchestrator:
     """QA 자동화 오케스트레이터"""
 
@@ -72,7 +89,7 @@ class QAOrchestrator:
         self.planner = PlannerNode(
             project=config.gemini.project,
             location=config.gemini.location,
-            model=config.gemini.model
+            model=config.gemini.planner_model
         )
         self.cache = ElementCache(config.paths.cache_db)
         self.common_cache = CommonTapCache(config.paths.common_cache_db)
@@ -185,6 +202,7 @@ class QAOrchestrator:
                     self._last_failure_reason = ""
                     self._last_pass_detail = ""
                     self._last_tap_performed = False
+                    self._last_step_evidence = None
                     step_skipped = False
                     label = step.description or step.action
                     self._current_step_number = idx + 1
@@ -196,11 +214,41 @@ class QAOrchestrator:
                     if target_info:
                         logger.info(f"│  {target_info.strip()}")
 
+                    # skip_if_visible: 액션 종류와 무관하게(예: skip_tutorial, close_app,
+                    # launch_app처럼 vision과 무관한 액션도) 지정된 대상이 이미 화면에 보이면
+                    # 이 스텝 자체를 실행하지 않고 건너뛴다. "이미 끝난 상태"를 나타내는 화면이
+                    # 보일 때 재부팅/치트 호출 등 불필요한 동작을 반복하지 않기 위함.
+                    skip_if_visible = (step.params or {}).get("skip_if_visible")
+                    if skip_if_visible:
+                        check_path = self._capture_runtime_screenshot(prefix="skip_check")
+                        check_result = self.vision_lite.find_element(
+                            check_path, skip_if_visible, self.config.paths.debug_dir
+                        )
+                        if check_result.success and check_result.bbox:
+                            step_skipped = True
+                            logger.info(f"│  → skip_if_visible: '{skip_if_visible}' 이미 화면에 보임 — 스텝 건너뜀")
+                            logger.info("└─ ⏭️ 건너뜀 (skip_if_visible 조건 충족)")
+                            result.steps_executed += 1
+                            result.step_results.append({
+                                "step": idx + 1,
+                                "label": label,
+                                "action": getattr(step.action, "value", str(step.action)),
+                                "target": step.target or "",
+                                "passed": False,
+                                "skipped": True,
+                                "vision_confidence": check_result.confidence,
+                                "failure_reason": "",
+                                "pass_reason": "",
+                            })
+                            self._cleanup_step_files()
+                            continue
+
                     with langfuse.start_as_current_observation(
                         as_type="span",
                         name=f"step_{idx + 1}_{step.action}",
                         input={"step": idx + 1, "action": step.action, "target": step.target, "description": label},
                     ) as step_span:
+                        economy_summary_len_before = len(result.economy_summary)
                         success, confidence = self._execute_step(step, result)
                         tap_ok_verify_fail = (success == self._TAP_OK_VERIFY_FAIL)
                         success = bool(success) and not tap_ok_verify_fail
@@ -239,6 +287,9 @@ class QAOrchestrator:
                                             f"│  ↩ 재시도 {retry_count + 1}/{step.retry - 1} ..."
                                         )
                                         time.sleep(2)
+                                        # read_text/read_screen/read_items가 재시도마다 economy_summary에
+                                        # 행을 또 추가하므로, 이전 시도 행은 버리고 마지막 시도 결과만 남긴다
+                                        del result.economy_summary[economy_summary_len_before:]
                                         retry_success, _ = self._execute_step(step, result)
                                         if retry_success and retry_success != self._TAP_OK_VERIFY_FAIL:
                                             result.steps_passed += 1
@@ -267,7 +318,7 @@ class QAOrchestrator:
 
                         step_span.update(output={"passed": success, "vision_confidence": confidence})
 
-                    result.step_results.append({
+                    step_result = {
                         "step": idx + 1,
                         "label": label,
                         "action": getattr(step.action, "value", str(step.action)),
@@ -277,7 +328,10 @@ class QAOrchestrator:
                         "vision_confidence": confidence,
                         "failure_reason": "" if (success or step_skipped) else self._last_failure_reason,
                         "pass_reason": self._last_pass_detail if success else "",
-                    })
+                    }
+                    if self._last_step_evidence:
+                        step_result.update(self._last_step_evidence)
+                    result.step_results.append(step_result)
 
                     self._cleanup_step_files()
 
@@ -373,6 +427,9 @@ class QAOrchestrator:
                     launched = self.adb.launch_app(package)
                     if launched:
                         self._wait_for_screen_stable()
+                        # 화면 안정 판정이 너무 일찍 끝나 다음 스텝이 아직 다 안 뜬 화면을
+                        # 만나는 경우가 있어, 다음 스텝 진행 전 최소 2초는 강제로 대기한다.
+                        time.sleep(2)
                     else:
                         self._last_failure_reason = f"앱 실행 실패: {package}"
                     return launched, 1.0
@@ -388,11 +445,17 @@ class QAOrchestrator:
 
             elif step.action == ActionType.VERIFY:
                 fresh_path = self._capture_runtime_screenshot(prefix="verify")
-                success, confidence = self._verify_screen(fresh_path, step.target)
+                success, confidence = self._verify_screen(fresh_path, step.target, step)
                 return success, confidence
 
             elif step.action == ActionType.READ_TEXT:
                 return self._read_text_step(screenshot_path, step, result), 1.0
+
+            elif step.action == ActionType.READ_ITEMS:
+                return self._read_items_step(screenshot_path, step, result), 1.0
+
+            elif step.action == ActionType.READ_SCREEN:
+                return self._read_screen_step(screenshot_path, step, result), 1.0
 
             elif step.action in (ActionType.SKIP_TUTORIAL, ActionType.TUTORIAL_PASS):
                 params = step.params or {}
@@ -574,7 +637,9 @@ class QAOrchestrator:
         )
 
         while time.monotonic() <= deadline:
-            rule, coords = self._find_dismiss_popup_rule(screenshot_path, rules)
+            rule, coords, stop_visible = self._analyze_dismiss_frame(
+                screenshot_path, rules, stop_targets
+            )
             if rule:
                 stable_since = None
                 if dismissed >= max_count:
@@ -617,7 +682,7 @@ class QAOrchestrator:
                 )
                 continue
 
-            if self._dismiss_stop_visible(screenshot_path, stop_targets):
+            if stop_visible:
                 now = time.monotonic()
                 if stable_since is None:
                     stable_since = now
@@ -649,31 +714,27 @@ class QAOrchestrator:
         )
         return False
 
-    def _find_dismiss_popup_rule(
+    def _analyze_dismiss_frame(
         self,
         screenshot_path: Path,
         rules: list[dict],
-    ) -> tuple[Optional[dict], Optional[dict]]:
-        """현재 화면과 일치하는 첫 번째 팝업 규칙과 좌표를 반환한다."""
-        for rule in rules:
-            try:
-                result = self.vision_lite.find_element(
-                    screenshot_path, rule["target"], self.config.paths.debug_dir
-                )
-            except Exception as exc:
-                logger.warning("dismiss_popups rule detection failed for '%s': %s", rule["target"], exc)
-                continue
+        stop_targets: list[str],
+    ) -> tuple[Optional[dict], Optional[dict], bool]:
+        """팝업 규칙과 종료 조건을 동일 프레임에서 VLM 1회로 판정한다."""
+        targets = [rule["target"] for rule in rules] + stop_targets
+        results = self.vision_lite.find_elements(
+            screenshot_path, targets, self.config.paths.debug_dir
+        )
+        rule_results = results[:len(rules)]
+        stop_results = results[len(rules):]
+        for rule, result in zip(rules, rule_results):
             if result.success and result.bbox:
                 coords = result.bbox.to_pixels(self.adb.width, self.adb.height)
-                return rule, coords
-        return None, None
-
-    def _dismiss_stop_visible(self, screenshot_path: Path, targets: list[str]) -> bool:
-        for target in targets:
-            visible, _ = self._verify_screen(screenshot_path, target)
-            if not visible:
-                return False
-        return True
+                return rule, coords, False
+        stop_visible = bool(stop_results) and all(
+            result.success and result.bbox for result in stop_results
+        )
+        return None, None, stop_visible
 
     def _verify_expected_targets(
         self,
@@ -681,19 +742,24 @@ class QAOrchestrator:
         expect_visible: list[str],
         expect_hidden: list[str],
     ) -> bool:
+        targets = expect_visible + expect_hidden
+        results = self.vision_lite.find_elements(
+            screenshot_path, targets, self.config.paths.debug_dir
+        )
+        visible_results = results[:len(expect_visible)]
+        hidden_results = results[len(expect_visible):]
+
         verification_confidence = 1.0
-        for target in expect_visible:
-            success, confidence = self._verify_screen(screenshot_path, target)
-            verification_confidence = min(verification_confidence, confidence)
-            if not success:
-                self._last_expected_confidence = confidence
+        for target, result in zip(expect_visible, visible_results):
+            verification_confidence = min(verification_confidence, result.confidence)
+            if not result.success or not result.bbox:
+                self._last_expected_confidence = result.confidence
                 logger.warning("Expected visible target '%s' was not found.", target)
                 return False
 
-        for target in expect_hidden:
-            success, confidence = self._verify_screen(screenshot_path, target)
-            if success:
-                self._last_expected_confidence = confidence
+        for target, result in zip(expect_hidden, hidden_results):
+            if result.success and result.bbox:
+                self._last_expected_confidence = result.confidence
                 logger.warning("Expected hidden target '%s' is still visible.", target)
                 return False
 
@@ -864,6 +930,30 @@ class QAOrchestrator:
         if "@" in target and " " not in target.strip():
             return self._tap_account_email(step, target.strip())
 
+        # 탭 바로가기: params.tab_shortcut이 FIXED_TAB_COORDS에 있으면 vision 없이 즉시 탭.
+        # 검증(expect_visible 등)에 실패하면 아래 일반 vision 탐색으로 자동 폴백한다.
+        params_for_shortcut = step.params or {}
+        tab_shortcut = params_for_shortcut.get("tab_shortcut")
+        if tab_shortcut:
+            fixed = self._resolve_tab_shortcut(tab_shortcut)
+            if fixed:
+                self._wait_for_screen_stable()
+                self.adb.tap(fixed["x"], fixed["y"])
+                self._last_tap_performed = True
+                self._current_screen_type = ""
+                verified = self._verify_find_and_tap_outcome(step, tap_source="TabShortcut")
+                debug_screenshot = self._last_post_verify_screenshot or self._wait_for_screen_stable()
+                if verified:
+                    exp = params_for_shortcut.get("expect_visible")
+                    self._last_pass_detail = (
+                        f"'{target}' 탭 바로가기 ({fixed['x']},{fixed['y']})"
+                        + (f" → '{exp}' 노출 확인" if exp else "")
+                    )
+                    self._save_tap_debug(debug_screenshot, target, fixed, 1.0, True)
+                    return True
+                logger.warning("탭 바로가기 검증 실패 — vision으로 폴백: '%s'", tab_shortcut)
+                self._save_tap_debug(debug_screenshot, target, fixed, 1.0, False)
+
         # 3. 캐시 미스 → Vision 탐지 → 캐시 저장
         # logger.info("Cache MISS for '%s' @ %s → Vision fallback.", target, self._resolution)
         logger.info(f"vision target:{target}")
@@ -996,14 +1086,24 @@ class QAOrchestrator:
     SCROLL_SEARCH_MAX_DEFAULT = 5      # 스크롤 상한 (무한 루프 방지 1)
     SCROLL_END_THRESHOLD = 0.005       # 스크롤 전후 변화율이 이보다 작으면 리스트 끝 (무한 루프 방지 2)
 
-    def _scroll_one_page(self, direction: str) -> None:
-        """화면 중앙 세로선 기준 한 페이지 스크롤 (up=이전 내용으로, down=다음 내용으로)."""
+    def _scroll_one_page(self, direction: str, fraction: float = 0.35) -> None:
+        """화면 중앙 세로선 기준 스크롤 (up=이전 내용으로, down=다음 내용으로).
+
+        fraction: 화면 높이 대비 이동 비율 (기본 0.35 = 기존 동작 그대로).
+        마물 탭처럼 카드 그리드라 한 행 높이가 작은 화면은 fraction을 줄여서
+        (예: 카드 행 높이 / 화면 높이) 촘촘히 훑어야 카드가 화면 경계에 걸쳐
+        vision이 놓치는 일이 적다.
+        """
         w, h = self.adb.width, self.adb.height
         x = w // 2
+        fraction = max(0.05, min(0.9, fraction))
+        half_gap = fraction / 2
+        top = 0.5 - half_gap
+        bottom = 0.5 + half_gap
         if direction == "up":
-            self.adb.swipe(x, int(h * 0.35), x, int(h * 0.70), duration=400)
+            self.adb.swipe(x, int(h * top), x, int(h * bottom), duration=400)
         else:
-            self.adb.swipe(x, int(h * 0.70), x, int(h * 0.35), duration=400)
+            self.adb.swipe(x, int(h * bottom), x, int(h * top), duration=400)
 
     def _scroll_action(self, step) -> bool:
         """선언적 스크롤 액션.
@@ -1016,6 +1116,7 @@ class QAOrchestrator:
         params = step.params or {}
         direction = str(params.get("direction", "down")).lower()
         times = max(1, int(params.get("times", 1)))
+        scroll_fraction = self._to_float(params.get("scroll_fraction"), 0.35)
 
         if direction in ("top", "bottom"):
             one_dir = "up" if direction == "top" else "down"
@@ -1023,7 +1124,7 @@ class QAOrchestrator:
             for i in range(10):
                 if getattr(self, '_stop_event', None) and self._stop_event.is_set():
                     break
-                self._scroll_one_page(one_dir)
+                self._scroll_one_page(one_dir, fraction=scroll_fraction)
                 curr = self._wait_for_screen_stable()
                 ratio = self._image_change_ratio(prev, curr)
                 if ratio is not None and ratio < self.SCROLL_END_THRESHOLD:
@@ -1037,7 +1138,7 @@ class QAOrchestrator:
             logger.error(self._last_failure_reason)
             return False
         for _ in range(times):
-            self._scroll_one_page(direction)
+            self._scroll_one_page(direction, fraction=scroll_fraction)
             time.sleep(0.5)
         logger.info("scroll %s x%d 완료", direction, times)
         return True
@@ -1051,13 +1152,16 @@ class QAOrchestrator:
         params = step.params or {}
         max_scrolls = int(params.get("max_scrolls", self.SCROLL_SEARCH_MAX_DEFAULT))
         direction = "up" if str(params.get("scroll_direction", "down")).lower() == "up" else "down"
+        # 카드 그리드처럼 한 행이 작은 화면은 scroll_fraction을 줄여서 촘촘히 스크롤해야
+        # 카드가 화면 경계에 걸쳐 vision이 놓치는 일을 줄일 수 있다 (기본은 기존 동작 그대로).
+        scroll_fraction = self._to_float(params.get("scroll_fraction"), 0.35)
 
         for i in range(max_scrolls):
             if getattr(self, '_stop_event', None) and self._stop_event.is_set():
                 logger.warning("scroll_search: 사용자 중단")
                 break
             before_path = latest_path
-            self._scroll_one_page(direction)
+            self._scroll_one_page(direction, fraction=scroll_fraction)
             latest_path = self._wait_for_screen_stable()
 
             ratio = self._image_change_ratio(before_path, latest_path)
@@ -1097,6 +1201,17 @@ class QAOrchestrator:
                     logger.info("Auto-registered common tap: '%s' @ %s → (%d, %d)",
                                 common_name, self._resolution, x, y)
                 return
+
+    def _resolve_tab_shortcut(self, tab_name: str) -> Optional[dict]:
+        """FIXED_TAB_COORDS에서 현재 패키지+해상도에 등록된 탭 고정 좌표 조회.
+        _save_tap_debug가 기대하는 bbox 형태(x1/y1/x2/y2)까지 채워서 반환한다
+        (vision 경로의 BoundingBox.to_pixels()와 동일한 키 구성 — 없으면 디버그 저장이 깨짐)."""
+        coords = FIXED_TAB_COORDS.get(self._current_package, {}).get(self._resolution, {}).get(tab_name)
+        if not coords:
+            return None
+        x, y = coords
+        r = 24  # 디버그 이미지에 그릴 가상 바운딩 박스 반경
+        return {"x": x, "y": y, "x1": x - r, "y1": y - r, "x2": x + r, "y2": y + r}
 
     def _cache_element(self, screenshot_path: Path, target: str, x: int, y: int, source: str) -> None:
         if not self._current_package:
@@ -1202,6 +1317,13 @@ class QAOrchestrator:
             }
             with open(debug_dir / "find_and_tap_debug.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+            self._last_step_evidence = {
+                "evidence_image": str(img_path),
+                "evidence_timestamp": ts,
+                "evidence_captured_at": evidence_captured_at,
+                "evidence_phase": evidence_phase,
+            }
 
             logger.info("┌─ find_and_tap 디버그 저장: %s", img_path.name)
             tap_info = f"tap=({coords['x']},{coords['y']})" if coords else "tap=없음(미발견)"
@@ -1337,7 +1459,7 @@ class QAOrchestrator:
         except Exception as exc:
             logger.warning("Live screenshot publish failed: %s", exc)
 
-    def _verify_screen(self, screenshot_path: Path, target: str) -> tuple[bool, float]:
+    def _verify_screen(self, screenshot_path: Path, target: str, step=None) -> tuple[bool, float]:
         if not target:
             logger.error("verify action requires target")
             self._last_failure_reason = "verify target이 지정되지 않음"
@@ -1346,11 +1468,102 @@ class QAOrchestrator:
             screenshot_path, target, self.config.paths.debug_dir
         )
         if not vision_result.success or not vision_result.bbox:
+            # scroll_search: 첫 화면에 없으면 스크롤하며 재탐색 (find_and_tap과 동일한 로직 재사용).
+            # verify는 탭하지 않으므로 발견 좌표 자체는 버리고 "찾았다"는 결과만 쓴다.
+            if step is not None and (step.params or {}).get("scroll_search"):
+                latest_path, coords = self._scroll_search(step, target, screenshot_path)
+                if coords:
+                    self._last_pass_detail = f"'{target}' 화면에서 확인됨 (스크롤 탐색)"
+                    self._save_read_debug(latest_path, target, self._last_pass_detail, True, "verify")
+                    return True, 1.0
+                self._save_read_debug(latest_path, target, self._last_failure_reason, False, "verify")
+                return False, 0.0
             self._last_failure_reason = (
                 f"화면에서 '{target}'을 찾지 못함 (신뢰도: {vision_result.confidence:.2f})"
             )
+            self._save_read_debug(screenshot_path, target, self._last_failure_reason, False, "verify")
             return False, vision_result.confidence
+        self._last_pass_detail = f"'{target}' 화면에서 확인됨"
+        self._save_read_debug(screenshot_path, target, self._last_pass_detail, True, "verify")
         return True, vision_result.confidence
+
+    def _evaluate_value_assertion(self, label: str, value: str, params: dict,
+                                  result: TestResult) -> tuple[bool, str]:
+        """read_text/read_screen 공용: save_as/compare_with/expect_* 판정 로직.
+        (값 읽기는 호출부에서 이미 완료된 상태) 반환: (ok, detail/failure 메시지)
+
+        compare_with이 있으면 result.economy_summary에 {name, before, after, delta, passed}
+        행을 추가한다 — 리포트 화면에서 재화/아이템 전후 비교를 표로 한눈에 보여주기 위함
+        (스텝 텍스트를 일일이 안 읽어도 되도록, 2026-07-23 추가).
+        """
+        save_as = params.get("save_as")
+        compare_with = params.get("compare_with")
+        expect_changed = params.get("expect_changed")
+        expect_increase = params.get("expect_increase")
+        expect_decrease = params.get("expect_decrease")
+        expect_delta = params.get("expect_delta")
+        delta_tolerance = params.get("delta_tolerance", 0)
+
+        if not hasattr(result, "context"):
+            result.context = {}
+
+        detail = f"'{label}' = '{value}'"
+        if save_as:
+            result.context[save_as] = value
+            detail += f" — '{save_as}'로 저장"
+
+        if not compare_with:
+            return True, detail
+
+        prev = result.context.get(compare_with)
+        if prev is None:
+            return False, f"compare_with '{compare_with}' 값이 없습니다."
+
+        def record(ok: bool, detail: str, delta_text: Optional[str]) -> tuple[bool, str]:
+            if not hasattr(result, "economy_summary"):
+                result.economy_summary = []
+            result.economy_summary.append({
+                "name": label,
+                "before": prev,
+                "after": value,
+                "delta": delta_text,
+                "passed": ok,
+            })
+            return ok, detail
+
+        # 정확한 증감량 검증 (재화 지급/차감 수치까지 정밀 확인용)
+        if expect_delta is not None:
+            prev_n, curr_n = self._to_number(prev), self._to_number(value)
+            if prev_n is None or curr_n is None:
+                return record(False, f"숫자 비교 불가 ({prev!r} → {value!r})", None)
+            actual_delta = curr_n - prev_n
+            if abs(actual_delta - float(expect_delta)) > delta_tolerance:
+                return record(False, (f"{expect_delta:+g} 변화 기대했으나 "
+                              f"{prev_n:g} → {curr_n:g} ({actual_delta:+g})"), f"{actual_delta:+g}")
+            return record(True, f"'{label}' {prev_n:g} → {curr_n:g} ({actual_delta:+g}) — 기대값과 일치",
+                          f"{actual_delta:+g}")
+
+        # 숫자 증감 검증 (재화 지급/차감 확인용) — 단순 변경 여부보다 강한 검증
+        if expect_increase or expect_decrease:
+            prev_n, curr_n = self._to_number(prev), self._to_number(value)
+            if prev_n is None or curr_n is None:
+                return record(False, f"숫자 비교 불가 ({prev!r} → {value!r})", None)
+            if expect_increase and curr_n <= prev_n:
+                return record(False, f"증가 기대했으나 {prev_n:g} → {curr_n:g}", f"{curr_n - prev_n:+g}")
+            if expect_decrease and curr_n >= prev_n:
+                return record(False, f"감소 기대했으나 {prev_n:g} → {curr_n:g}", f"{curr_n - prev_n:+g}")
+            delta = curr_n - prev_n
+            return record(True, (f"'{label}' {prev_n:g} → {curr_n:g} ({delta:+g}) — "
+                          + ("증가 확인" if expect_increase else "감소 확인")), f"{delta:+g}")
+
+        changed = prev != value
+        prev_n, curr_n = self._to_number(prev), self._to_number(value)
+        delta_text = f"{curr_n - prev_n:+g}" if (prev_n is not None and curr_n is not None) else None
+        if expect_changed is True and not changed:
+            return record(False, f"변경 기대했으나 동일함 ({value})", delta_text)
+        if expect_changed is False and changed:
+            return record(False, f"유지 기대했으나 변경됨 ({prev} → {value})", delta_text)
+        return record(True, f"'{label}' {prev} → {value} ({'변경됨' if changed else '유지됨'})", delta_text)
 
     def _read_text_step(self, screenshot_path: Path, step, result: TestResult) -> bool:
         target = step.target
@@ -1359,12 +1572,6 @@ class QAOrchestrator:
             return False
 
         params = step.params or {}
-        save_as = params.get("save_as")
-        compare_with = params.get("compare_with")
-        expect_changed = params.get("expect_changed")
-        expect_increase = params.get("expect_increase")
-        expect_decrease = params.get("expect_decrease")
-
         value = self.vision.read_text(screenshot_path, target)
         if value is None:
             self._last_failure_reason = f"read_text: '{target}' 텍스트를 찾지 못함"
@@ -1373,47 +1580,9 @@ class QAOrchestrator:
             return False
 
         logger.info("read_text: '%s' = %s", target, value)
-
-        if not hasattr(result, "context"):
-            result.context = {}
-
-        detail = f"'{target}' = '{value}'"
-        if save_as:
-            result.context[save_as] = value
-            detail += f" — '{save_as}'로 저장"
-
-        ok = True
-        if compare_with:
-            prev = result.context.get(compare_with)
-            if prev is None:
-                self._last_failure_reason = f"read_text: compare_with '{compare_with}' 값이 없습니다."
-                ok = False
-            # 숫자 증감 검증 (재화 지급/차감 확인용) — 단순 변경 여부보다 강한 검증
-            elif expect_increase or expect_decrease:
-                prev_n, curr_n = self._to_number(prev), self._to_number(value)
-                if prev_n is None or curr_n is None:
-                    self._last_failure_reason = f"read_text: 숫자 비교 불가 ({prev!r} → {value!r})"
-                    ok = False
-                elif expect_increase and curr_n <= prev_n:
-                    self._last_failure_reason = f"read_text: 증가 기대했으나 {prev_n:g} → {curr_n:g}"
-                    ok = False
-                elif expect_decrease and curr_n >= prev_n:
-                    self._last_failure_reason = f"read_text: 감소 기대했으나 {prev_n:g} → {curr_n:g}"
-                    ok = False
-                else:
-                    delta = curr_n - prev_n
-                    detail = (f"'{target}' {prev_n:g} → {curr_n:g} ({delta:+g}) — "
-                              + ("증가 확인" if expect_increase else "감소 확인"))
-            else:
-                changed = prev != value
-                if expect_changed is True and not changed:
-                    self._last_failure_reason = f"read_text: 변경 기대했으나 동일함 ({value})"
-                    ok = False
-                elif expect_changed is False and changed:
-                    self._last_failure_reason = f"read_text: 유지 기대했으나 변경됨 ({prev} → {value})"
-                    ok = False
-                else:
-                    detail = f"'{target}' {prev} → {value} ({'변경됨' if changed else '유지됨'})"
+        ok, detail = self._evaluate_value_assertion(target, value, params, result)
+        if not ok:
+            self._last_failure_reason = f"read_text: {detail}"
 
         if ok:
             self._last_pass_detail = detail
@@ -1425,9 +1594,193 @@ class QAOrchestrator:
             screenshot_path, target, detail if ok else self._last_failure_reason, ok)
         return ok
 
+    def _read_screen_step(self, screenshot_path: Path, step, result: TestResult) -> bool:
+        """한 화면에 같이 보이는 여러 항목(재화 값 여러 개 + 카드 존재 확인 등)을
+        vision 호출 1번으로 모아서 확인한다 — 매번 탭 이동/개별 호출 없이 한 번에 검증.
+
+        params.items: [{"name", "description", save_as?, compare_with?, expect_*?, optional?}, ...]
+        - description에 값을 읽을 대상("다이아 수량")인지 존재만 확인할 조건("검귀 카드 —
+          다이아/자물쇠 아이콘 없음")인지 구체적으로 적어야 vision이 올바르게 판단한다.
+        - 값이 있는 항목은 read_text와 동일한 save_as/compare_with/expect_* 규칙을 그대로 쓴다.
+        - 값 없이 존재만 확인하는 항목은 found 여부만 판정한다 (compare_with 미지원).
+        """
+        params = step.params or {}
+        items_param = params.get("items")
+        if not items_param or not isinstance(items_param, list):
+            self._last_failure_reason = "read_screen: params.items(list)가 필요합니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        vision_items = [
+            {"name": it.get("name"), "description": it.get("description", "")}
+            for it in items_param if it.get("name")
+        ]
+        if not vision_items:
+            self._last_failure_reason = "read_screen: items에 유효한 name이 없습니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        results = self.vision.read_screen_batch(screenshot_path, vision_items)
+        results_by_name = {r.get("name"): r for r in results if isinstance(r, dict)}
+
+        # scroll_search: 항목 중 일부(예: 스크롤해야 보이는 카드)가 안 잡히면 스크롤하며
+        # 배치 호출을 다시 시도한다. 상단 고정 표시줄(재화 등)은 스크롤해도 그대로 보이는
+        # 화면이 많아서, 스크롤이 필요한 항목과 즉시 보이는 항목을 같은 화면에서 한 번에
+        # 묶어 확인할 수 있다 (예: 마신석 수량 + 스크롤 필요한 검귀 카드).
+        if params.get("scroll_search"):
+            required_names = {it.get("name") for it in items_param if not it.get("optional")}
+            max_scrolls = int(params.get("max_scrolls", self.SCROLL_SEARCH_MAX_DEFAULT))
+            scroll_fraction = self._to_float(params.get("scroll_fraction"), 0.35)
+            for i in range(max_scrolls):
+                missing = {n for n in required_names if not results_by_name.get(n, {}).get("found")}
+                if not missing:
+                    break
+                if getattr(self, '_stop_event', None) and self._stop_event.is_set():
+                    logger.warning("read_screen scroll_search: 사용자 중단")
+                    break
+                before_path = screenshot_path
+                self._scroll_one_page("down", fraction=scroll_fraction)
+                screenshot_path = self._wait_for_screen_stable()
+                ratio = self._image_change_ratio(before_path, screenshot_path)
+                if ratio is not None and ratio < self.SCROLL_END_THRESHOLD:
+                    logger.info("read_screen scroll_search: 화면 변화 없음(%.4f) — 리스트 끝, 중단 (%d회 스크롤)",
+                                ratio, i + 1)
+                    break
+                new_results = self.vision.read_screen_batch(screenshot_path, vision_items)
+                for r in new_results:
+                    if isinstance(r, dict) and r.get("name"):
+                        results_by_name[r["name"]] = r
+            logger.info("read_screen scroll_search: 최종 미발견 항목=%s",
+                        {n for n in required_names if not results_by_name.get(n, {}).get("found")} or "없음")
+
+        target_label = step.target or ", ".join(str(it.get("name")) for it in items_param)
+
+        if not hasattr(result, "context"):
+            result.context = {}
+
+        ok = True
+        notes: list[str] = []
+        for it in items_param:
+            name = it.get("name")
+            r = results_by_name.get(name)
+            if r is None or not r.get("found"):
+                if it.get("optional"):
+                    notes.append(f"{name}: 미확인(선택 항목, 건너뜀)")
+                    continue
+                notes.append(f"{name}: 화면에서 확인하지 못함")
+                ok = False
+                continue
+
+            value = r.get("value")
+            if value is None:
+                # 존재 확인 전용 항목 (예: 검귀 카드) — found=true면 조건 충족
+                notes.append(f"{name}: 확인됨")
+                if it.get("save_as"):
+                    result.context[it["save_as"]] = True
+                continue
+
+            item_ok, item_detail = self._evaluate_value_assertion(name, value, it, result)
+            notes.append(f"{name}: {item_detail}" if not item_ok else item_detail)
+            if not item_ok:
+                ok = False
+
+        detail_text = " / ".join(notes) if notes else "결과 없음"
+        if ok:
+            self._last_pass_detail = detail_text
+            logger.info("read_screen 통과: %s", detail_text)
+        else:
+            self._last_failure_reason = detail_text
+            logger.error("read_screen 실패: %s", detail_text)
+
+        self._save_read_debug(screenshot_path, target_label, detail_text, ok, "read_screen")
+        return ok
+
+    def _read_items_step(self, screenshot_path: Path, step, result: TestResult) -> bool:
+        """화면의 아이템 목록(보유/미보유 상태)을 스캔해 저장하고, 이전 스냅샷과 비교 검증.
+        여러 재화/아이템을 동시에 지급하는 상품(뉴비패키지 등)을 정밀 검증할 때
+        구매 전/후 각각 read_items로 마물·유물 탭 등을 스냅샷 떠서 compare_with로 비교한다.
+        """
+        target = step.target
+        if not target:
+            logger.error("read_items action requires target")
+            return False
+
+        params = step.params or {}
+        save_as = params.get("save_as")
+        compare_with = params.get("compare_with")
+        expect_new_owned_count = params.get("expect_new_owned_count")
+        expect_new_owned = params.get("expect_new_owned")
+        expect_no_change = params.get("expect_no_change")
+
+        items = self.vision.read_item_states(screenshot_path, target)
+        if not items:
+            self._last_failure_reason = f"read_items: '{target}'에서 항목을 찾지 못함"
+            logger.error(self._last_failure_reason)
+            self._save_read_debug(screenshot_path, target, self._last_failure_reason, False, "read_items")
+            return False
+
+        owned_names = [i["name"] for i in items if i.get("owned")]
+        logger.info("read_items: '%s' = %d개 (보유 %d개)", target, len(items), len(owned_names))
+
+        if not hasattr(result, "context"):
+            result.context = {}
+
+        detail = f"'{target}' 항목 {len(items)}개 (보유 {len(owned_names)}개)"
+        if save_as:
+            result.context[save_as] = items
+            detail += f" — '{save_as}'로 저장"
+
+        ok = True
+        if compare_with:
+            prev = result.context.get(compare_with)
+            if prev is None:
+                self._last_failure_reason = f"read_items: compare_with '{compare_with}' 값이 없습니다."
+                ok = False
+            else:
+                prev_owned = {i.get("name"): bool(i.get("owned")) for i in prev}
+                newly_owned = [i["name"] for i in items
+                               if i.get("owned") and not prev_owned.get(i["name"], False)]
+                newly_lost = [i["name"] for i in items
+                              if not i.get("owned") and prev_owned.get(i["name"], False)]
+                detail = (f"'{target}' 신규 보유 {len(newly_owned)}개 {newly_owned} / "
+                          f"신규 미보유 {len(newly_lost)}개 {newly_lost}")
+
+                if expect_new_owned_count is not None and len(newly_owned) != expect_new_owned_count:
+                    self._last_failure_reason = (
+                        f"read_items: 신규 보유 {expect_new_owned_count}개 기대했으나 "
+                        f"{len(newly_owned)}개 ({newly_owned})")
+                    ok = False
+                if ok and expect_new_owned:
+                    missing = [n for n in expect_new_owned if n not in newly_owned]
+                    if missing:
+                        self._last_failure_reason = f"read_items: 신규 보유 기대 항목 누락 — {missing}"
+                        ok = False
+                if ok and expect_no_change and (newly_owned or newly_lost):
+                    self._last_failure_reason = f"read_items: 변경 없음을 기대했으나 변경됨 — {detail}"
+                    ok = False
+
+                if not hasattr(result, "economy_summary"):
+                    result.economy_summary = []
+                result.economy_summary.append({
+                    "name": target,
+                    "before": f"보유 {sum(prev_owned.values())}개",
+                    "after": f"보유 {len(owned_names)}개",
+                    "delta": f"신규 {len(newly_owned)}개" + (f" {newly_owned}" if newly_owned else ""),
+                    "passed": ok,
+                })
+
+        if ok:
+            self._last_pass_detail = detail
+            logger.info("read_items 통과: %s", detail)
+        else:
+            logger.error(self._last_failure_reason)
+        self._save_read_debug(
+            screenshot_path, target, detail if ok else self._last_failure_reason, ok, "read_items")
+        return ok
+
     def _save_read_debug(self, screenshot_path: Path, target: str,
-                         detail: str, passed: bool) -> None:
-        """read_text 증거 이미지 저장 — 읽은 값과 판정 근거를 이미지에 새겨
+                         detail: str, passed: bool, action_label: str = "read_text") -> None:
+        """read_text/read_items 증거 이미지 저장 — 읽은 값과 판정 근거를 이미지에 새겨
         taps 갤러리(find_and_tap_debug.jsonl)에 함께 노출한다."""
         try:
             debug_dir = self.config.paths.debug_dir
@@ -1443,7 +1796,7 @@ class QAOrchestrator:
             img = Image.open(screenshot_path).convert("RGB")
             draw = ImageDraw.Draw(img)
             color = (0, 200, 0) if passed else (255, 40, 40)
-            draw.text((5, 5), f"read_text {status}: {detail}", fill=color)
+            draw.text((5, 5), f"{action_label} {status}: {detail}", fill=color)
             img.save(img_path)
 
             record = {
@@ -1463,9 +1816,9 @@ class QAOrchestrator:
             }
             with open(debug_dir / "find_and_tap_debug.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            logger.info("┌─ read_text 증거 저장: %s", img_path.name)
+            logger.info("┌─ %s 증거 저장: %s", action_label, img_path.name)
         except Exception as e:
-            logger.warning("read_text 증거 저장 실패: %s", e)
+            logger.warning("%s 증거 저장 실패: %s", action_label, e)
 
     @staticmethod
     def _to_number(text) -> Optional[float]:

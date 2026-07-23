@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Plus, Trash2, GripVertical } from 'lucide-react'
 import type { Step } from '../../types'
 import { ACTION_CHOICES, TARGET_ACTIONS } from '../../types'
@@ -82,7 +82,44 @@ function ParamsJsonEditor({
 export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPackage, apks = [], disabled, onChange }: Props) {
   const [draggedId, setDraggedId] = useState('')
   const [dropHint, setDropHint] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const dragPointerY = useRef<number | null>(null)
   const update = (nextSteps: Step[], nextIds: string[] = ids) => onChange(nextSteps, nextIds)
+
+  // 드래그 중 스크롤 영역 가장자리에 머무르면 자동으로 스크롤 — 그래야 화면 밖 스텝으로도 옮길 수 있음
+  useEffect(() => {
+    if (!draggedId) return
+    let node: HTMLElement | null = containerRef.current
+    let scrollEl: HTMLElement | null = null
+    while (node) {
+      const style = getComputedStyle(node)
+      if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) {
+        scrollEl = node
+        break
+      }
+      node = node.parentElement
+    }
+    if (!scrollEl) return
+    const EDGE = 56
+    const MAX_SPEED = 16
+    let raf = 0
+    const tick = () => {
+      const y = dragPointerY.current
+      if (y != null && scrollEl) {
+        const rect = scrollEl.getBoundingClientRect()
+        const topGap = y - rect.top
+        const bottomGap = rect.bottom - y
+        if (topGap < EDGE) {
+          scrollEl.scrollTop -= MAX_SPEED * (1 - Math.max(topGap, 0) / EDGE)
+        } else if (bottomGap < EDGE) {
+          scrollEl.scrollTop += MAX_SPEED * (1 - Math.max(bottomGap, 0) / EDGE)
+        }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [draggedId])
 
   const setStep = (i: number, s: Step) =>
     update(steps.map((p, idx) => (idx === i ? s : p)))
@@ -128,8 +165,33 @@ export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPa
     setStep(i, { ...s, action, target, params })
   }
 
+  // 목록 맨 위/맨 아래는 인접한 반대쪽 존이 없어(예: 맨 위 앞엔 넣을 자리가 없음)
+  // 커서가 살짝만 밀려도 같은 자리에 재삽입되는 것처럼 보임 — 전용 드롭 존으로 넉넉하게 받아준다.
+  const renderEdgeZone = (targetId: string, edge: 'before' | 'after') => {
+    const active = dropHint?.id === targetId && dropHint.edge === edge
+    return (
+      <div
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes('application/x-autoqa-step')) return
+          e.preventDefault()
+          dragPointerY.current = e.clientY
+          setDropHint({ id: targetId, edge })
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          const sourceId = draggedId || e.dataTransfer.getData('application/x-autoqa-step')
+          moveStep(sourceId, targetId, edge)
+          setDraggedId('')
+          setDropHint(null)
+        }}
+        className={`h-3 -my-1 rounded transition-colors ${active ? 'bg-cyan-900/50 ring-1 ring-cyan-500' : ''}`}
+      />
+    )
+  }
+
   return (
-    <div className="flex flex-col gap-2">
+    <div ref={containerRef} className="flex flex-col gap-2">
+      {draggedId && ids.length > 0 && ids[0] !== draggedId && renderEdgeZone(ids[0], 'before')}
       {steps.map((s, i) => {
         const isApk = APK_ACTIONS.has(s.action)
         const hasTarget = TARGET_ACTIONS.has(s.action) || PKG_ACTIONS.has(s.action)
@@ -139,6 +201,7 @@ export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPa
             onDragOver={(e) => {
               if (!e.dataTransfer.types.includes('application/x-autoqa-step')) return
               e.preventDefault()
+              dragPointerY.current = e.clientY
               if (draggedId === ids[i]) return
               const rect = e.currentTarget.getBoundingClientRect()
               setDropHint({ id: ids[i], edge: e.clientY < rect.top + rect.height / 2 ? 'before' : 'after' })
@@ -163,7 +226,7 @@ export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPa
                   e.dataTransfer.setData('application/x-autoqa-step', ids[i])
                   setDraggedId(ids[i])
                 }}
-                onDragEnd={() => { setDraggedId(''); setDropHint(null) }}
+                onDragEnd={() => { setDraggedId(''); setDropHint(null); dragPointerY.current = null }}
                 className="p-0.5 text-gray-500 hover:text-cyan-300 cursor-grab active:cursor-grabbing disabled:cursor-default disabled:opacity-30"
                 title="스텝 이동">
                 <GripVertical size={15} />
@@ -289,6 +352,7 @@ export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPa
           </div>
         )
       })}
+      {draggedId && ids.length > 0 && ids[ids.length - 1] !== draggedId && renderEdgeZone(ids[ids.length - 1], 'after')}
 
       {steps.length === 0 && (
         <p className="text-center text-gray-600 py-10 text-sm">스텝을 추가해 테스트케이스를 만드세요.</p>

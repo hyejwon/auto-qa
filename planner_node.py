@@ -30,6 +30,7 @@ class TestPlan(BaseModel):
     package: str
     steps: List[PlannerStep]
     expected_results: List[str] = []
+    required_tab: Optional[str] = None  # 실행 전 자동으로 이동해야 하는 하단 네비게이션 탭 (예: "전투")
 
 class PlannerNode:
     """자연어 → YAML 테스트케이스 변환 플래너"""
@@ -167,18 +168,80 @@ scroll_search 등)를 빼먹으면 안 된다 — 그 문구/설정들은 실기
        "save_as": "변수명",           // 읽은 값을 저장할 변수명 (나중에 compare_with로 참조)
        "compare_with": "변수명",      // 이전에 save_as로 저장한 변수명과 비교
        "expect_changed": true/false,  // true: 값이 달라야 PASS / false: 값이 같아야 PASS
-       "expect_increase": true,       // 숫자가 증가해야 PASS (재화 지급 검증)
-       "expect_decrease": true        // 숫자가 감소해야 PASS (재화 차감 검증)
+       "expect_increase": true,       // 숫자가 증가해야 PASS (재화 지급 검증, 방향만)
+       "expect_decrease": true,       // 숫자가 감소해야 PASS (재화 차감 검증, 방향만)
+       "expect_delta": 4000,          // 정확히 이만큼 변해야 PASS (예: +4000, -1500 — 정밀 검증)
+       "delta_tolerance": 0           // expect_delta 허용 오차 (기본 0 = 정확히 일치)
      }}
    - PID 변경 여부 확인 예시:
      1) 연동 전: action=read_text, target="PID 값", params={{save_as: "pid_before"}}
      2) 연동 후: action=read_text, target="PID 값", params={{compare_with: "pid_before", expect_changed: true}}
+   - 구매/보상으로 정확히 얼마나 늘거나 줄어야 하는지 알 때는 expect_increase/decrease 대신
+     expect_delta를 써서 정밀하게 검증하라 (예: 4000 다이아 상품 구매 시 expect_delta: 4000)
 
-10. `skip_tutorial` - Unity QA helper API로 튜토리얼/훈련소 클리어 처리
+10. `read_items` - 화면의 아이템 목록과 각 항목의 보유 여부를 함께 스캔해 저장/비교
+    - target: "스캔할 목록과 보유 판단 기준 설명"
+      (예: "마물 탭 아이템 목록 (컬러 아이콘=보유, 회색/자물쇠 아이콘=미보유)")
+    - params(선택):
+      {{
+        "save_as": "변수명",                 // 스캔한 [{{name, owned, info}}] 목록을 저장
+        "compare_with": "변수명",            // 이전 save_as 스냅샷과 비교해 보유 상태 변화 계산
+        "expect_new_owned_count": 2,         // 이번에 새로 보유로 바뀐 항목 수가 정확히 이만큼이어야 PASS
+        "expect_new_owned": ["마물A", "유물B"], // 새로 보유로 바뀐 항목에 이 이름들이 반드시 포함돼야 PASS
+        "expect_no_change": true             // true면 보유 상태가 전혀 변하지 않아야 PASS
+      }}
+    - 여러 재화/아이템을 한 번에 지급하는 상품(예: 뉴비패키지) 검증 예시:
+      1) 구매 전: 탭마다 read_items, params={{save_as: "monsters_before"}} / {{save_as: "relics_before"}}
+      2) 구매 진행
+      3) 구매 후: 같은 탭에서 read_items, params={{compare_with: "monsters_before", expect_new_owned_count: 1}}
+
+11. `read_screen` - 한 화면에 같이 보이는 여러 항목을 vision 호출 1번으로 모아서 확인
+    - target: 생략 가능 (사람이 읽을 라벨 용도)
+    - params.items(필수): 항목 리스트
+      {{
+        "items": [
+          {{
+            "name": "diamond",                 // 내부 식별자 (save_as/compare_with 키로도 씀)
+            "description": "다이아 수량",       // 값을 읽을 대상이면 구체적인 영역 설명,
+                                                // 존재만 확인할 조건이면 판단 기준까지 명시
+                                                // (예: "검귀 카드 — 다이아/자물쇠 아이콘 없음")
+            "save_as": "diamond_before",        // (값 읽기 항목) read_text와 동일
+            "compare_with": "diamond_before",   // (값 읽기 항목) read_text와 동일
+            "expect_increase": true,            // (값 읽기 항목) read_text와 동일한 expect_* 전부 지원
+            "optional": true                    // 화면에 없어도 실패 대신 건너뜀
+          }}
+        ]
+      }}
+    - "값을 읽는 항목"(재화 수량 등)은 read_text와 동일하게 save_as/compare_with/expect_changed/
+      expect_increase/expect_decrease/expect_delta/delta_tolerance를 그대로 쓸 수 있다.
+    - "존재만 확인하는 항목"(카드가 보이는지 등, 값이 없음)은 found 여부만 판정한다 —
+      save_as를 주면 true가 저장된다.
+    - 언제 쓰나: 같은 화면(탭 이동 없이)에 여러 정보가 동시에 보일 때 — 예를 들어 상단바에
+      다이아·실버가 항상 같이 보이면 read_text 두 번 대신 read_screen 하나로 묶어라. 마물 탭처럼
+      숫자(마신석)와 카드 존재 확인(검귀)이 같은 화면에 있어도 items 하나에 같이 넣으면 된다.
+      화면이 바뀌어야 보이는 정보(다른 탭)까지 억지로 묶지는 마라 — vision이 그 화면을
+      실제로 보고 있을 때만 정확하다.
+    - params.scroll_search: true / max_scrolls / scroll_fraction — items 중 일부가 스크롤해야
+      보이는 카드처럼 즉시 안 보여도, 재화 표시줄 같은 상단 고정 영역은 스크롤해도 그대로
+      보이는 화면이 많다. 이럴 때 scroll_search를 켜면 안 보이는 항목만 스크롤하며 배치
+      호출을 재시도한다 — 상단 고정 값과 스크롤 필요한 카드를 같은 read_screen에 넣어도 된다.
+
+12. `skip_tutorial` - Unity QA helper API로 튜토리얼/훈련소 클리어 처리
     - target 또는 params.package: 앱 패키지명
     - SR Debugger 화면/이미지 조작 없이 Unity API만 호출한다.
+    - ⚠️ 치트 호출 후 앱을 재시작해 "건너뛰기 확인" 팝업을 직접 눌러 마무리하는 흐름을
+      만들 때는, 그 팝업을 여는/닫는 find_and_tap 스텝에 반드시 `optional: true`를 넣어라.
+      이미 튜토리얼이 스킵된 계정으로 재실행하면 그 팝업 자체가 안 뜨기 때문에, optional이
+      없으면 스텝이 그냥 실패한다 (2026-07-23 실기기에서 확인된 문제).
+    - ⚠️ 로그인 직후(로그인이 완전히 끝나기 전) 이 API를 호출하면 앱이 그대로 재부팅되는
+      문제가 있다 (2026-07-23 확인). skip_tutorial 스텝 바로 앞에, 로그인 완료 후 나타나는
+      화면(예: 전투/로비 탭 또는 튜토리얼 건너뛰기 버튼 등 — 계정 상태에 따라 둘 중 하나)이
+      안정적으로 보이는지 확인하는 `verify` 스텝을 반드시 넣어라.
+    - ⚠️ 계정이 이미 튜토리얼을 끝낸 상태라면 이 API/앱 재시작 자체가 불필요하다 — 로그인 후
+      화면이 이미 전투/로비 탭이면 `params.skip_if_visible`(로비 탭 등)을 넣어서
+      skip_tutorial/close_app/launch_app/이후 정리용 dismiss_popups까지 전부 건너뛰게 하라.
 
-11. `dismiss_popups` - 허용된 팝업을 반복해서 닫고 최종 화면까지 도달
+13. `dismiss_popups` - 허용된 팝업을 반복해서 닫고 최종 화면까지 도달
     - params:
       {{
         "stop_when_visible": "최종 화면의 고유 요소",
@@ -208,12 +271,19 @@ scroll_search 등)를 빼먹으면 안 된다 — 그 문구/설정들은 실기
 11. `skip_tutorial`은 필요 시 `wait`를 넣어 치트 적용 시간을 보장
 12. 개수나 순서가 달라지는 이벤트/공지/보상 팝업은 `dismiss_popups`로 처리한다.
 13. `launch_app` 후 별도 `wait` 스텝은 불필요하다 (실행 후 5초 대기가 자동 적용됨).
+14. 시나리오가 하단 네비게이션의 특정 탭(상점/마물/전투/유물/뽑기)이 이미 떠 있다고
+    가정하고 시작하면(예: 계정 설정/로그아웃/삭제처럼 우측 상단 햄버거 메뉴가 필요한
+    작업 — 이 메뉴는 '전투' 탭에서만 보인다), 최상위 `required_tab`에 그 탭 이름을
+    넣어라. 실행 직전 그 탭으로 자동 이동하는 스텝이 서버에서 맨 앞에 끼워지므로,
+    스텝 목록 자체에 탭 이동 스텝을 직접 넣지 않아도 된다 — `required_tab`만 채우면 된다.
+    해당 없으면 생략(null).
 
 **출력 형식 (JSON):**
 {{
   "title": "테스트 제목 (간결하게)",
   "description": "테스트 설명",
   "package": "com.example.app",
+  "required_tab": "전투 등 실행 전 필요한 하단 탭 이름 (해당 없으면 null)",
   "steps": [
     {{
       "action": "액션타입",
@@ -241,6 +311,10 @@ scroll_search 등)를 빼먹으면 안 된다 — 그 문구/설정들은 실기
 - 실행할 때마다 달라질 수 있는 값(계정 이메일, 상품명 등)은 target에 `{{{{변수명}}}}` 플레이스홀더로
   쓰세요 (예: `{{{{account_email}}}}`) — 실행 시 UI에서 값을 입력받아 치환됩니다.
   단, 라이브러리 템플릿을 재사용할 때는 그 템플릿의 표기를 그대로 따르세요
+- 여러 재화/아이템을 동시에 지급하는 상품(뉴비패키지 등)을 검증할 때는, 지급 동작 전에
+  재화별 `read_text`(save_as)와 아이템 탭별 `read_items`(save_as)로 상태를 스냅샷 떠두고,
+  지급 후 동일 대상을 `compare_with`로 다시 읽어 `expect_delta`(재화)/`expect_new_owned_count`
+  또는 `expect_new_owned`(아이템)로 정확한 수치까지 검증하세요
 """
     
     def save_as_yaml(

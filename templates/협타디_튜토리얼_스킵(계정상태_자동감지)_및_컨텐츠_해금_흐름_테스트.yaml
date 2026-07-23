@@ -1,0 +1,73 @@
+title: 협타디 튜토리얼 스킵(계정 상태 자동 감지) 및 컨텐츠 해금 흐름 테스트
+description: >
+  로그인 후 화면을 보고 계정 상태를 자동 판별한다 — 전투 탭이 바로 보이면 이미 튜토리얼을
+  끝낸 계정이므로 skip_tutorial API 호출/앱 재시작/건너뛰기 버튼 탭/컨텐츠 해금 팝업 정리까지
+  전부 건너뛴다. 건너뛰기 버튼이 보이면 튜토리얼 미완료 계정이므로 기존대로 스킵 API 호출 →
+  앱 재시작 → 건너뛰기 확인 → 컨텐츠 해금 팝업 정리를 그대로 진행한다.
+package: com.percent.aos.cooptd
+steps:
+# 로그인이 끝나기 전에 skip_tutorial API를 호출하면 앱이 바로 재부팅되어 버린다
+# (2026-07-23 확인) — 로그인 직후 화면이 안정될 때까지 먼저 확인하고 넘어간다.
+# 로그인 후 화면은 계정 상태에 따라 둘 중 하나: 전투 탭(이미 튜토리얼 완료) 또는
+# 건너뛰기 버튼(튜토리얼 미완료, 진행 필요) — 어느 쪽이든 로그인이 끝났다는 뜻이다.
+- action: verify
+  target: 로그인 완료 후 화면 — 하단 네비게이션 전투 탭(이미 튜토리얼 완료된 계정) 또는 튜토리얼 건너뛰기 버튼(튜토리얼 진행해야 하는 계정) 중 하나가 안정적으로 보이는 상태
+  params: {}
+  description: 로그인 완료 확인 (skip_tutorial API를 로그인 도중 호출하면 앱이 재부팅되므로 먼저 안정화 대기)
+  timeout: 30
+  retry: 3
+- action: skip_tutorial
+  target: com.percent.aos.cooptd
+  description: (계정이 아직 튜토리얼을 안 끝냈을 때만) 튜토리얼 스킵 API 호출 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 20
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: close_app
+  target: com.percent.aos.cooptd
+  description: (튜토리얼 스킵을 진행했을 때만) 재부팅을 위한 앱 종료 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 10
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: launch_app
+  target: com.percent.aos.cooptd
+  description: (튜토리얼 스킵을 진행했을 때만) 앱 재실행 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 20
+  retry: 2
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+- action: find_and_tap
+  target: 건너뛰기 버튼
+  description: (나올 경우) 튜토리얼 건너뛰기 버튼 클릭 — 이미 스킵된 계정이면 이 버튼/팝업 자체가 안 뜬다
+  timeout: 10
+  retry: 2
+  params:
+    optional: true
+    expect_visible: 정말로 건너뛰시겠습니까 팝업
+- action: find_and_tap
+  target: 예 버튼
+  description: (나올 경우) 건너뛰기 확인 팝업에서 예 클릭
+  timeout: 10
+  retry: 2
+  params:
+    optional: true
+    expect_hidden: 정말로 건너뛰시겠습니까 팝업
+    wait_seconds: 1
+- action: dismiss_popups
+  description: (튜토리얼 스킵을 진행했을 때만) VIP 상점의 좌측 하단 뒤로가기 버튼을 누르고 반복되는 컨텐츠 해금 안내 닫기 — 전투 탭이 이미 보이면 건너뜀
+  timeout: 120
+  retry: 1
+  params:
+    skip_if_visible: 하단 네비게이션 전투 탭
+    stop_when_visible: 우측 상단 햄버거 메뉴 버튼
+    max_count: 4
+    timeout_seconds: 120
+    initial_wait_seconds: 1
+    quiet_seconds: 0
+    rules:
+    - target: VIP 상점 좌측 하단 뒤로가기 버튼
+      action: tap
+    - target: 새로운 컨텐츠가 해금되었어요 팝업
+      action: tap_center
+preconditions: []

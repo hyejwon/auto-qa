@@ -2,16 +2,20 @@ from google.genai import types
 from llm_client import build_genai_client
 from prompts import (
     FIND_ELEMENT_PROMPT,
+    FIND_ELEMENTS_PROMPT,
     ANALYZE_SCREEN_STATE_PROMPT,
     READ_TEXT_PROMPT,
     DETECT_INTERRUPT_PROMPT,
     EXTRACT_ITEMS_PROMPT,
+    READ_ITEM_STATES_PROMPT,
+    READ_SCREEN_BATCH_PROMPT,
 )
 from PIL import Image, ImageDraw
 import json
 import uuid
+import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 from datetime import datetime
 import logging
 from pydantic import BaseModel
@@ -78,6 +82,7 @@ class GeminiVisionAgent:
             debug_dir: 디버그 이미지 저장 경로
         """
         prompt = FIND_ELEMENT_PROMPT.format(target_description=target_description)
+        started = time.monotonic()
 
         try:
             response = self.client.models.generate_content(
@@ -91,6 +96,10 @@ class GeminiVisionAgent:
             data = json.loads(response.text)
 
             if not data.get("found"):
+                logger.info(
+                    "Vision element completed: target='%s' found=false duration=%.2fs model=%s",
+                    target_description, time.monotonic() - started, self.model,
+                )
                 return VisionResult(
                     success=False,
                     description=data.get("description", "요소를 찾을 수 없음"),
@@ -120,14 +129,116 @@ class GeminiVisionAgent:
             if debug_dir and bbox:
                 self._draw_bbox(image_path, bbox, debug_dir)
 
+            logger.info(
+                "Vision element completed: target='%s' duration=%.2fs model=%s",
+                target_description, time.monotonic() - started, self.model,
+            )
+
             return result
 
         except Exception as e:
-            logger.error(f"Vision analysis failed: {e}")
+            logger.error(
+                "Vision analysis failed: target='%s' duration=%.2fs error=%s",
+                target_description, time.monotonic() - started, e,
+            )
             return VisionResult(
                 success=False,
                 error=str(e)
             )
+
+    def find_elements(
+        self,
+        image_path: Path,
+        target_descriptions: Sequence[str],
+        debug_dir: Optional[Path] = None,
+    ) -> list[VisionResult]:
+        """동일 스크린샷에서 여러 UI 요소를 VLM 1회 호출로 탐색한다."""
+        targets = [str(target).strip() for target in target_descriptions]
+        if not targets:
+            return []
+        if len(targets) == 1:
+            return [self.find_element(image_path, targets[0], debug_dir)]
+
+        targets_json = json.dumps(
+            [{"index": index, "target": target} for index, target in enumerate(targets)],
+            ensure_ascii=False,
+            indent=2,
+        )
+        prompt = FIND_ELEMENTS_PROMPT.format(targets_json=targets_json)
+        started = time.monotonic()
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, self._image_part(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(response.text)
+            raw_elements = data.get("elements", [])
+            indexed = {}
+            for item in raw_elements:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    index = int(item.get("index"))
+                except (TypeError, ValueError):
+                    continue
+                indexed[index] = item
+            results: list[VisionResult] = []
+            missing_indexes: list[int] = []
+            for index, target in enumerate(targets):
+                item = indexed.get(index)
+                if item is None:
+                    results.append(VisionResult(
+                        success=False,
+                        error=f"배치 응답에 index {index} 누락",
+                    ))
+                    missing_indexes.append(index)
+                    continue
+                if not item.get("found"):
+                    results.append(VisionResult(
+                        success=False,
+                        description=item.get("description", "요소를 찾을 수 없음"),
+                        confidence=item.get("confidence", 0.0),
+                    ))
+                    continue
+                box_2d = item.get("box_2d")
+                if not isinstance(box_2d, list) or len(box_2d) != 4:
+                    results.append(VisionResult(
+                        success=False,
+                        error=f"Invalid box_2d format for index {index}: {box_2d}",
+                    ))
+                    missing_indexes.append(index)
+                    continue
+                ymin, xmin, ymax, xmax = map(float, box_2d)
+                results.append(VisionResult(
+                    success=True,
+                    bbox=BoundingBox(
+                        x1=min(xmin, xmax) / 1000,
+                        y1=min(ymin, ymax) / 1000,
+                        x2=max(xmin, xmax) / 1000,
+                        y2=max(ymin, ymax) / 1000,
+                    ),
+                    description=item.get("description", ""),
+                    confidence=item.get("confidence", 0.0),
+                ))
+
+            # 불완전한 배치 응답만 개별 호출로 보완해 정확도를 유지한다.
+            for index in missing_indexes:
+                results[index] = self.find_element(image_path, targets[index], debug_dir)
+            logger.info(
+                "Batch vision completed: targets=%d fallback=%d duration=%.2fs model=%s",
+                len(targets), len(missing_indexes), time.monotonic() - started, self.model,
+            )
+            return results
+        except Exception as e:
+            logger.error(
+                "Batch vision analysis failed after %.2fs, falling back to individual calls: %s",
+                time.monotonic() - started, e,
+            )
+            return [self.find_element(image_path, target, debug_dir) for target in targets]
     def analyze_screen_state(self, image_path: Path) -> Dict:
         """
         현재 화면 상태 전반 분석
@@ -188,6 +299,55 @@ class GeminiVisionAgent:
             return [i for i in items if isinstance(i, dict) and i.get("text")]
         except Exception as e:
             logger.error(f"extract_items failed: {e}")
+            return []
+
+    def read_item_states(self, image_path: Path, items_description: str) -> list:
+        """화면의 아이템 목록 + 보유 여부를 함께 추출 (인벤토리/도감 탭 스냅샷용).
+
+        반환: [{"name": str, "owned": bool, "info": str}, ...] — 실패 시 빈 리스트
+        """
+        prompt = READ_ITEM_STATES_PROMPT.format(items_description=items_description)
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, self._image_part(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(response.text)
+            items = data.get("items", [])
+            return [i for i in items if isinstance(i, dict) and i.get("name")]
+        except Exception as e:
+            logger.error(f"read_item_states failed: {e}")
+            return []
+
+    def read_screen_batch(self, image_path: Path, items: list) -> list:
+        """한 화면에 같이 보이는 여러 항목(재화 값 여러 개 + 조건부 존재 확인 등)을
+        vision 호출 1번으로 모아서 확인 — 매번 따로 부르지 않고 라운드트립을 줄인다.
+
+        items: [{"name": str, "description": str}, ...] — description은 값을 읽을
+        영역이거나("다이아 수량") 존재 조건("검귀 카드 — 다이아/자물쇠 아이콘 없음")이다.
+        반환: [{"name": str, "found": bool, "value": str|None}, ...] — 실패 시 빈 리스트
+        """
+        items_block = "\n".join(
+            f"{i + 1}. name=\"{it['name']}\" — {it['description']}"
+            for i, it in enumerate(items)
+        )
+        prompt = READ_SCREEN_BATCH_PROMPT.format(items_block=items_block)
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, self._image_part(image_path)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(response.text)
+            results = data.get("items", [])
+            return [r for r in results if isinstance(r, dict) and r.get("name")]
+        except Exception as e:
+            logger.error(f"read_screen_batch failed: {e}")
             return []
 
     def read_text(self, image_path: Path, region_description: str) -> Optional[str]:

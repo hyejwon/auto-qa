@@ -1,0 +1,228 @@
+title: 뉴비패키지 최초 결제 — 검귀(초마신) 획득 검증 (경량판)
+description: >
+  상점 상단 '첫 결제 보너스! 초마신 검귀 100% 증정!' 배너 노출 상태에서 뉴비패키지(5500 KRW,
+  1회 한정)를 결제하면 다이아/실버/뽑기 티켓이 정확히 증가하는지, 그리고 검귀(초마신)와
+  검귀 전용 유물(도깨비 화로)이 실제로 지급되는지를 빠르게 검증한다.
+  뉴비패키지의 실제 보상 구성은 검귀 전용 유물(도깨비 화로) · 실버 · 다이아 · 뽑기 티켓
+  4가지이며 스태미나는 포함되지 않는다 — 그래서 스태미나 대신 뽑기 티켓을 정밀 비교 대상에
+  넣었다(뽑기 티켓은 상단바에 없어 뽑기 탭 방문이 필요).
+  마물/유물 전체 카드 목록을 read_items로 훑는 건 느려서(각 12~16장 스캔) 이 템플릿에서는
+  뺐다 — 검귀 지급은 마물 탭에서 스크롤 후 카드 아트/테두리가 컬러인지(=보유 상태인지)
+  read_screen으로 빠르게 확인한다 (카드에 뜨는 강화 재료 알림 배지는 보유 여부와 무관).
+  하단 네비게이션(상점/마물/유물/전투/뽑기) 5개 탭은 find_and_tap의 params.tab_shortcut로
+  vision 호출 없이 고정 좌표로 바로 이동한다 — 검증 실패 시 자동으로 vision 탐색 폴백
+  (qa_orchestrator.py의 FIXED_TAB_COORDS, 2026-07-22 추가).
+  ⚠️ 뉴비패키지는 계정당 1회 한정 상품이라 이미 구매한 계정에서는 재실행 불가 —
+  신규(미구매) 테스트 계정으로만 돌릴 것.
+package: com.percent.aos.cooptd
+steps:
+# ── 1) 구매 전 재화 스냅샷 ──
+# 다이아/실버는 화면 최상단에 항상 같이 보이므로 read_text 2번 대신 read_screen 1번으로
+# 묶어서 vision 호출을 절반으로 줄인다. 뽑기 티켓은 상단바에 없어 뽑기 탭으로 이동해야
+# 한다 (검귀전용 유물/실버/다이아/뽑기티켓이 뉴비패키지의 실제 보상 4종이라 뽑기 티켓도
+# 다이아처럼 정밀 비교 대상 — 스태미나는 보상에 없어서 뺐다).
+- action: read_screen
+  target: 화면 최상단 다이아·실버 수량 (동시 확인)
+  params:
+    items:
+    - name: diamond
+      description: 다이아 수량
+      save_as: diamond_before
+    - name: silver
+      description: 실버 수량
+      save_as: silver_before
+  description: 구매 전 다이아·실버 수량 동시 저장
+  timeout: 15
+  retry: 2
+- action: find_and_tap
+  target: 하단 네비게이션 5번째(맨 오른쪽) 탭 (노란색 티켓/지폐 모양 아이콘)
+  params:
+    tab_shortcut: 뽑기
+    expect_visible: 뽑기
+    wait_seconds: 2
+  description: 뽑기 티켓 탭으로 이동 (보상 확인용 사전 스냅샷)
+  timeout: 15
+  retry: 2
+- action: read_text
+  target: 뽑기 화면 상단 '핵심 보상' 미리보기 줄이 아닌, 그 아래 별도 표시줄의 노란색 뽑기 티켓 아이콘 옆 실제 보유 수량
+  params:
+    save_as: tickets_before
+  description: 구매 전 뽑기 티켓 수량 저장
+  timeout: 10
+  retry: 2
+
+# ── 2) 상점 진입 → 뉴비패키지 결제 ──
+- action: find_and_tap
+  target: 하단 상점 탭
+  params:
+    tab_shortcut: 상점
+    expect_visible: 뉴비패키지
+    wait_seconds: 2
+  description: 상점 진입 및 뉴비패키지 노출 확인
+  timeout: 20
+  retry: 2
+- action: find_and_tap
+  target: 뉴비패키지 5500 KRW 가격 버튼
+  params:
+    expect_visible: Google Play 원탭 구매 버튼
+    wait_seconds: 4
+  description: 뉴비패키지 상품 선택 및 Google Play 결제 시트 확인
+  timeout: 30
+  retry: 2
+- action: find_and_tap
+  target: Google Play 원탭 구매 버튼
+  params:
+    wait_seconds: 8
+  description: 원탭 구매 버튼 탭 및 결제 완료 대기
+  timeout: 40
+  retry: 2
+- action: find_and_tap
+  target: Google Play 결제 완료 화면의 확인 버튼
+  params:
+    optional: true
+    wait_seconds: 2
+  description: (나올 경우) Google Play 결제 완료 확인 닫기
+  timeout: 12
+  retry: 1
+- action: find_and_tap
+  target: 구매 인증 팝업의 '요구 안함' 옵션 버튼
+  params:
+    optional: true
+    then_tap: 구매 인증 팝업의 '확인' 버튼
+    wait_seconds: 3
+  description: (나올 경우) 구매 인증 팝업에서 '요구 안함' 선택 후 확인
+  timeout: 15
+  retry: 1
+
+# ── 3) 뉴비패키지 획득 팝업은 항상 정확히 3개 순서로 뜬다 (2026-07-22 실기기 확인):
+#    ① 다이아·실버·뽑기티켓 획득 화면 → ② 초마신전용 유물 획득 화면 → ③ 첫구매 검귀 획득 화면.
+#    앞의 2개만 닫고 ③ 직전에서 멈춰야 verify로 확인할 수 있다.
+# ⚠️ 보상 아이콘이 화면 중앙 부근에 있어 action: tap_center를 쓰면 아이콘을 눌러
+# 상세 카드가 열려버린다(2026-07-22 실기기에서 실제로 재현됨) — 반드시 action: tap으로
+# 하단 안내 문구를 vision이 직접 찾아 그 위치를 눌러야 한다.
+# ⚠️ dismiss_popups는 매 프레임에서 rules 매치를 stop_when_visible보다 먼저 확인하므로,
+# ③ 첫구매 검귀 화면도 똑같이 '계속하려면' 문구를 갖고 있으면 멈추지 못하고 그대로
+# 지나쳐버린다(2026-07-22 실기기에서 실제로 재현 — 3개 다 눌려서 검귀 화면까지 지나감).
+# ①→② 두 팝업은 항상 정확히 2번만 뜨는 걸 확인했으니 dismiss_popups 대신 정확한
+# 횟수의 find_and_tap 2번으로 대체한다.
+- action: find_and_tap
+  target: 화면 하단의 '계속하려면 화면을 눌러주세요' 또는 '터치하세요' 안내 문구 (다이아·실버·뽑기티켓이 함께 표시된 획득 화면, 보상 아이콘이 아닌 텍스트 부분)
+  params:
+    wait_seconds: 2
+  description: ① 다이아·실버·뽑기티켓 획득 팝업 닫기 (1/2)
+  timeout: 15
+  retry: 2
+- action: find_and_tap
+  target: 화면 하단의 '계속하려면 화면을 눌러주세요' 또는 '터치하세요' 안내 문구 (초마신전용 유물 획득 화면, 보상 아이콘이 아닌 텍스트 부분)
+  params:
+    wait_seconds: 2
+  description: ② 초마신전용 유물 획득 팝업 닫기 (2/2)
+  timeout: 15
+  retry: 2
+
+# ── 4) 핵심 검증 ①: ③ 첫구매 검귀(초마신) 획득 팝업 노출 확인 ──
+- action: verify
+  target: 초마신 획득! 문구와 NEW 리본이 붙은 붉은 악마 캐릭터 카드, 카드 아래 검귀 텍스트
+  params: {}
+  description: 최초 결제 완료 후 검귀(초마신) 획득 팝업 노출 확인
+  timeout: 15
+  retry: 2
+
+# ── 5) 남은 팝업 정리 후 상점 화면 복귀 ──
+- action: dismiss_popups
+  params:
+    stop_when_visible: 화면 최상단 다이아 수량
+    max_count: 4
+    timeout_seconds: 50
+    quiet_seconds: 1.5
+    rules:
+    - target: 화면 하단의 '계속하려면 화면을 눌러주세요' 또는 '터치하세요' 안내 문구 (보상 아이콘이 아닌 텍스트 부분)
+      action: tap
+  description: 남은 획득 팝업 정리 후 상점 화면 복귀
+  timeout: 55
+  retry: 1
+
+# ── 6) 구매 후 재화 정밀 검증 (다이아·뽑기 티켓은 증가 단언, 실버는 기록) — 상단바에
+# 둘 다 항상 같이 보이므로 read_screen 1번으로 묶는다.
+- action: read_screen
+  target: 화면 최상단 다이아·실버 수량 (동시 확인)
+  params:
+    items:
+    - name: diamond
+      description: 다이아 수량
+      compare_with: diamond_before
+      expect_increase: true
+    - name: silver
+      description: 실버 수량
+      compare_with: silver_before
+  description: 다이아 증가 검증 + 실버 변화 기록 (동시 확인)
+  timeout: 15
+  retry: 2
+
+# ── 7) 핵심 검증 ②: 마물 탭 — 마신석 수량과 검귀 보유 여부를 read_screen 1번으로 묶어 확인.
+# ⚠️ 검귀 카드는 마물 탭 첫 화면에는 없고 스크롤을 내려야 보인다(2026-07-22 사용자 확인) —
+# '보유하지 않음' 섹션 위치 기준 판단은 틀렸다는 피드백을 받아서 뺐다.
+# ⚠️ 보유 여부는 카드 위치가 아니라 카드 자체의 색상으로 판단한다: 보유한 마물 카드는
+# 아트/테두리가 컬러·선명하고, 미보유 카드는 회색/흑백(그레이스케일)이다(2026-07-22 확인).
+# 카드 우측 상단에 뜨는 초록 다이아 모양 배지는 "강화 재료 준비됨" 알림일 뿐 보유 여부와
+# 무관하다 — 처음엔 "다이아/자물쇠 아이콘 없어야 보유"로 판단 기준을 잡았다가, 이미 보유
+# 중인 검귀 카드에 이 알림 배지가 떠서 오탐(미보유로 오판)할 뻔해 색상 기준으로 되돌렸다.
+# 마신석이 표시된 상단 재화줄은 고정 헤더라 스크롤해도 그대로 보이므로, read_screen의
+# scroll_search가 검귀 카드를 찾아 스크롤하는 동안 마신석도 같은 화면에서 같이 확인된다
+# (전체 목록을 read_items로 훑는 것보다 훨씬 빠르다).
+- action: find_and_tap
+  target: 하단 네비게이션 2번째 탭 (주황색 돼지코/마물 얼굴 모양 아이콘, 상점 탭 바로 오른쪽)
+  params:
+    tab_shortcut: 마물
+    expect_visible: 마물
+    wait_seconds: 2
+  description: 마물 탭으로 이동
+  timeout: 15
+  retry: 2
+- action: read_screen
+  target: 마신석 수량 + 검귀 카드 보유 여부 (동시 확인)
+  params:
+    items:
+    - name: soulstone
+      description: 마물 탭 화면 상단 재화 표시줄의 첫번째(왼쪽) 숫자 (마신석 추정, 뉴비패키지 보상 아님 — 참고 기록만, 검증 안 함)
+      optional: true
+    - name: geomgwi
+      description: 검귀 카드 — 카드 아이콘 아트와 테두리가 컬러/선명하면 보유, 회색/흑백(그레이스케일)이면 미보유 (카드 우측 상단에 뜨는 강화 재료 알림 배지는 보유 여부와 무관하니 무시)
+    scroll_search: true
+    # 마물 탭 카드 한 행 높이는 화면 높이의 약 17%(실측, 2026-07-22) — 기본 스크롤(35%,
+    # 약 2행씩 점프)은 카드가 화면 경계에 걸쳐 vision이 놓칠 위험이 있어, 한 행보다 조금
+    # 작게(15%) 촘촘히 스크롤하도록 줄이고 그만큼 max_scrolls를 늘렸다.
+    scroll_fraction: 0.15
+    max_scrolls: 20
+  description: 마신석 참고 기록 + 검귀(초마신) 보유 확인 (안 보이면 촘촘히 스크롤하며 재탐색)
+  timeout: 90
+  retry: 2
+
+# ── 8) 뽑기 티켓 정밀 검증 — 뉴비패키지 실제 보상 4종 중 하나라 다이아처럼 증가를 단언한다 ──
+# ⚠️ 뽑기 화면 상단 '핵심 보상' 미리보기 줄에도 티켓 모양 숫자가 있어 헷갈리기 쉽다
+# (2026-07-22 실기기에서 실제로 오탐 발생). 반드시 그 아래 별도 표시줄을 지정할 것.
+- action: find_and_tap
+  target: 하단 네비게이션 5번째(맨 오른쪽) 탭 (노란색 티켓/지폐 모양 아이콘)
+  params:
+    tab_shortcut: 뽑기
+    expect_visible: 뽑기
+    wait_seconds: 2
+  description: 뽑기 티켓 탭 재이동
+  timeout: 15
+  retry: 2
+- action: read_text
+  target: 뽑기 화면 상단 '핵심 보상' 미리보기 줄이 아닌, 그 아래 별도 표시줄의 노란색 뽑기 티켓 아이콘 옆 실제 보유 수량
+  params:
+    compare_with: tickets_before
+    expect_increase: true
+  description: 뽑기 티켓 증가 검증
+  timeout: 10
+  retry: 2
+
+expected_results:
+- 상점 진입 시 상단에 '첫 결제 보너스! 초마신 검귀 100% 증정!' 배너와 뉴비패키지가 노출되어야 한다.
+- 뉴비패키지 결제 시 Google Play 원탭 구매 버튼이 노출되어야 한다.
+- 결제 완료 후 재화 획득 팝업들을 거쳐 '초마신 획득!' 팝업(검귀, NEW)이 노출되어야 한다.
+- 구매 후 다이아·뽑기 티켓 수량이 구매 전보다 정확히 증가해야 한다 (뉴비패키지 실제 보상 = 검귀 전용 유물/실버/다이아/뽑기 티켓).
+- 마물 탭에서 검귀가 '보유하지 않음' 섹션이 아닌 별도 영역에 신규 보유로 표시되어야 한다.
+- 뉴비패키지는 계정당 1회 한정이므로 반드시 미구매 신규 계정에서 실행해야 한다.

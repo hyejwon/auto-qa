@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # App Tester 패키지명 — 기종/버전에 따라 다르면 .env로 재정의
 APP_TESTER_PACKAGE = os.getenv("APP_TESTER_PACKAGE", "dev.firebase.appdistribution")
+INSTALL_POLL_INTERVAL_SEC = 2
 
 # "1.2.3", "1.2.3 (456)", "1.2.3(456)" 형태의 버전 텍스트
 VERSION_RE = re.compile(r"\d+(?:\.\d+)+\s*(?:\(\d+\))?")
@@ -374,7 +375,7 @@ class AppTesterDriver:
         # (설치 버튼) → (시스템 설치 팝업) → '열기' 노출까지 폴링
         deadline = time.time() + download_timeout
         while time.time() < deadline:
-            time.sleep(8)
+            time.sleep(INSTALL_POLL_INTERVAL_SEC)
             nodes = self._nodes()
             texts = {
                 self._normalized_label(value)

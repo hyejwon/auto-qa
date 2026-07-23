@@ -50,6 +50,29 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
       .filter((group) => group.steps.length > 0)
   }, [result])
 
+  const displayedTaps = useMemo(() => {
+    const merged = new Map<string, TapDebug>()
+    for (const tap of taps) merged.set(tap.image || tap.timestamp, tap)
+    for (const step of result.step_results || []) {
+      if (!step.evidence_image || merged.has(step.evidence_image)) continue
+      merged.set(step.evidence_image, {
+        timestamp: step.evidence_timestamp || `step_${step.step}`,
+        evidence_captured_at: step.evidence_captured_at,
+        evidence_phase: step.evidence_phase,
+        step_number: step.step,
+        step_label: step.label,
+        action: step.action,
+        target: step.target || step.label,
+        confidence: step.vision_confidence ?? null,
+        verified: step.passed,
+        failure_reason: step.failure_reason || '',
+        pass_reason: step.pass_reason,
+        image: step.evidence_image,
+      })
+    }
+    return Array.from(merged.values()).sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+  }, [result.step_results, taps])
+
   useEffect(() => {
     debugApi.taps(since).then((r) => setTaps(r.taps)).catch(() => setTaps([]))
   }, [since])
@@ -58,7 +81,7 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
     setExportingCsv(true)
     setExportError('')
     try {
-      const { blob, filename } = await reportApi.csv({ result, taps })
+      const { blob, filename } = await reportApi.csv({ result, taps: displayedTaps })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -155,6 +178,46 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
           </div>
         )}
 
+        {/* 재화/아이템 전후 비교 — read_text/read_screen/read_items의 compare_with 결과를
+            스텝 텍스트 안에서 찾지 않아도 되도록 표로 모아서 보여준다 */}
+        {!!result.economy_summary?.length && (
+          <div>
+            <h3 className="text-xs text-gray-400 mb-2">재화/아이템 전후 비교</h3>
+            <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-gray-800 text-gray-500">
+                    <th className="text-left px-3 py-2 font-medium">항목</th>
+                    <th className="text-right px-3 py-2 font-medium">이전</th>
+                    <th className="text-right px-3 py-2 font-medium">이후</th>
+                    <th className="text-right px-3 py-2 font-medium">변화</th>
+                    <th className="text-center px-3 py-2 font-medium">결과</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.economy_summary.map((row, i) => (
+                    <tr key={`${row.name}_${i}`} className={`border-b border-gray-800/60 last:border-0 ${
+                      row.passed ? '' : 'bg-red-950/20'
+                    }`}>
+                      <td className="px-3 py-2 text-gray-200">{row.name}</td>
+                      <td className="px-3 py-2 text-right text-gray-400">{row.before}</td>
+                      <td className="px-3 py-2 text-right text-gray-200">{row.after}</td>
+                      <td className={`px-3 py-2 text-right font-medium ${
+                        row.delta?.startsWith('+') ? 'text-emerald-400'
+                          : row.delta?.startsWith('-') ? 'text-orange-400' : 'text-gray-400'
+                      }`}>{row.delta ?? '—'}</td>
+                      <td className="px-3 py-2 text-center">
+                        {row.passed ? <CheckCircle size={14} className="inline text-emerald-400" />
+                                    : <XCircle size={14} className="inline text-red-400" />}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* 스텝 결과 */}
         {!!result.step_results?.length && (
           <div>
@@ -219,15 +282,15 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
         {/* 탭 및 후조건 판정 스크린샷 */}
         <div>
           <h3 className="text-xs text-gray-400 mb-2 flex items-center gap-1.5">
-            <ImageIcon size={13} /> 판정 스크린샷 ({taps.length})
+            <ImageIcon size={13} /> 판정 스크린샷 ({displayedTaps.length})
           </h3>
-          {taps.length === 0 ? (
+          {displayedTaps.length === 0 ? (
             <p className="text-xs text-gray-600 py-6 text-center border border-dashed border-gray-800 rounded-lg">
               이번 실행의 디버그 스크린샷이 없습니다.
             </p>
           ) : (
             <div className="grid grid-cols-3 gap-2">
-              {taps.map((t) => {
+              {displayedTaps.map((t) => {
                 const inferredStep = t.step_number ?? (
                   t.action === 'dismiss_popups'
                     ? result.step_results.find((step) => step.action === 'dismiss_popups')?.step
