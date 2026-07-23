@@ -143,7 +143,7 @@ class ADBController:
         try:
             result = subprocess.run(
                 self._adb_cmd(["devices"]),
-                capture_output=True, text=True, timeout=5
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
             )
             lines = [line for line in result.stdout.split("\n")[1:] if "\t" in line and "device" in line]
             if not lines:
@@ -230,6 +230,8 @@ class ADBController:
                 full_cmd,
                 capture_output=capture,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30
             )
             return result.stdout.strip() if capture else ""
@@ -260,6 +262,8 @@ class ADBController:
                 self._adb_cmd(["forward", "tcp:0", f"tcp:{remote_port}"]),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
             )
             if proc.returncode != 0:
@@ -622,6 +626,8 @@ class ADBController:
                 self._adb_cmd(["install", "-r", "-d", str(apk_path)]),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=180,
             )
             output = (proc.stdout + proc.stderr).strip()
@@ -645,6 +651,8 @@ class ADBController:
                 self._adb_cmd(["uninstall", package.strip()]),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             output = (proc.stdout + proc.stderr).strip()
@@ -806,7 +814,7 @@ class ADBController:
             # 디바이스 → 로컬 pull
             pull = subprocess.run(
                 self._adb_cmd(["pull", device_path, str(local_path)]),
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
             )
             if pull.returncode == 0 and local_path.exists():
                 self._rec_files.append(local_path)

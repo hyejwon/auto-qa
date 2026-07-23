@@ -134,6 +134,8 @@ class SRDebuggerController:
             self.adb._adb_cmd(["shell", "sh", "-c", script]),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
 
