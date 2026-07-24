@@ -780,6 +780,17 @@ class QAOrchestrator:
             return targets
         return []
 
+    def _describe_postcondition(self, params: dict) -> str:
+        """탭 대상이 아니라 실제로 실패한 후조건을 사용자에게 표시한다."""
+        visible = self._to_target_list(params.get("expect_visible"))
+        hidden = self._to_target_list(params.get("expect_hidden"))
+        details = []
+        if visible:
+            details.append(f"노출 기대 '{', '.join(visible)}'")
+        if hidden:
+            details.append(f"숨김 기대 '{', '.join(hidden)}'")
+        return ", ".join(details) or "후조건이 충족되지 않음"
+
     @staticmethod
     def _uses_internal_retry(step) -> bool:
         params = step.params or {}
@@ -1023,7 +1034,10 @@ class QAOrchestrator:
 
         verified = self._verify_find_and_tap_outcome(step, tap_source="Vision")
         if not verified:
-            self._last_failure_reason = f"탭 성공(Vision), 화면 검증 실패: '{target}'"
+            self._last_failure_reason = (
+                f"탭 성공(Vision), 후조건 검증 실패: "
+                f"{self._describe_postcondition(params)}"
+            )
         else:
             exp = params.get("expect_visible")
             self._last_pass_detail = (
@@ -1076,7 +1090,10 @@ class QAOrchestrator:
         self._current_screen_type = ""
         verified = self._verify_find_and_tap_outcome(step, tap_source="XML")
         if not verified:
-            self._last_failure_reason = f"탭 성공(XML), 화면 검증 실패: '{email}'"
+            self._last_failure_reason = (
+                f"탭 성공(XML), 후조건 검증 실패: "
+                f"{self._describe_postcondition(step.params or {})}"
+            )
         else:
             self._last_pass_detail = f"계정 '{email}' XML 정확 일치 탭 ({coords['x']},{coords['y']})"
         self._save_tap_debug(latest_path, email, coords, 1.0, verified)

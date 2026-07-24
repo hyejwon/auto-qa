@@ -1,0 +1,105 @@
+title: 계정관리 12 - 계정 상태 자동 분기 계정 삭제
+description: 설정 팝업의 계정 버튼 문구로 Google/Apple 연동 상태와 Guest 상태를 구분해 올바른 계정 관리 팝업으로 진입한 뒤 계정을 삭제한다.
+package: com.percent.aos.cooptd
+required_tab: 전투
+steps:
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 3
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업 상단의 '설정' 제목
+
+# Google/Apple 연동 계정 분기:
+# 설정 팝업에 '연결됨'이 보이는 경우에만 실행하고, Guest 상태이면 건너뛴다.
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 초록색 '연결됨' 버튼
+  description: Google/Apple 연동 상태이면 기존 계정 관리 팝업을 연다.
+  timeout: 10
+  retry: 1
+  params:
+    optional: true
+    expect_visible: 계정 연동 팝업 내 계정 삭제 버튼
+
+# Guest 계정 분기:
+# 앞의 '연결됨' 분기가 성공해 계정 연동 팝업이 이미 열렸으면 이 스텝은 건너뛴다.
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 '계정 연동' 버튼
+  description: Guest 상태이면 계정 연동 팝업을 연다.
+  timeout: 10
+  retry: 1
+  params:
+    optional: true
+    skip_if_visible: 계정 연동 팝업 내 계정 삭제 버튼
+    expect_visible: 계정 연동 팝업 내 계정 삭제 버튼
+
+- action: verify
+  target: 계정 연동 팝업 내 계정 삭제 버튼
+  description: 계정 상태에 맞는 분기를 거쳐 계정 연동 팝업이 열렸는지 확인한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 계정 연동 팝업 내 계정 삭제 버튼
+  description: 1차 계정 삭제 확인 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: "'정말로 계정을 삭제하시겠습니까?' 알림 팝업의 좌측 빨간색 '계정 삭제' 버튼"
+- action: verify
+  target: 삭제된 데이터는 되돌릴 수 없다는 안내 문구
+  description: 계정 삭제의 복구 불가 안내를 확인한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: "'정말로 계정을 삭제하시겠습니까?' 알림 팝업의 좌측 빨간색 '계정 삭제' 버튼"
+  description: 계정 삭제를 확정한다. 연결 계정은 즉시 타이틀로 이동하고 Guest는 추가 확인 팝업으로 이동한다.
+  timeout: 25
+  retry: 2
+  params:
+    expect_visible: 타이틀 화면의 게스트 로그인 버튼 또는 계정 소실 알림 팝업의 '동의합니다' 입력 안내 문구
+    wait_seconds: 7
+- action: find_and_tap
+  target: 계정 소실 알림 팝업의 확인 문구 입력란
+  description: Guest 계정에서 추가 확인 팝업이 나타난 경우 입력란에 포커스를 둔다.
+  timeout: 10
+  retry: 2
+  params:
+    skip_if_visible: 타이틀 화면의 게스트 로그인 버튼
+    expect_visible: Android 키보드
+- action: input_text
+  target: 계정 소실 알림 팝업의 확인 문구 입력란
+  description: Guest 계정의 추가 확인 팝업에 정확한 계정 삭제 확인 문구를 입력한다.
+  timeout: 10
+  retry: 1
+  params:
+    skip_if_visible: 타이틀 화면의 게스트 로그인 버튼
+    text: 동의합니다
+- action: find_and_tap
+  target: 계정 소실 알림 팝업의 계정 삭제 버튼
+  description: Guest 계정의 추가 확인 팝업에서 계정 삭제를 확정한다.
+  timeout: 25
+  retry: 2
+  params:
+    skip_if_visible: 타이틀 화면의 게스트 로그인 버튼
+    expect_visible: 타이틀 화면의 게스트 로그인 버튼
+    wait_seconds: 7
+- action: verify
+  target: 타이틀 화면의 게스트 로그인 버튼
+  description: 계정 삭제 후 타이틀 로그인 화면으로 돌아왔는지 확인한다.
+  timeout: 15
+  retry: 2
+preconditions:
+- 삭제 후 복구할 필요가 없는 Guest, Google 또는 Apple 테스트 계정으로 로그인되어 있어야 한다.
+- 성공 시 현재 계정 데이터가 삭제되는 파괴적 테스트다.
+expected_results:
+- 설정 팝업에 '연결됨'이 표시되면 Google/Apple 연동 계정이 삭제되고 타이틀 화면으로 이동해야 한다.
+- 설정 팝업에 '계정 연동'이 표시되면 Guest 계정 삭제 흐름으로 진입해야 한다.
+- Guest 계정에서 추가 확인 팝업이 나타나면 정확한 확인 문구 입력 후 타이틀 로그인 화면으로 돌아가야 한다.
