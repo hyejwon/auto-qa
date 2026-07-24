@@ -4,9 +4,19 @@ import GameSelectStep from './components/wizard/GameSelectStep'
 import RunStep from './components/wizard/RunStep'
 import ReportStep from './components/wizard/ReportStep'
 import DevicePicker from './components/DevicePicker'
+import SharedReportPage from './components/SharedReportPage'
 import type { AdaptiveRun, TestResult } from './types'
 
 export default function App() {
+  const sharedReportMatch = window.location.pathname.match(/^\/report\/([0-9a-f]{32})\/?$/)
+  if (sharedReportMatch) {
+    return <SharedReportPage reportId={sharedReportMatch[1]} />
+  }
+
+  return <WizardApp />
+}
+
+function WizardApp() {
   const [step, setStep] = useState<WizardStep>(1)
   const [device, setDevice] = useState('')
   const [pkg, setPkg] = useState('')

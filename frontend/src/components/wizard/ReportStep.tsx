@@ -1,14 +1,30 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CheckCircle, XCircle, MinusCircle, RotateCcw, Home, ImageIcon, AlertTriangle, Bot, Wrench, Download, Loader2 } from 'lucide-react'
+import {
+  AlertTriangle,
+  Bot,
+  CheckCircle,
+  Copy,
+  Download,
+  Home,
+  ImageIcon,
+  Loader2,
+  MinusCircle,
+  RotateCcw,
+  Share2,
+  Wrench,
+  XCircle,
+} from 'lucide-react'
 import { debugApi, reportApi } from '../../api/client'
 import type { AdaptiveRun, TapDebug, TestResult } from '../../types'
 
 interface Props {
   result: TestResult
-  since: string
+  since?: string
+  initialTaps?: TapDebug[]
   adaptive?: AdaptiveRun | null
-  onRerun: () => void
-  onRestart: () => void
+  onRerun?: () => void
+  onRestart?: () => void
+  readOnly?: boolean
 }
 
 function scorePct(v?: number) {
@@ -30,11 +46,47 @@ function evidencePhaseLabel(phase?: TapDebug['evidence_phase']) {
   return '클릭 전'
 }
 
-export default function ReportStep({ result, since, adaptive, onRerun, onRestart }: Props) {
-  const [taps, setTaps] = useState<TapDebug[]>([])
+async function copyToClipboard(value: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {
+      // HTTP 사내망 등 Clipboard API를 쓸 수 없는 환경은 아래 방식으로 복사한다.
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
+}
+
+export default function ReportStep({
+  result,
+  since,
+  initialTaps,
+  adaptive,
+  onRerun,
+  onRestart,
+  readOnly = false,
+}: Props) {
+  const [taps, setTaps] = useState<TapDebug[]>(() => initialTaps ?? [])
   const [zoom, setZoom] = useState<string | null>(null)
   const [exportingCsv, setExportingCsv] = useState(false)
   const [exportError, setExportError] = useState('')
+  const [sharing, setSharing] = useState(false)
+  const [shareError, setShareError] = useState('')
+  const [shareUrl, setShareUrl] = useState('')
+  const [shareCopied, setShareCopied] = useState(false)
   const pass = result.status === 'PASS'
   const evalOut = result.eval_output
   const stepGroups = useMemo(() => {
@@ -74,8 +126,16 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
   }, [result.step_results, taps])
 
   useEffect(() => {
+    if (initialTaps) {
+      setTaps(initialTaps)
+      return
+    }
+    if (!since) {
+      setTaps([])
+      return
+    }
     debugApi.taps(since).then((r) => setTaps(r.taps)).catch(() => setTaps([]))
-  }, [since])
+  }, [initialTaps, since])
 
   const handleExportCsv = async () => {
     setExportingCsv(true)
@@ -94,6 +154,29 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
       setExportError(e instanceof Error ? e.message : String(e))
     } finally {
       setExportingCsv(false)
+    }
+  }
+
+  const handleShare = async () => {
+    setSharing(true)
+    setShareError('')
+    setShareCopied(false)
+    try {
+      let url = shareUrl
+      if (!url) {
+        const shared = await reportApi.share({
+          result,
+          taps: displayedTaps,
+          adaptive: adaptive ?? null,
+        })
+        url = new URL(shared.path, window.location.origin).toString()
+        setShareUrl(url)
+      }
+      setShareCopied(await copyToClipboard(url))
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSharing(false)
     }
   }
 
@@ -324,26 +407,48 @@ export default function ReportStep({ result, since, adaptive, onRerun, onRestart
       </div>
 
       {/* 액션 */}
-      {exportError && (
+      {(exportError || shareError) && (
         <div className="flex items-start gap-2 px-4 py-2.5 rounded-lg bg-red-950/30 border border-red-900 text-sm text-red-300 flex-none">
-          <AlertTriangle size={15} className="mt-0.5 flex-none" /> CSV 저장 실패: {exportError}
+          <AlertTriangle size={15} className="mt-0.5 flex-none" />
+          {shareError ? `공유 링크 생성 실패: ${shareError}` : `CSV 저장 실패: ${exportError}`}
         </div>
       )}
-      <div className="flex justify-end gap-2 flex-none">
-        <button onClick={handleExportCsv} disabled={exportingCsv}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-sm font-medium transition-colors">
-          {exportingCsv ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-          CSV 저장
-        </button>
-        <button onClick={onRerun}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-sm transition-colors">
-          <RotateCcw size={15} /> 다시 실행
-        </button>
-        <button onClick={onRestart}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium transition-colors">
-          <Home size={15} /> 처음으로
-        </button>
-      </div>
+      {shareUrl && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-950/30 border border-blue-900 text-xs flex-none">
+          <CheckCircle size={15} className="text-blue-400 flex-none" />
+          <a href={shareUrl} target="_blank" rel="noreferrer"
+            className="text-blue-300 hover:text-blue-200 underline truncate">
+            {shareUrl}
+          </a>
+          <span className="ml-auto text-gray-400 flex-none">
+            {shareCopied ? '클립보드에 복사됨' : '링크를 직접 복사해 주세요'}
+          </span>
+        </div>
+      )}
+      {!readOnly && (
+        <div className="flex justify-end gap-2 flex-none">
+          <button onClick={handleShare} disabled={sharing}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-sm font-medium transition-colors">
+            {sharing
+              ? <Loader2 size={15} className="animate-spin" />
+              : shareUrl ? <Copy size={15} /> : <Share2 size={15} />}
+            {shareUrl ? '링크 다시 복사' : '리포트 공유'}
+          </button>
+          <button onClick={handleExportCsv} disabled={exportingCsv}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-sm font-medium transition-colors">
+            {exportingCsv ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            CSV 저장
+          </button>
+          <button onClick={onRerun}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-sm transition-colors">
+            <RotateCcw size={15} /> 다시 실행
+          </button>
+          <button onClick={onRestart}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium transition-colors">
+            <Home size={15} /> 처음으로
+          </button>
+        </div>
+      )}
 
       {/* 확대 보기 */}
       {zoom && (

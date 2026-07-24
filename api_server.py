@@ -62,6 +62,8 @@ cfg = Config()
 apk_directory = cfg.paths.apks_dir
 _pipelines_dir = cfg.paths.project_root / "pipelines"
 _pipelines_dir.mkdir(parents=True, exist_ok=True)
+_shared_reports_dir = cfg.paths.reports_dir / "shared"
+_shared_reports_dir.mkdir(parents=True, exist_ok=True)
 _eval_store = EvaluationStore(cfg.paths.project_root / "eval_platform" / "eval_platform.db")
 # _adaptive_runner = AdaptiveQARunner(cfg)
 
@@ -304,6 +306,11 @@ class TutorialPassRequest(BaseModel):
 class ReportExportRequest(BaseModel):
     result: dict
     taps: list[dict] = []
+
+class SharedReportRequest(BaseModel):
+    result: dict
+    taps: list[dict] = []
+    adaptive: Optional[dict] = None
 
 class SavePipelineRequest(BaseModel):
     name: str
@@ -1539,6 +1546,52 @@ def create_result_csv(req: ReportExportRequest):
         )
     except Exception as e:
         logger.exception("create_result_csv failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/reports/share")
+def create_shared_report(req: SharedReportRequest):
+    report_id = uuid4().hex
+    snapshot = {
+        "report_id": report_id,
+        "created_at": datetime.now().isoformat(),
+        "result": req.result,
+        "taps": req.taps,
+        "adaptive": req.adaptive,
+    }
+    report_path = _shared_reports_dir / f"{report_id}.json"
+    temp_path = _shared_reports_dir / f".{report_id}.tmp"
+
+    try:
+        temp_path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(report_path)
+        return {
+            "report_id": report_id,
+            "path": f"/report/{report_id}",
+            "created_at": snapshot["created_at"],
+        }
+    except Exception as e:
+        logger.exception("create_shared_report failed")
+        temp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/share/{report_id}")
+def get_shared_report(report_id: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", report_id):
+        raise HTTPException(status_code=404, detail="공유 리포트를 찾을 수 없습니다.")
+
+    report_path = _shared_reports_dir / f"{report_id}.json"
+    if not report_path.is_file():
+        raise HTTPException(status_code=404, detail="공유 리포트를 찾을 수 없습니다.")
+
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.exception("get_shared_report failed: %s", report_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 

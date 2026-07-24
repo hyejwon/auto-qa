@@ -1,5 +1,14 @@
 import axios from 'axios'
-import type { DeviceEntry, DeviceInfo, PreflightResult, TapDebug, Template, TestResult } from '../types'
+import type {
+  AdaptiveRun,
+  DeviceEntry,
+  DeviceInfo,
+  PreflightResult,
+  SharedReport,
+  TapDebug,
+  Template,
+  TestResult,
+} from '../types'
 
 const api = axios.create({ baseURL: '/api' })
 
@@ -214,6 +223,12 @@ export const reportApi = {
         blob: r.data,
         filename: filenameFromDisposition(r.headers['content-disposition']) ?? 'auto-qa-report.csv',
       })),
+  share: (payload: { result: TestResult; taps: TapDebug[]; adaptive?: AdaptiveRun | null }) =>
+    api
+      .post<{ report_id: string; path: string; created_at: string }>('/reports/share', payload)
+      .then((r) => r.data),
+  getShared: (reportId: string) =>
+    api.get<SharedReport>(`/reports/share/${reportId}`).then((r) => r.data),
 }
 
 // ── WebSocket URL (로컬 단일 노드) ──────────────────────────────

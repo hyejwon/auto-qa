@@ -544,11 +544,16 @@ CSV는 실행 식별자·제목·상태·시간·오류, 템플릿명, 스텝 �
 | 테스트 | `POST /api/test/run`, `POST /api/test/stop`, `WS /ws/logs/{session_id}` |
 | 판정 근거 | `GET /api/debug/taps`, `GET /api/screen/latest` |
 | CSV | `POST /api/reports/csv` |
+| 공유 리포트 | `POST /api/reports/share`, `GET /api/reports/share/{report_id}`, `/report/{report_id}` |
 | SR | `POST /api/unity/tutorial-pass`, `POST /api/sr-debugger/enter` |
 | 파이프라인 | `GET/POST /api/pipelines`, `POST /api/pipeline/run` |
 | 평가 | `/api/eval/cases`, `/api/eval/runs`, `/api/eval/runs/{run_id}/report` |
 | 녹화 | `GET /api/recordings` |
 | 상태 | `GET /health` |
+
+리포트 화면의 **리포트 공유** 버튼은 실행 당시 결과와 판정 근거를
+`reports/shared/`에 스냅샷으로 저장하고 `/report/{report_id}` 링크를 복사합니다.
+공유 페이지는 기존 리포트 화면을 읽기 전용으로 렌더링합니다.
 
 ## 12. 트러블슈팅
 

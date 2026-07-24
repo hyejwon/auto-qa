@@ -165,6 +165,14 @@ export interface AdaptiveRun {
   final_result: TestResult | null
 }
 
+export interface SharedReport {
+  report_id: string
+  created_at: string
+  result: TestResult
+  taps: TapDebug[]
+  adaptive?: AdaptiveRun | null
+}
+
 export const ACTION_CHOICES = [
   'find_and_tap',
   'verify',
