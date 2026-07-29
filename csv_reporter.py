@@ -148,7 +148,13 @@ def build_test_result_csv(
         for step in steps:
             action = _safe_text(step.get("action"))
             step_status = "SKIPPED" if step.get("skipped") else ("PASS" if step.get("passed") else "FAIL")
-            reason = step.get("pass_reason") if step.get("passed") else step.get("failure_reason")
+            reason = (
+                step.get("skip_reason")
+                if step.get("skipped")
+                else step.get("pass_reason")
+                if step.get("passed")
+                else step.get("failure_reason")
+            )
             vision_confidence = (
                 _score_pct(step.get("vision_confidence"))
                 if action in {"find_and_tap", "verify", "read_text", "read_items", "read_screen"}
@@ -158,8 +164,12 @@ def build_test_result_csv(
             for evidence_index, evidence in enumerate(matched_evidence, start=1):
                 row = base_row()
                 verified = evidence.get("verified")
-                evidence_result = "PASS" if verified is True else ("FAIL" if verified is False else "")
-                evidence_reason = evidence.get("pass_reason") if verified is True else evidence.get("failure_reason")
+                if step.get("skipped"):
+                    evidence_result = "SKIPPED"
+                    evidence_reason = step.get("skip_reason") or "조건부 스텝 건너뜀 (정상)"
+                else:
+                    evidence_result = "PASS" if verified is True else ("FAIL" if verified is False else "")
+                    evidence_reason = evidence.get("pass_reason") if verified is True else evidence.get("failure_reason")
                 row.update({
                     "template_name": template_for_step(step.get("step")),
                     "step": step.get("step"),

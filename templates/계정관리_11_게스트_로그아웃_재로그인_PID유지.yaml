@@ -1,0 +1,91 @@
+title: 계정관리 11 - Guest 로그아웃 재로그인 PID 유지
+description: Guest 계정에서 로그아웃한 뒤 다시 Guest 로그인해 PID가 유지되는지 확인한다.
+package: com.percent.aos.cooptd
+required_tab: 전투
+steps:
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 3
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: read_text
+  target: 설정 팝업 상단 Version 아래 UID/PID 값(복사 버튼 왼쪽 영문·숫자 문자열)
+  description: 로그아웃 전 Guest PID를 저장한다.
+  timeout: 15
+  retry: 2
+  params:
+    save_as: guest_pid_before
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 계정 연동 버튼
+  description: Guest 계정 관리 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 로그아웃 버튼
+- action: find_and_tap
+  target: 로그아웃 버튼
+  description: 로그아웃 알림 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 로그아웃 알림 팝업
+- action: find_and_tap
+  target: 로그아웃 알림 팝업의 로그아웃 버튼
+  description: Guest 계정에서 로그아웃하고 타이틀 화면으로 돌아간다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: Guest login 버튼
+    wait_seconds: 5
+- action: find_and_tap
+  target: Guest login 버튼
+  description: 같은 Guest 데이터로 다시 로그인한다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 게스트 로그인 데이터 유실 안내 팝업
+- action: find_and_tap
+  target: 게스트 로그인 데이터 유실 안내 팝업의 예 버튼
+  description: Guest 로그인을 진행한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: 우측 상단 햄버거 메뉴(☰) 버튼
+    wait_seconds: 8
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 재로그인 PID 확인을 위해 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: read_text
+  target: 설정 팝업 상단 Version 아래 UID/PID 값(복사 버튼 왼쪽 영문·숫자 문자열)
+  description: Guest 재로그인 후 PID가 유지되는지 확인한다.
+  timeout: 15
+  retry: 2
+  params:
+    compare_with: guest_pid_before
+    expect_changed: false
+preconditions:
+- Guest 로그인 상태여야 한다.
+- Guest 계정 관리 팝업에 로그아웃 버튼이 노출되어야 한다.
+expected_results:
+- Guest 로그아웃 시 타이틀 화면으로 돌아가야 한다.
+- 다시 Guest 로그인한 후 PID가 로그아웃 전과 같아야 한다.

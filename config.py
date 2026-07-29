@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import sys
 
@@ -40,10 +41,29 @@ class PathConfig:
 @dataclass
 class GeminiConfig:
     """Gemini API 설정"""
-    model: str = "gemini-3.1-flash-lite"
+    model: str = field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_VISION_MODEL", "gemini-3.1-flash-lite"
+        )
+    )
+    vision_lite_model: str = field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_VISION_LITE_MODEL", "gemini-2.5-flash"
+        )
+    )
     # 자연어 시나리오 → 테스트 스텝 생성(PlannerNode) 전용 모델. vision(찾기/읽기) 모델과는
     # 분리해서, 여기만 바꿔도 vision 정확도/속도/비용에 영향이 없다 (2026-07-23).
-    planner_model: str = "gemini-3.1-pro-preview"
+    planner_model: str = field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_PLANNER_MODEL", "gemini-3.1-pro-preview"
+        )
+    )
+    # Defense DSL은 제한된 enum 구조만 생성하므로 더 작은 모델로 독립 라우팅한다.
+    intent_model: str = field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_INTENT_MODEL", "gemini-3.1-flash-lite"
+        )
+    )
     temperature: float = 0.1
     max_retries: int = 3
     gateway_url: str = "https://llm-gateway.111percent.net/llm/google"

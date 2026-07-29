@@ -1,0 +1,364 @@
+version: 1
+game: 이지스 디펜스
+package: com.supermagic.aos.aegisdefense
+domain: defense
+
+intent_keywords:
+  - 이지스
+  - 인게임
+  - 스테이지
+  - 소환
+  - 웨이브
+  - 전투
+  - 배속
+  - 일시정지
+  - 승리
+  - 패배
+
+supported_actions:
+  - bootstrap_to_lobby
+  - enter_stage
+  - summon
+  - start_wave
+  - set_speed
+  - pause
+  - resume
+  - wait_for_state
+  - verify_state
+  - claim_result
+
+states:
+  lobby:
+    scene: outgame
+    target: 아웃게임 스테이지 선택 화면
+    description: 아웃게임 로비
+  prep:
+    target: 상단에 Wave 진행 표시가 있고 하단에 이지스 소환 버튼과 검은색 둥근 전투 시작 버튼이 보이는 인게임 준비 화면
+    description: 웨이브 준비 화면
+  wave_active:
+    target: 하단에 이지스 아이콘과 처치 수가 적힌 킬 스코어 목록이 표시되는 전투 진행 화면
+    description: 웨이브 전투 진행
+  paused:
+    target: 제목이 "일시정지"이고 음악·효과음·진동 설정과 포기하기·계속하기 버튼이 있는 팝업
+    description: 일시정지
+  victory:
+    target: 승리 또는 클리어 문구와 획득 보상이 표시된 전투 결과 팝업
+    description: 승리 결과
+  defeat:
+    target: 패배 문구와 다시하기 또는 확인 버튼이 표시된 전투 결과 팝업
+    description: 패배 결과
+  result:
+    target: 승리·클리어 또는 패배 문구와 확인 버튼이 표시된 전투 결과 팝업
+    description: 전투 결과
+
+options:
+  default_stage:
+    chapter: 1
+    stage: 1
+    route: cheat
+  speed_values:
+    - next
+
+recipes:
+  bootstrap_to_lobby:
+    - action: close_app
+      target: "{{package}}"
+      description: 이전 실행 상태를 끊기 위해 앱 종료
+      timeout: 15
+      retry: 2
+      params:
+        package: "{{package}}"
+    - action: launch_app
+      target: "{{package}}"
+      description: 이지스 디펜스 실행
+      timeout: 30
+      retry: 2
+      params:
+        package: "{{package}}"
+    - action: find_and_tap
+      target: 추가 데이터 다운로드 제목이 붙은 팝업 하단 오른쪽 검은색 다운로드 버튼
+      description: 씬 등록을 막는 추가 데이터 다운로드 팝업이 뜨면 먼저 다운로드 진행
+      timeout: 30
+      retry: 3
+      params:
+        optional: true
+        expect_hidden: 추가 데이터 다운로드 제목이 붙은 팝업
+        wait_seconds: 5
+    - action: wait
+      target: 인게임 또는 아웃게임 씬
+      description: 스플래시와 추가 데이터 처리가 끝나고 계정 상태에 맞는 게임 씬이 등록될 때까지 대기
+      timeout: "{{timeout_seconds}}"
+      retry: 1
+      params:
+        until_scene: ingame|outgame
+        poll_interval_seconds: 1
+        consecutive_matches: 2
+    - action: find_and_tap
+      target: 이어하기 제목이 붙은 팝업 하단 왼쪽 회색 취소 버튼
+      description: 이어하기 팝업이 뜨면 이전 전투를 취소
+      timeout: 15
+      retry: 1
+      params:
+        optional: true
+        expect_hidden: 이어하기 제목이 붙은 팝업
+        wait_seconds: 2
+    - action: find_and_tap
+      target: 화면 가운데 떠 있는 회색 팝업 상자 안에서 "확인"이라고 적힌 검은색 둥근 버튼
+      description: 남아 있는 결과·안내 팝업이 있으면 닫기
+      timeout: 15
+      retry: 1
+      params:
+        optional: true
+        expect_hidden: 화면 가운데 떠 있는 회색 팝업 상자
+        wait_seconds: 2
+    - action: verify
+      target: 화면 전체가 어둡게 딤 처리된 인게임 전투 화면 위에 안내 문구 상자 또는 흰색 화살표 가이드가 표시되어 있고 하단 이지스 소환·전투 시작 버튼이 흐리게 비활성으로 보이는 튜토리얼 진행 상태
+      description: 신규 계정의 인게임 튜토리얼 진행 여부 판별
+      timeout: 20
+      retry: 1
+      params:
+        optional: true
+        set_flag_on_pass: in_tutorial
+    - action: call_cheat
+      target: ingame.tutorial.skip
+      description: 인게임 튜토리얼 종료 및 현재 스테이지 클리어 처리
+      timeout: 20
+      retry: 2
+      params:
+        run_if_flag: in_tutorial
+        args: {}
+    - action: wait
+      target: 아웃게임 씬
+      description: 튜토리얼 스킵 후 아웃게임 전환 대기
+      timeout: 120
+      retry: 1
+      params:
+        until_scene: outgame
+        poll_interval_seconds: 1
+        consecutive_matches: 2
+    - action: repeat_until
+      description: 아웃게임 튜토리얼 안내를 따라 사용 가능한 로비까지 진행
+      timeout: 300
+      retry: 1
+      params:
+        until_visible: 딤 오버레이도 흰색 화살표 가이드도 없이 상단에 스테이지 번호와 행성 이름, 하단에 다음 또는 전투 버튼이 밝게 보이는 아웃게임 스테이지 선택 화면
+        max_iterations: 12
+        timeout_seconds: 260
+        steps:
+          - action: find_and_tap
+            target: 화면 가운데 가로로 긴 짙은 남색 안내 문구 상자
+            description: 안내 문구가 떠 있으면 닫기
+            timeout: 12
+            retry: 1
+            params:
+              wait_seconds: 2
+          - action: find_and_tap
+            target: 흰색 화살표가 바로 위나 아래에서 가리키고 있는, 주변보다 밝게 강조된 버튼이나 카드나 슬롯
+            description: 화살표가 가리키는 튜토리얼 대상 누르기
+            timeout: 15
+            retry: 1
+            params:
+              wait_seconds: 3
+    - action: wait
+      target: 아웃게임 씬
+      description: 로비 씬 등록까지 조건 대기
+      timeout: "{{timeout_seconds}}"
+      retry: 1
+      params:
+        until_scene: outgame
+        poll_interval_seconds: 1
+        consecutive_matches: 2
+    - action: verify
+      target: 상단에 스테이지 번호와 행성 이름, 하단에 다음 또는 전투 버튼이 밝게 보이고 딤 오버레이나 흰색 튜토리얼 화살표가 없는 아웃게임 스테이지 선택 화면
+      description: 조작 가능한 아웃게임 로비 진입 확인
+      timeout: 60
+      retry: 4
+      params: {}
+
+  enter_stage_cheat:
+    - action: call_cheat
+      target: common.stage.start
+      description: 지정 스테이지의 첫 웨이브 준비 상태 생성
+      timeout: 20
+      retry: 2
+      params:
+        args:
+          chapterId: "{{chapter}}"
+          stageInChapter: "{{stage}}"
+    - action: wait
+      target: 인게임 씬
+      description: 스테이지 로딩 후 인게임 씬 등록 대기
+      timeout: "{{timeout_seconds}}"
+      retry: 1
+      params:
+        until_scene: ingame
+        poll_interval_seconds: 1
+        consecutive_matches: 2
+    - action: verify
+      target: 상단에 Wave 진행 표시가 있고 하단에 이지스 소환 버튼과 검은색 둥근 전투 시작 버튼이 보이는 인게임 준비 화면
+      description: 인게임 준비 화면 진입 확인
+      timeout: 40
+      retry: 3
+      params: {}
+
+  enter_stage_ui:
+    - action: find_and_tap
+      target: 화면 하단 가운데 흰색 둥근 다음 버튼
+      description: 이미 클리어한 스테이지라면 다음 스테이지로 이동
+      timeout: 20
+      retry: 1
+      params:
+        optional: true
+        expect_visible: 화면 하단 가운데 검은색 둥근 전투 버튼
+        cache_scope: aegis.lobby
+        cache_safe: true
+    - action: find_and_tap
+      target: 화면 하단 가운데 검은색 둥근 전투 버튼
+      description: 정식 UI 경로로 스테이지 진입
+      timeout: 30
+      retry: 2
+      params:
+        expect_visible: 화면 하단 가운데 검은색 둥근 전투 시작 버튼
+        wait_seconds: 3
+        cache_scope: aegis.lobby
+        cache_safe: true
+    - action: wait
+      target: 인게임 씬
+      description: 인게임 씬 등록 대기
+      timeout: "{{timeout_seconds}}"
+      retry: 1
+      params:
+        until_scene: ingame
+        poll_interval_seconds: 1
+        consecutive_matches: 2
+    - action: verify
+      target: 상단에 Wave 진행 표시가 있고 하단에 이지스 소환 버튼과 검은색 둥근 전투 시작 버튼이 보이는 인게임 준비 화면
+      description: 인게임 준비 화면 진입 확인
+      timeout: 40
+      retry: 3
+      params: {}
+
+  summon:
+    - action: read_screen
+      description: 소환 직전 크레딧과 현재 소환 비용 기록
+      timeout: 45
+      retry: 2
+      params:
+        items:
+          - name: 크레딧
+            description: 화면 하단 오른쪽 ⓒ 아이콘 옆의 보유 크레딧 숫자
+            save_as: credit_before_{{instance}}
+          - name: 소환 비용
+            description: 화면 하단 가운데 이지스 소환 버튼 안의 비용 숫자
+            save_as: summon_cost_{{instance}}
+    - action: find_and_tap
+      target: 화면 하단 가운데 이지스 소환 버튼
+      description: 이지스 소환 {{repeat_index}}회차
+      timeout: 20
+      retry: 1
+      params:
+        unity_name: Btn Aegis
+        wait_seconds: 1
+    - action: read_text
+      target: 화면 하단 오른쪽 ⓒ 아이콘 옆의 보유 크레딧 숫자
+      description: 표시된 소환 비용만큼 크레딧이 차감됐는지 확인
+      timeout: 30
+      retry: 2
+      params:
+        compare_with: credit_before_{{instance}}
+        expect_delta_from: summon_cost_{{instance}}
+        delta_sign: -1
+        save_as: credit_after_{{instance}}
+
+  start_wave:
+    - action: find_and_tap
+      target: 화면 최하단 검은색 둥근 전투 시작 버튼
+      description: 준비된 웨이브 전투 시작
+      timeout: 30
+      retry: 2
+      params:
+        unity_name: Btn Start
+        expect_visible: 하단에 이지스 아이콘과 처치 수가 적힌 킬 스코어 목록이 표시되는 전투 진행 화면
+        wait_seconds: 3
+        cache_scope: aegis.prepare
+        cache_safe: true
+
+  set_speed:
+    - action: check_property
+      target: debug.time_scale
+      description: 배속 변경 전 내부 배속 기록
+      timeout: 20
+      retry: 2
+      params:
+        label: 게임 배속
+        save_as: speed_before_{{instance}}
+    - action: find_and_tap
+      target: 화면 오른쪽 중하단 원형 테두리 안 이중 삼각형 배속 버튼
+      description: 배속 버튼을 눌러 다음 배속으로 변경
+      timeout: 20
+      retry: 1
+      params:
+        unity_name: Btn Spd
+        wait_seconds: 1
+    - action: check_property
+      target: debug.time_scale
+      description: UI 배속 조작이 내부 배속에 반영됐는지 확인
+      timeout: 20
+      retry: 2
+      params:
+        label: 게임 배속
+        compare_with: speed_before_{{instance}}
+        expect_changed: true
+
+  pause:
+    - action: find_and_tap
+      target: 화면 우측 상단 원형 일시정지 버튼
+      description: 전투 일시정지
+      timeout: 20
+      retry: 1
+      params:
+        unity_name: Btn Pause
+        wait_seconds: 0.5
+    - action: wait
+      target: 일시정지 팝업의 계속하기 버튼
+      description: 일시정지 팝업이 활성화될 때까지 대기
+      timeout: 10
+      retry: 1
+      params:
+        until_unity_button: Btn Main
+        poll_interval_seconds: 0.25
+
+  resume:
+    - action: find_and_tap
+      target: 일시정지 팝업 하단 오른쪽 검은색 계속하기 버튼
+      description: 일시정지를 해제하고 전투 계속
+      timeout: 20
+      retry: 1
+      params:
+        unity_name: Btn Main
+        wait_seconds: 0.5
+    - action: wait
+      target: 일시정지 팝업이 닫힌 인게임 화면
+      description: 계속하기 버튼이 사라지고 인게임 조작 버튼이 복귀할 때까지 대기
+      timeout: 10
+      retry: 1
+      params:
+        until_unity_button: Btn Pause
+        until_unity_button_hidden: Btn Main
+        poll_interval_seconds: 0.25
+
+  claim_result:
+    - action: find_and_tap
+      target: 전투 결과 팝업 하단 검은색 둥근 확인 버튼
+      description: 전투 결과를 확인하고 아웃게임으로 복귀
+      timeout: 30
+      retry: 1
+      params:
+        wait_seconds: 3
+    - action: verify
+      target: 아웃게임 스테이지 선택 화면 (씬 판정)
+      description: 결과 확인 후 아웃게임 복귀 확인
+      timeout: 40
+      retry: 3
+      params:
+        scene: outgame

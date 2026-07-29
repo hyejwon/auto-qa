@@ -1,0 +1,180 @@
+title: 이지스 디펜스 인게임 튜토리얼 스킵(계정 상태 자동 감지) 검증
+description: >
+  이지스 디펜스는 신규 계정으로 앱을 켜면 1-1 스테이지 전투가 바로 시작되고 딤 처리된
+  화면에 화살표 가이드가 붙는 인게임 튜토리얼로 진입한다. 이 상태에서 skip_tutorial
+  액션이 v2 치트 `ingame.tutorial.skip`("인게임/스테이지 > 인게임 튜토리얼 스킵")을
+  호출해 튜토리얼을 끝내고 스테이지 클리어 → 아웃게임(스테이지 선택) 화면까지
+  도달하는지 검증한다.
+  이미 튜토리얼을 끝낸 계정은 앱을 켜면 곧바로 아웃게임으로 들어오므로, 이 경우
+  치트 호출/후속 정리를 전부 건너뛰고 아웃게임 도달만 최종 확인한다.
+  ⚠️ 이지스 치트는 씬 단위로 등록된다 — 아웃게임(로비)에서는 `ingame.*` 치트가 치트
+  목록에 아예 없어 not_found가 떨어진다(2026-07-27 실기기 확인). unity_api_client의
+  이지스 매핑은 not_found_ok=True라서 이 경우를 "스킵할 인게임 튜토리얼 없음"으로 보고
+  성공 처리하므로, 튜토리얼을 이미 끝낸 계정에서도 스텝이 실패하지 않는다.
+  ⚠️ 이 빌드는 레거시 `/api/sr/call`이 404다 — 반드시 v2 치트 API로만 동작한다.
+package: com.supermagic.aos.aegisdefense
+steps:
+- action: close_app
+  target: com.supermagic.aos.aegisdefense
+  description: 이전 실행 상태(전투 중·팝업)를 완전히 끊기 위해 앱 종료
+  timeout: 15
+  retry: 2
+  params:
+    package: com.supermagic.aos.aegisdefense
+- action: launch_app
+  target: com.supermagic.aos.aegisdefense
+  description: 이지스 디펜스 실행
+  timeout: 30
+  retry: 2
+  params:
+    package: com.supermagic.aos.aegisdefense
+# 실기기(SM-N986N)에서 스플래시("우주 방어 준비 중..." 진행바)만 60~80초 걸린다
+# (2026-07-27 확인) — 로딩 중에 치트를 쏘면 씬이 아직 안 올라와 not_found가 난다.
+- action: wait
+  description: AEGIS 스플래시 "우주 방어 준비 중..." 로딩 대기 (실기기 60~80초)
+  timeout: 90
+  retry: 1
+  params:
+    seconds: 60
+# ⚠️ 부팅을 막는 팝업 3종 — 패치 데이터 / 이전 플레이 기록 이어하기 / 잔여 결과 팝업.
+# 셋 다 안 뜨는 게 정상이라 optional로 두고, 뜬 경우에만 처리한다(2026-07-27 실기기 확인).
+- action: find_and_tap
+  target: 추가 데이터 다운로드 제목이 붙은 팝업 하단 오른쪽 검은색 다운로드 버튼
+  description: 추가 데이터 다운로드 팝업이 뜨면 다운로드 진행
+  timeout: 20
+  retry: 1
+  params:
+    optional: true
+    set_flag_on_pass: patch_download
+    wait_seconds: 5
+- action: wait
+  description: (다운로드를 진행했을 때만) 패치 적용 후 재로딩 대기
+  timeout: 120
+  retry: 1
+  params:
+    run_if_flag: patch_download
+    seconds: 75
+- action: find_and_tap
+  target: 이어하기 제목이 붙은 팝업 하단 왼쪽 회색 취소 버튼
+  description: 이어하기 팝업이 뜨면 취소 (이전 전투 기록 버리기)
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 3
+- action: find_and_tap
+  target: 화면 가운데 떠 있는 회색 팝업 상자 안에서 "확인"이라고 적힌 검은색 둥근 버튼 (팝업이 없거나 버튼 글자가 "전투"·"다음"이면 대상 아님)
+  description: 결과·안내 팝업이 남아 있으면 닫기
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 3
+# 로딩 후 화면은 계정 상태에 따라 둘 중 하나 — 인게임 튜토리얼 전투(튜토리얼 미완료)
+# 또는 아웃게임 스테이지 선택(튜토리얼 완료). 어느 쪽이든 로딩이 끝났다는 뜻이다.
+# 로딩 완료 = 씬 치트가 등록됐다는 뜻이다. 스플래시 동안에는 ingame/outgame 접두사가
+# 아예 잡히지 않으므로, 씬 판정 하나로 "로딩 끝 + 어느 화면인지"를 동시에 확인한다.
+- action: verify
+  target: 인게임 전투 또는 아웃게임 로비 (씬 판정으로 확인)
+  description: 로딩 완료 확인 (스플래시 진행바가 사라지고 게임 화면 진입)
+  timeout: 60
+  retry: 5
+  params:
+    scene: ingame|outgame
+# 튜토리얼 진행 화면은 두 가지 형태로 나타난다(2026-07-27 실기기 확인):
+#  (1) 데이터 삭제 직후 첫 진입 — 딤 + "신규 부임을 축하드립니다. 사령관님." 안내 문구 상자,
+#      하단 이지스/전투 시작 버튼이 전부 흐리게 비활성. 이 시점엔 화살표가 아직 없다.
+#  (2) 진행 중 — 딤 + 특정 버튼만 밝게 강조 + 흰색 화살표 가이드.
+# 둘 중 하나라도 잡히도록 target을 넓게 잡는다 (화살표만 요구하면 (1)에서 판정 실패한다).
+- action: verify
+  target: 화면 전체가 어둡게 딤 처리된 인게임 전투 화면 위에 안내 문구 상자 또는 흰색 화살표 가이드가 표시되어 있고 하단 이지스 소환·전투 시작 버튼이 흐리게 비활성으로 보이는 튜토리얼 진행 상태
+  description: (튜토리얼 미완료 계정일 때만 통과) 인게임 튜토리얼 진행 중인지 판별 — 이미 끝낸 계정이면 실패해도 optional로 넘어가고 이후 스킵 흐름을 건너뛴다
+  timeout: 20
+  retry: 1
+  params:
+    optional: true
+    set_flag_on_pass: in_tutorial
+- action: skip_tutorial
+  target: com.supermagic.aos.aegisdefense
+  description: v2 치트 ingame.tutorial.skip 호출 — 인게임 튜토리얼 종료 및 현재 스테이지 클리어 처리
+  timeout: 20
+  retry: 2
+  params:
+    package: com.supermagic.aos.aegisdefense
+    run_if_flag: in_tutorial
+- action: wait
+  description: 치트 적용 후 스테이지 클리어 연출/씬 전환 대기
+  timeout: 20
+  retry: 1
+  params:
+    run_if_flag: in_tutorial
+    seconds: 6
+# "딤/화살표가 사라졌는지"를 verify에 넣으면 Vision이 찾을 대상이 없어 항상 실패한다
+# (2026-07-27 실기기 확인: 신뢰도 0.00). 부재 대신 스킵 후에만 나타나는 화면을 판정한다.
+# 스킵 직후 화면은 아웃게임 1-1 위에 클리어 결과(별 3개·보상 상자 3개)와 새 이지스 해금
+# 안내가 겹쳐 뜬 상태다.
+- action: verify
+  target: 인게임 전투 화면에서 빠져나와 상단에 1-1 지구/달 스테이지 정보가 있고 별 3개와 보상 상자가 표시된 아웃게임 화면 (새로운 이지스 해금 안내 문구가 함께 떠 있을 수 있음)
+  description: 튜토리얼이 끝나고 스테이지 클리어 처리까지 됐는지 확인 — 스킵 치트의 핵심 판정
+  timeout: 30
+  retry: 3
+  params:
+    run_if_flag: in_tutorial
+# ⚠️ 핵심 — `ingame.tutorial.skip`은 이름 그대로 인게임 부분만 스킵한다. 스킵 직후
+# 아웃게임 튜토리얼이 곧바로 시작되고, 이 구간을 넘길 치트는 아웃게임 씬 치트 목록에
+# 존재하지 않는다(2026-07-27 확인).
+#
+# 아웃게임 튜토리얼 패턴: 안내 문구 상자가 뜨면 아무 곳이나 한 번 탭해 문구를 닫고,
+# 그다음 흰색 화살표가 가리키는 대상을 탭한다 — 이 두 박자가 6번 반복된다
+#   ① 하단 이지스 버튼 → ② 확인 → ③ 포탑 카드 → ④ 사용 → ⑤ 두 번째 슬롯 → ⑥ 홈
+#
+# ⚠️ 6단계를 스텝으로 펼쳐 쓰면 실행마다 연출 타이밍이 달라 한 칸만 어긋나도 무너진다
+# (2026-07-27·28 실기기에서 같은 자리에서 두 번 실패). 단계별 대상을 지정하는 대신
+# "화살표가 가리키는 것을 누른다"는 규칙 하나로 repeat_until 루프를 돌린다 —
+# 어느 단계에서 시작하든, 단계 수가 바뀌어도 알아서 통과한다.
+- action: repeat_until
+  description: 아웃게임 튜토리얼 통과 — 안내 문구를 닫고 화살표가 가리키는 대상을 누르는 것을 반복
+  timeout: 300
+  retry: 1
+  params:
+    run_if_flag: in_tutorial
+    until_visible: 딤 오버레이도 흰색 화살표 가이드도 없이 상단에 스테이지 번호와 행성 이름, 하단에 다음 또는 전투 버튼이 밝게 보이는 아웃게임 스테이지 선택 화면
+    max_iterations: 12
+    timeout_seconds: 260
+    steps:
+    - action: find_and_tap
+      target: 화면 가운데 가로로 긴 짙은 남색 안내 문구 상자
+      description: 안내 문구가 떠 있으면 닫는다
+      timeout: 12
+      retry: 1
+      params:
+        wait_seconds: 2
+    - action: find_and_tap
+      target: 흰색 화살표가 바로 위나 아래에서 가리키고 있는, 주변보다 밝게 강조된 버튼이나 카드나 슬롯
+      description: 화살표가 가리키는 튜토리얼 대상을 누른다
+      timeout: 15
+      retry: 1
+      params:
+        wait_seconds: 3
+- action: verify
+  target: 화면 상단 사용 중인 이지스 슬롯 5개 중 두 번째 칸에 포탑 아이콘(노란 원 안 사각형)이 장착된 상태
+  description: 아웃게임 튜토리얼이 요구한 포탑 장착이 실제로 이뤄졌는지 확인
+  timeout: 20
+  retry: 2
+  params:
+    run_if_flag: in_tutorial
+    optional: true
+- action: verify
+  target: 상단에 1-1 지구/달 스테이지 정보와 골드 마일리지 게이지, 하단에 다음 버튼과 이지스 슬롯이 보이고 딤 오버레이나 튜토리얼 화살표가 없는 아웃게임 스테이지 선택 화면
+  description: 최종 확인 — 튜토리얼이 끝나고 아웃게임 스테이지 선택 화면에 도달
+  timeout: 60
+  retry: 4
+  params: {}
+preconditions:
+- 이지스 디펜스 디버그(치트) 빌드가 설치되어 있고 앱 내부 v2 치트 서버(37772 포트)가 떠 있어야 한다
+- 스킵 자체를 검증하려면 튜토리얼 미완료 계정이어야 한다 — `adb shell pm clear com.supermagic.aos.aegisdefense` 또는 아웃게임 치트 `outgame.base.delete_data`("아웃게임/게임 베이스 > 데이터 삭제")로 초기화 후 실행
+expected_results:
+- 인게임 튜토리얼 진행 중 skip_tutorial 스텝이 v2 치트 ingame.tutorial.skip을 호출해 성공한다
+- 튜토리얼 딤/화살표 가이드가 사라지고 스테이지가 클리어 처리된다
+- 새 이지스 해금 안내를 포함한 후속 안내가 정리되고 아웃게임 스테이지 선택 화면에 도달한다
+- 이미 튜토리얼을 끝낸 계정에서는 스킵 흐름이 건너뛰어지고 아웃게임 도달만 확인된다

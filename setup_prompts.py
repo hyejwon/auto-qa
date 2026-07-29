@@ -94,6 +94,8 @@ langfuse.create_prompt(
 {{steps_summary}}
 
 채점 기준:
+- SKIP은 선택·조건부 스텝이 현재 화면에 필요하지 않아 정상 건너뛴 상태다. 실패로
+  세거나 감점하거나 failed_steps에 넣지 않는다.
 - 1.0 : 모든 스텝 완료, vision_confidence 전반적으로 높음
 - 0.7~0.9 : 핵심 플로우 완료, 일부 스텝 실패 또는 confidence 낮음
 - 0.4~0.6 : 핵심 플로우 중 중요 스텝 실패
@@ -177,7 +179,17 @@ langfuse.create_prompt(
     - target 또는 params.package: 앱 패키지명
     - SR Debugger 화면/이미지 조작 없이 Unity API만 호출한다.
 
-11. `dismiss_popups` - 허용된 팝업을 반복해서 닫고 최종 화면까지 도달
+11. `call_cheat` - 앱 내부 v2 치트 API로 UI 조작 없이 게임 상태를 바꾼다
+    - target 또는 params.id: 치트 id, params.args: 인자 객체, params.wait_seconds: 적용 대기
+    - 치트는 씬 단위로 등록된다 — `ingame.*`는 전투 화면, `outgame.*`는 로비에서만 잡힌다.
+    - 사전 상태 세팅용으로만 쓰고, 검증은 화면을 보는 verify/read_text로 하라.
+
+12. `set_property` - v2 프로퍼티 쓰기 (target/params.id + params.value)
+
+13. `check_property` - v2 프로퍼티 현재값 읽기/검증
+    - params.expect_value 또는 read_text와 동일한 save_as/compare_with/expect_* 사용
+
+14. `dismiss_popups` - 허용된 팝업을 반복해서 닫고 최종 화면까지 도달
     - params:
       {
         "stop_when_visible": "최종 화면의 고유 요소",

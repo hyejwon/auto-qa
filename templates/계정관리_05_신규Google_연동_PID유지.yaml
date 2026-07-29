@@ -1,0 +1,96 @@
+title: 계정관리 05 - 신규 Google 계정 연동 PID 유지
+description: 기존 데이터가 없는 Google 계정을 게스트 데이터에 연동하고 PID가 그대로 유지되는지 확인한다.
+package: com.percent.aos.cooptd
+required_tab: 전투
+parameters:
+- name: google_account_without_data
+  label: 기존 데이터가 없는 Google 계정
+  description: 게임 데이터가 한 번도 연결되지 않은 Google 계정 이메일
+  example: qa_new_google_account@111percent.net
+  default: ''
+steps:
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 3
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: read_text
+  target: 설정 팝업 상단 Version 아래 UID/PID 값(복사 버튼 왼쪽 영문·숫자 문자열)
+  description: 연동 전 게스트 PID를 저장한다.
+  timeout: 15
+  retry: 2
+  params:
+    save_as: guest_pid_before
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 계정 연동 버튼
+  description: 계정 연동 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 계정 연동 팝업
+- action: find_and_tap
+  target: 계정 연동 팝업 내 Google 로그인 버튼
+  description: 기존 데이터가 없는 Google 계정 로그인을 시작한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: Google 계정 선택 화면 또는 약관 알림 팝업
+- action: find_and_tap
+  target: 약관 알림 팝업 내 동의합니다 영역
+  description: 최초 연동일 때만 약관에 동의한다.
+  timeout: 10
+  retry: 1
+  params:
+    optional: true
+    expect_visible: Google 계정 선택 화면
+- action: verify
+  target: '{{google_account_without_data}}'
+  description: 신규 Google 계정이 목록에 있는지 확인한다.
+  timeout: 15
+  retry: 2
+- action: find_and_tap
+  target: '{{google_account_without_data}}'
+  description: 신규 Google 계정을 선택해 연동한다.
+  timeout: 25
+  retry: 2
+  params:
+    expect_visible: 우측 상단 햄버거 메뉴(☰) 버튼
+    wait_seconds: 7
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 연동 후 PID 확인을 위해 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: read_text
+  target: 설정 팝업 상단 Version 아래 UID/PID 값(복사 버튼 왼쪽 영문·숫자 문자열)
+  description: 신규 Google 연동 후 PID가 게스트 PID와 동일한지 확인한다.
+  timeout: 15
+  retry: 2
+  params:
+    compare_with: guest_pid_before
+    expect_changed: false
+preconditions:
+- Guest 로그인 상태여야 한다.
+- google_account_without_data에는 기존 게임 데이터가 없어야 한다.
+- 신규 계정은 테스트 성공 후 더 이상 신규 상태가 아니므로 반복 실행 전에 초기화해야 한다.
+expected_results:
+- 기존/현재 데이터 선택 팝업 없이 바로 계정 연동에 성공해야 한다.
+- 연동 후 PID는 게스트 상태의 PID와 같아야 한다.

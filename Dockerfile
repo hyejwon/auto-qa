@@ -20,17 +20,22 @@ COPY api_server.py \
      adb_controller.py \
      config.py \
      csv_reporter.py \
+     defense_compiler.py \
+     defense_dsl.py \
      element_cache.py \
      eval_agent.py \
      eval_platform.py \
      langfuse_disabled.py \
      llm_client.py \
+     planner_context.py \
      planner_node.py \
      prompts.py \
+     report_logic.py \
      setup_prompts.py \
      qa_orchestrator.py \
      sr_debugger.py \
      test_manager.py \
+     unity_catalog.py \
      unity_api_client.py \
      vision_agent.py \
      package_apk_map.json \
@@ -42,6 +47,7 @@ COPY frontend/dist ./frontend/dist
 # 번들 템플릿 (볼륨 마운트로 덮어써서 영속화 가능)
 COPY templates ./templates
 COPY game_testcases ./game_testcases
+COPY game_profiles ./game_profiles
 
 # 데이터 디렉토리
 RUN mkdir -p pipelines test_results recordings screenshots screenshots_debug \

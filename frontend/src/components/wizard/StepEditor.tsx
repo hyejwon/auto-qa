@@ -196,6 +196,13 @@ export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPa
         const isApk = APK_ACTIONS.has(s.action)
         const hasTarget = TARGET_ACTIONS.has(s.action) || PKG_ACTIONS.has(s.action)
         const p = s.params || {}
+        const hasWaitCondition = [
+          'until_scene',
+          'until_property',
+          'until_unity_button',
+          'until_visible',
+          'until_hidden',
+        ].some((key) => Boolean(p[key]))
         return (
           <div key={ids[i]}
             onDragOver={(e) => {
@@ -268,14 +275,20 @@ export default function StepEditor({ steps, ids, stepGroupNames = {}, selectedPa
 
               <div className="flex flex-wrap gap-1.5">
                 {s.action === 'wait' ? (
-                  <label className="flex w-28 flex-col gap-0.5 text-[10px] text-gray-400">
-                    <span>대기 시간 (초)</span>
-                    <input type="number" min={0} step={0.5} disabled={disabled}
-                      value={(p.seconds as number) ?? 2}
-                      aria-label="대기 시간(초)"
-                      onChange={(e) => setStep(i, { ...s, params: { ...p, seconds: Number(e.target.value) } })}
-                      className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-purple-500" />
-                  </label>
+                  hasWaitCondition ? (
+                    <span className="rounded border border-emerald-800 bg-emerald-950/40 px-2 py-1 text-[10px] text-emerald-300">
+                      상태 조건 대기 · params JSON에서 편집
+                    </span>
+                  ) : (
+                    <label className="flex w-28 flex-col gap-0.5 text-[10px] text-gray-400">
+                      <span>대기 시간 (초)</span>
+                      <input type="number" min={0} step={0.5} disabled={disabled}
+                        value={(p.seconds as number) ?? 2}
+                        aria-label="대기 시간(초)"
+                        onChange={(e) => setStep(i, { ...s, params: { ...p, seconds: Number(e.target.value) } })}
+                        className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-purple-500" />
+                    </label>
+                  )
                 ) : s.action === 'scroll' ? (
                   <>
                     <label className="flex w-32 flex-col gap-0.5 text-[10px] text-gray-400">

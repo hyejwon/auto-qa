@@ -26,6 +26,10 @@ class ActionType(str, Enum):
     READ_SCREEN = "read_screen"
     SKIP_TUTORIAL = "skip_tutorial"
     TUTORIAL_PASS = "tutorial_pass"
+    CALL_CHEAT = "call_cheat"
+    SET_PROPERTY = "set_property"
+    CHECK_PROPERTY = "check_property"
+    REPEAT_UNTIL = "repeat_until"
     ENTER_SR_DEBUGGER = "enter_sr_debugger"
     INSTALL_APP = "install_app"
     UNINSTALL_APP = "uninstall_app"
@@ -61,10 +65,14 @@ class TestResult(BaseModel):
     end_time: Optional[datetime] = None
     steps_executed: int = 0
     steps_passed: int = 0
+    steps_skipped: int = 0
     error_message: Optional[str] = None
     screenshots: List[str] = []
     step_results: List[Dict] = []  # 스텝별 통과 여부
     context: Dict = {}  # read_text 등으로 저장한 값
+    cheat_log: List[Dict] = []  # 이 실행에서 실제로 쓰인 치트/프로퍼티 내역 —
+    # [{"seq", "step", "kind", "target", "detail", "ok"}, ...]
+    # kind: call_cheat / set_property / check_property / skip_tutorial
     economy_summary: List[Dict] = []  # read_text/read_screen/read_items의 compare_with 결과 —
     # 리포트 화면에 재화/아이템 전후 비교 표로 보여주기 위한 구조화된 목록
     # [{"name", "before", "after", "delta", "passed"}, ...]

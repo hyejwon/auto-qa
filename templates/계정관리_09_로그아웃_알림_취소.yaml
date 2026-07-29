@@ -1,0 +1,50 @@
+title: 계정관리 09 - 로그아웃 알림 취소
+description: 계정 관리 팝업에서 로그아웃 알림을 열고 취소 시 계정 연동 팝업으로 돌아가는지 확인한다.
+package: com.percent.aos.cooptd
+required_tab: 전투
+steps:
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 3
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 계정 연동 또는 연결됨 버튼
+  description: 계정 연동/관리 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 계정 연동 팝업
+- action: find_and_tap
+  target: 계정 연동 팝업 내 로그아웃 버튼
+  description: 로그아웃 알림 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 로그아웃 알림 팝업
+- action: find_and_tap
+  target: 로그아웃 알림 팝업의 취소 버튼
+  description: 로그아웃을 취소한다.
+  timeout: 10
+  retry: 2
+  params:
+    expect_visible: 계정 연동 팝업
+- action: verify
+  target: 계정 연동 팝업 내 로그아웃 버튼
+  description: 취소 후 계정 연동 팝업으로 돌아왔는지 확인한다.
+  timeout: 10
+  retry: 2
+preconditions:
+- Guest, Google 또는 Apple 로그인이 완료되어 계정 연동/관리 팝업을 열 수 있어야 한다.
+expected_results:
+- 로그아웃 버튼 터치 시 로그아웃 알림 팝업이 출력되어야 한다.
+- 취소 버튼 터치 시 계정 연동 팝업으로 돌아가야 한다.

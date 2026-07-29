@@ -31,17 +31,28 @@ langfuse = get_client()
 gemini = build_genai_client()
  
 # ── Judge 1: 플로우 완료율 (LLM 호출 1회) ────────────────────────────────────
- 
-def judge_flow_completion(result: dict, flow_span) -> dict:
-    steps_summary = "\n".join(
+
+def step_outcome(step: dict) -> str:
+    """리포트와 동일한 우선순위로 스텝 상태를 삼분화한다."""
+    if step.get("skipped"):
+        return "SKIP"
+    return "PASS" if step.get("passed") else "FAIL"
+
+
+def build_steps_summary(result: dict) -> str:
+    return "\n".join(
         "  스텝 {step} ({status}): {label} [vision_confidence={conf}]".format(
-            step=s["step"],
-            status="PASS" if s["passed"] else "FAIL",
-            label=s["label"],
-            conf=round(s.get("vision_confidence", 1.0), 2),
+            step=step["step"],
+            status=step_outcome(step),
+            label=step["label"],
+            conf=round(step.get("vision_confidence", 1.0), 2),
         )
-        for s in result["step_results"]
+        for step in result["step_results"]
     )
+
+
+def judge_flow_completion(result: dict, flow_span) -> dict:
+    steps_summary = build_steps_summary(result)
 
     prompt = f"""당신은 모바일 게임 QA 전문가입니다.
 아래는 테스트 시나리오 실행 결과입니다.
@@ -52,6 +63,8 @@ def judge_flow_completion(result: dict, flow_span) -> dict:
 {steps_summary}
 
 채점 기준:
+- SKIP은 선택·조건부 스텝이 현재 화면에 필요하지 않아 정상 건너뛴 상태다. 실패로
+  세거나 감점하거나 failed_steps에 넣지 않는다.
 - 1.0 : 모든 스텝 완료, vision_confidence 전반적으로 높음
 - 0.7~0.9 : 핵심 플로우 완료, 일부 스텝 실패 또는 confidence 낮음
 - 0.4~0.6 : 핵심 플로우 중 중요 스텝 실패
@@ -83,6 +96,8 @@ def calc_vision_score(result: dict) -> dict:
     low_confidence_steps = []
  
     for s in result["step_results"]:
+        if s.get("skipped"):
+            continue
         conf = s.get("vision_confidence", 1.0)
         scores.append(conf)
         if conf < 0.6:
@@ -121,6 +136,45 @@ def run_eval(result: dict) -> dict:
             name="judge_flow_completion",
         ) as flow_span:
             flow_result = judge_flow_completion(result, flow_span)
+            actual_failed_steps = {
+                int(step["step"])
+                for step in result["step_results"]
+                if not step.get("passed")
+                and not step.get("skipped")
+                and isinstance(step.get("step"), int)
+            }
+            skipped_steps = {
+                int(step["step"])
+                for step in result["step_results"]
+                if step.get("skipped") and isinstance(step.get("step"), int)
+            }
+            reported_failed_steps: set[int] = set()
+            for value in flow_result.get("failed_steps") or []:
+                try:
+                    reported_failed_steps.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+
+            skip_only_misclassification = (
+                result.get("status") == "PASS"
+                and not actual_failed_steps
+                and bool(reported_failed_steps)
+                and reported_failed_steps.issubset(skipped_steps)
+            )
+            flow_result["failed_steps"] = sorted(
+                reported_failed_steps & actual_failed_steps
+            )
+            if skip_only_misclassification:
+                flow_result.update(
+                    {
+                        "score": 1.0,
+                        "reason": (
+                            "필수 스텝 모두 통과, 선택·조건부 스텝 "
+                            f"{len(skipped_steps)}건 정상 건너뜀"
+                        ),
+                        "severity": "OK",
+                    }
+                )
             flow_span.update(output=flow_result)
 
         # Judge 2 — vision confidence (LLM 호출 없음)

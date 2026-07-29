@@ -46,6 +46,10 @@ function evidencePhaseLabel(phase?: TapDebug['evidence_phase']) {
   return '클릭 전'
 }
 
+function normalizedEvidenceTarget(value?: string | null) {
+  return (value || '').replace(/^\[읽기\]\s*/, '').trim()
+}
+
 async function copyToClipboard(value: string): Promise<boolean> {
   if (navigator.clipboard?.writeText) {
     try {
@@ -89,6 +93,25 @@ export default function ReportStep({
   const [shareCopied, setShareCopied] = useState(false)
   const pass = result.status === 'PASS'
   const evalOut = result.eval_output
+  const stepStats = useMemo(() => {
+    const steps = result.step_results || []
+    if (!steps.length) {
+      const passed = result.steps_passed || 0
+      const skipped = result.steps_skipped || 0
+      const total = result.steps_executed || 0
+      return {
+        passed,
+        skipped,
+        failed: Math.max(0, total - passed - skipped),
+        completed: passed + skipped,
+        total,
+      }
+    }
+    const skipped = steps.filter((step) => step.skipped).length
+    const passed = steps.filter((step) => step.passed && !step.skipped).length
+    const failed = steps.filter((step) => !step.passed && !step.skipped).length
+    return { passed, skipped, failed, completed: passed + skipped, total: steps.length }
+  }, [result])
   const stepGroups = useMemo(() => {
     const steps = result.step_results || []
     const templates = result.pipeline?.templates || []
@@ -103,9 +126,41 @@ export default function ReportStep({
   }, [result])
 
   const displayedTaps = useMemo(() => {
+    const steps = result.step_results || []
+    const evidenceStep = (tap: TapDebug) => {
+      if (tap.step_number != null) {
+        const direct = steps.find((step) => step.step === tap.step_number)
+        if (direct) return direct
+      }
+      const target = normalizedEvidenceTarget(tap.target)
+      if (!target) return undefined
+      const candidates = steps.filter((step) => (
+        normalizedEvidenceTarget(step.target) === target
+        || normalizedEvidenceTarget(step.label) === target
+      ))
+      return candidates.length === 1 ? candidates[0] : undefined
+    }
+    const withOutcome = (tap: TapDebug): TapDebug => {
+      const step = evidenceStep(tap)
+      const step_number = tap.step_number ?? step?.step
+      if (tap.verified) return { ...tap, step_number, outcome: 'PASS' }
+      if (step?.skipped) {
+        return {
+          ...tap,
+          step_number,
+          outcome: 'SKIP',
+          skip_reason: step.skip_reason || tap.skip_reason || '조건부 스텝 건너뜀 (정상)',
+        }
+      }
+      return { ...tap, step_number, outcome: tap.outcome || 'FAIL' }
+    }
+
     const merged = new Map<string, TapDebug>()
-    for (const tap of taps) merged.set(tap.image || tap.timestamp, tap)
-    for (const step of result.step_results || []) {
+    for (const tap of taps) {
+      const normalized = withOutcome(tap)
+      merged.set(normalized.image || normalized.timestamp, normalized)
+    }
+    for (const step of steps) {
       if (!step.evidence_image || merged.has(step.evidence_image)) continue
       merged.set(step.evidence_image, {
         timestamp: step.evidence_timestamp || `step_${step.step}`,
@@ -117,6 +172,8 @@ export default function ReportStep({
         target: step.target || step.label,
         confidence: step.vision_confidence ?? null,
         verified: step.passed,
+        outcome: step.skipped ? 'SKIP' : step.passed ? 'PASS' : 'FAIL',
+        skip_reason: step.skip_reason,
         failure_reason: step.failure_reason || '',
         pass_reason: step.pass_reason,
         image: step.evidence_image,
@@ -190,7 +247,12 @@ export default function ReportStep({
               : <XCircle size={28} className="text-red-400 flex-none" />}
         <div className="min-w-0 flex-1">
           <p className="text-lg font-semibold text-gray-100">{result.status} — {result.title}</p>
-          <p className="text-sm text-gray-400">{result.steps_passed}/{result.steps_executed} 스텝 통과</p>
+          <p className="text-sm text-gray-400">
+            {stepStats.completed}/{stepStats.total} 처리 완료
+            {' · '}{stepStats.passed} 통과
+            {stepStats.skipped > 0 && ` · ${stepStats.skipped} 건너뜀`}
+            {stepStats.failed > 0 && ` · ${stepStats.failed} 실패`}
+          </p>
         </div>
         {evalOut?.final_score != null && (
           <div className="text-right flex-none">
@@ -307,14 +369,20 @@ export default function ReportStep({
             <h3 className="text-xs text-gray-400 mb-2">스텝 결과</h3>
             <div className="space-y-3">
               {stepGroups.map((group) => {
-                const passed = group.steps.filter((s) => s.passed || s.skipped).length
+                const groupPassed = group.steps.filter((s) => s.passed && !s.skipped).length
+                const groupSkipped = group.steps.filter((s) => s.skipped).length
+                const groupCompleted = groupPassed + groupSkipped
                 return (
                   <div key={`${group.name}_${group.startStep ?? 0}`} className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
                     <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 bg-gray-900">
                       <span className="px-2 py-1 rounded bg-blue-950/50 border border-blue-800/60 text-[11px] font-medium text-blue-200">
                         [{group.name}]
                       </span>
-                      <span className="text-[11px] text-gray-500">{passed}/{group.steps.length} 스텝 통과</span>
+                      <span className="text-[11px] text-gray-500">
+                        {groupCompleted}/{group.steps.length} 처리 완료
+                        {' · '}{groupPassed} 통과
+                        {groupSkipped > 0 && ` · ${groupSkipped} 건너뜀`}
+                      </span>
                     </div>
                     <div className="space-y-1.5 p-2">
                       {group.steps.map((s) => (
@@ -327,7 +395,11 @@ export default function ReportStep({
                             : <XCircle size={14} className="text-red-400 mt-0.5 flex-none" />}
                           <div className="min-w-0">
                             <p className="text-gray-200">step {s.step}. {s.label}</p>
-                            {s.skipped && <p className="text-amber-400">건너뜀 — 조건부 스텝, 대상 미노출 (정상)</p>}
+                            {s.skipped && (
+                              <p className="text-amber-400">
+                                SKIP — {s.skip_reason || '조건부 스텝 건너뜀 (정상)'}
+                              </p>
+                            )}
                             {!s.passed && !s.skipped && s.failure_reason && <p className="text-red-400">{s.failure_reason}</p>}
                             {s.passed && !s.skipped && s.pass_reason && (
                               <p className="text-emerald-400">{s.pass_reason}</p>
@@ -379,11 +451,15 @@ export default function ReportStep({
                     ? result.step_results.find((step) => step.action === 'dismiss_popups')?.step
                     : undefined
                 )
+                const outcome = t.outcome || (t.verified ? 'PASS' : 'FAIL')
+                const outcomeStyle = outcome === 'PASS'
+                  ? { border: 'border-emerald-800', text: 'text-emerald-400' }
+                  : outcome === 'SKIP'
+                    ? { border: 'border-amber-800', text: 'text-amber-400' }
+                    : { border: 'border-red-800', text: 'text-red-400' }
                 return (
                 <button key={t.timestamp + t.image} onClick={() => setZoom(t.image)}
-                  className={`text-left rounded-lg overflow-hidden border ${
-                    t.verified ? 'border-emerald-800' : 'border-red-800'
-                  }`}>
+                  className={`text-left rounded-lg overflow-hidden border ${outcomeStyle.border}`}>
                   <img src={t.image} alt={t.target || ''} loading="lazy" className="w-full h-36 object-cover bg-gray-950" />
                   <div className="px-2 py-1 bg-gray-900">
                     <p className="text-[11px] text-gray-300 truncate">{t.target}</p>
@@ -391,9 +467,13 @@ export default function ReportStep({
                       {inferredStep ? `step ${inferredStep} · ` : ''}{evidencePhaseLabel(t.evidence_phase)}
                       {t.evidence_captured_at ? ` · ${evidenceTime(t.evidence_captured_at)}` : ''}
                     </p>
-                    <p className={`text-[10px] truncate ${t.verified ? 'text-emerald-400' : 'text-red-400'}`}
-                      title={t.verified ? (t.pass_reason || '') : (t.failure_reason || '')}>
-                      {t.verified
+                    <p className={`text-[10px] truncate ${outcomeStyle.text}`}
+                      title={outcome === 'SKIP'
+                        ? (t.skip_reason || '')
+                        : t.verified ? (t.pass_reason || '') : (t.failure_reason || '')}>
+                      {outcome === 'SKIP'
+                        ? `SKIP · ${t.skip_reason || '조건부 스텝 건너뜀 (정상)'}`
+                        : t.verified
                         ? (t.pass_reason ? `PASS · ${t.pass_reason}` : `PASS · conf ${t.confidence != null ? t.confidence.toFixed(2) : '—'}`)
                         : `FAIL${t.failure_reason ? ` · ${t.failure_reason}` : ''}`}
                     </p>

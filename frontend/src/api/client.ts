@@ -4,7 +4,10 @@ import type {
   DeviceEntry,
   DeviceInfo,
   PreflightResult,
+  PlannerMode,
+  SemanticPlan,
   SharedReport,
+  Step,
   TapDebug,
   Template,
   TestResult,
@@ -154,16 +157,23 @@ export interface GeneratedPlan {
   title: string
   description: string
   package: string
-  steps: object[]
+  steps: Step[]
   expected_results: string[]
 }
 
 export const planApi = {
-  generate: (scenario: string, pkg?: string) =>
+  generate: (scenario: string, pkg?: string, plannerMode: PlannerMode = 'legacy') =>
     api
-      .post<{ title: string; steps_count: number; yaml: string; plan: GeneratedPlan }>(
+      .post<{
+        title: string
+        steps_count: number
+        yaml: string
+        plan: GeneratedPlan
+        planner_mode: PlannerMode
+        semantic_plan?: SemanticPlan
+      }>(
         '/plan/generate',
-        { scenario, package: pkg ?? '' },
+        { scenario, package: pkg ?? '', planner_mode: plannerMode },
         { timeout: 120_000 }, // LLM 생성 수십 초
       )
       .then((r) => r.data),

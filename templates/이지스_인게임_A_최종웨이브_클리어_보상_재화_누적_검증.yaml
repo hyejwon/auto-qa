@@ -1,0 +1,285 @@
+title: 이지스 인게임 A 최종 웨이브 클리어 보상 재화 누적 검증
+description: >
+  스테이지 최종 웨이브까지 진행해 전투를 끝냈을 때, 결과 화면에 표시된 보상이 아웃게임
+  보유 재화(골드)에 실제로 들어오고 기존 보유량에 누적 합산되는지 검증한다.
+  실기기 확인 사실(2026-07-27):
+  - 아웃게임 상단 재화는 왼쪽부터 ⚡에너지(스테이지 입장 시 1 소모), ⓞ골드, ⬡코어 순이다.
+  - 상단 "골드 마일리지" 바에도 같은 골드 누적치가 표시된다(예: 골드 640 → 마일리지 640).
+    두 값이 함께 움직이는지도 같이 본다.
+  - 전투 결과 팝업에는 별 개수, "최고 웨이브", "현재 웨이브", "보상"(골드 수량), [확인]이 있다.
+  - 각 스테이지 최종 웨이브는 보스 웨이브다 — 하단 버튼이 빨간색으로 바뀌고
+    "초대형 비행체 발견" 문구가 함께 뜬다(1-1 기준 Wave 10/10).
+  - 최종 웨이브까지는 치트 없이 정공법으로 간다. 준비 단계마다 크레딧으로 이지스를 소환하고
+    웨이브를 넘기는 것을 repeat_until로 반복한다 — 웨이브 수가 다른 스테이지에도 그대로 쓰인다.
+  ⚠️ 보상 지급 검증이 목적이므로 스테이지 진입은 반드시 아웃게임 "전투" 버튼으로 정식
+  진입한다. 치트(common.stage.start)로 시작한 판은 아웃게임 진행도·보상에 반영되지 않는
+  것으로 보였다(2026-07-27, 골드가 640에서 변하지 않음) — 이 자체도 확인 포인트다.
+  결과 화면에서 읽은 보상 수치를 `reward_gold`로 저장하고, 아웃게임 골드 검증에
+  `expect_delta_from: reward_gold`를 걸어 **정확히 그만큼 늘었는지까지 자동 판정**한다.
+package: com.supermagic.aos.aegisdefense
+steps:
+- action: close_app
+  target: com.supermagic.aos.aegisdefense
+  description: 이전 실행 상태(전투 중·팝업)를 완전히 끊기 위해 앱 종료
+  timeout: 15
+  retry: 2
+  params:
+    package: com.supermagic.aos.aegisdefense
+- action: launch_app
+  target: com.supermagic.aos.aegisdefense
+  description: 이지스 디펜스 실행
+  timeout: 30
+  retry: 2
+  params:
+    package: com.supermagic.aos.aegisdefense
+- action: wait
+  description: AEGIS 스플래시 로딩 대기 (실기기 60~80초)
+  timeout: 90
+  retry: 1
+  params:
+    seconds: 60
+# ⚠️ 패치 데이터가 있으면 스플래시 도중 "추가 데이터 다운로드" 팝업이 떠서 로딩이 멈춘다
+# ([종료하기][다운로드], 2026-07-27 실기기 확인). 뜬 경우에만 다운로드를 눌러 통과시키고,
+# 그 뒤 추가 로딩 시간을 준다 — 안 떴으면 플래그가 없어 대기 스텝도 건너뛴다.
+- action: find_and_tap
+  target: 추가 데이터 다운로드 제목이 붙은 팝업 하단 오른쪽 검은색 다운로드 버튼
+  description: 추가 데이터 다운로드 팝업이 뜨면 다운로드 진행
+  timeout: 20
+  retry: 1
+  params:
+    optional: true
+    set_flag_on_pass: patch_download
+    wait_seconds: 5
+- action: wait
+  description: (다운로드를 진행했을 때만) 패치 적용 후 재로딩 대기
+  timeout: 120
+  retry: 1
+  params:
+    run_if_flag: patch_download
+    seconds: 75
+- action: find_and_tap
+  target: 이어하기 제목이 붙은 팝업 하단 왼쪽 회색 취소 버튼
+  description: 이어하기 팝업이 뜨면 취소 (이전 전투 기록 버리기)
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 3
+# ⚠️ 타깃을 "가운데 아래 검은 둥근 버튼"처럼 두루뭉술하게 쓰면 아웃게임의 "전투" 버튼을
+# 눌러 스테이지에 들어가 버린다(2026-07-27 실기기에서 실제로 발생). 반드시 팝업 상자 안에
+# 있고 글자가 "확인"인 버튼으로 한정한다.
+- action: find_and_tap
+  target: 화면 가운데 떠 있는 회색 팝업 상자 안에서 "확인"이라고 적힌 검은색 둥근 버튼 (팝업이 없거나 버튼 글자가 "전투"·"다음"이면 대상 아님)
+  description: 결과·안내 팝업이 남아 있으면 닫기
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 3
+# 씬 판정은 Vision이 아니라 앱 내부 치트 목록 접두사로 한다 — 호출 0회, 오탐 없음.
+# 로딩 중이면 씬 치트가 아예 없어 실패하므로 로딩 완료 확인도 겸한다.
+- action: verify
+  target: 아웃게임 스테이지 선택 화면 (씬 판정으로 확인)
+  description: 아웃게임 진입 확인
+  timeout: 60
+  retry: 5
+  params:
+    scene: outgame
+# ── 전투 전 보유 재화 기록 ──────────────────────────────────────
+# ⚠️ 상단 재화 3종을 read_screen 배치로 한 번에 읽으면 세 항목 모두 미검출로 실패했다
+# (2026-07-27 실기기). 값이 작은 숫자 여러 개가 좁은 상단 바에 몰려 있어서 배치 판독이
+# 불안정하다 — 개별 read_text로 나눠 각자 재시도를 갖게 한다.
+- action: read_text
+  target: 화면 최상단 가운데 노란 원형 코인 아이콘 바로 오른쪽에 적힌 골드 수량 숫자
+  description: 전투 전 보유 골드 기록
+  timeout: 30
+  retry: 3
+  params:
+    save_as: gold_before
+- action: read_text
+  target: 화면 최상단 왼쪽 번개 아이콘 옆 "5/10" 형식 에너지 표시에서 슬래시 앞 숫자
+  description: 전투 전 에너지 기록
+  timeout: 30
+  retry: 3
+  params:
+    save_as: energy_before
+- action: read_text
+  target: 상단 골드 마일리지 바 왼쪽 끝 작은 원형 아이콘 옆에 적힌 누적 골드 숫자
+  description: 전투 전 골드 마일리지 기록
+  timeout: 30
+  retry: 3
+  params:
+    save_as: mileage_before
+# ── 정식 진입 → 최종 웨이브까지 진행 ────────────────────────────
+- action: find_and_tap
+  target: 화면 하단 가운데 흰색 둥근 다음 버튼
+  description: (클리어한 스테이지를 보고 있을 때만) 아직 안 깬 스테이지로 이동
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    expect_visible: 화면 하단 가운데 검은색 둥근 전투 버튼
+- action: find_and_tap
+  target: 화면 하단 가운데 검은색 둥근 전투 버튼
+  description: 아웃게임 전투 버튼으로 정식 진입 (보상 지급 조건)
+  timeout: 30
+  retry: 3
+  params:
+    expect_visible: 화면 하단 가운데 검은색 둥근 전투 시작 버튼
+    wait_seconds: 3
+- action: find_and_tap
+  target: 화면 하단 가운데 이지스 소환 버튼
+  description: 이지스 1기 배치
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: find_and_tap
+  target: 화면 최하단 검은색 둥근 전투 시작 버튼
+  description: 전투 시작
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 5
+# ⚠️ 치트로 최종 웨이브에 점프하지 않는다. 전투 로직을 정직하게 거쳐야 보상 지급이
+# 검증되므로, 준비 단계마다 크레딧으로 이지스를 소환하고 웨이브를 넘기는 것을 반복해
+# 보스 웨이브까지 도달한다(2026-07-28 실기기에서 1-1을 치트 없이 이 방식으로 클리어).
+#
+# 전투 로직(실기기 확인):
+#  - 준비 단계에서만 소환 가능. 전투 중에는 하단이 킬 스코어 보드로 바뀐다
+#  - 웨이브를 넘길수록 크레딧이 누적된다 (45 → 72 → … → 1240)
+#  - 소환 비용은 소환할수록 오른다 (5 → 15 → 35)
+#  - 같은 이지스를 반복 소환하면 합성되어 티어가 올라간다
+#  - 궤도 슬롯은 12칸
+- action: repeat_until
+  description: 준비 단계마다 이지스를 소환하고 웨이브를 진행 — 보스 웨이브가 나올 때까지 반복
+  timeout: 900
+  retry: 1
+  params:
+    until_visible: 화면 최하단 버튼이 빨간색이고 그 위에 초대형 비행체 발견 문구가 보이는 보스 웨이브 준비 화면
+    max_iterations: 25
+    timeout_seconds: 780
+    steps:
+    - action: find_and_tap
+      target: 화면 하단 가운데 이지스 소환 버튼
+      description: 이지스 소환 (크레딧이 부족하면 무시됨)
+      timeout: 12
+      retry: 1
+      params:
+        wait_seconds: 1
+    - action: find_and_tap
+      target: 화면 하단 가운데 이지스 소환 버튼
+      description: 이지스 소환
+      timeout: 12
+      retry: 1
+      params:
+        wait_seconds: 1
+    - action: find_and_tap
+      target: 화면 하단 가운데 이지스 소환 버튼
+      description: 이지스 소환
+      timeout: 12
+      retry: 1
+      params:
+        wait_seconds: 1
+    - action: find_and_tap
+      target: 화면 하단 가운데 이지스 소환 버튼
+      description: 이지스 소환
+      timeout: 12
+      retry: 1
+      params:
+        wait_seconds: 1
+    - action: find_and_tap
+      target: 화면 최하단 검은색 둥근 전투 시작 버튼 또는 Wave 숫자가 적힌 웨이브 시작 버튼
+      description: 웨이브 시작 (전투 중이면 버튼이 없어 무시됨)
+      timeout: 15
+      retry: 1
+      params:
+        wait_seconds: 9
+- action: verify
+  target: 중앙 궤도 슬롯에 색이 채워진 원형 이지스 아이콘이 여러 기 배치되어 있고 각 아이콘에 티어 숫자 배지가 붙어 있는 상태
+  description: 이지스가 궤도에 다수 배치됐는지 확인 — 소환 루프가 실제로 동작했다는 근거
+  timeout: 30
+  retry: 3
+  params: {}
+- action: find_and_tap
+  target: 화면 최하단 빨간색 둥근 Wave 숫자 버튼 (보스 웨이브 시작)
+  description: 최종(보스) 웨이브 전투 시작
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 5
+- action: wait
+  description: 보스 웨이브 종료 대기
+  timeout: 120
+  retry: 1
+  params:
+    seconds: 60
+# ── 결과 화면 보상 확인 ────────────────────────────────────────
+- action: read_screen
+  description: 전투 결과 팝업의 판정과 보상 수치 기록
+  timeout: 60
+  retry: 4
+  params:
+    items:
+    - name: 결과 라벨
+      description: 결과 팝업 우측 상단의 굵은 판정 텍스트 (성공 또는 실패)
+    # ⚠️ 성공("방어 성공!") 팝업과 실패 팝업의 구성이 다르다 — 최고/현재 웨이브 표시는
+    # 실패 팝업에만 있다(2026-07-27 실기기 확인: 성공 팝업은 판정 라벨 + 보상만 표시).
+    - name: 최고 웨이브
+      description: 결과 팝업 안 "최고 웨이브:" 뒤에 표시된 숫자 (실패 결과일 때만 존재)
+      optional: true
+    - name: 현재 웨이브
+      description: 결과 팝업 안 "현재 웨이브:" 뒤에 표시된 숫자 (실패 결과일 때만 존재)
+      optional: true
+    - name: 보상 골드
+      description: 결과 팝업 "보상" 아래 노란 코인 아이콘과 함께 표시된 골드 수량 숫자
+      save_as: reward_gold
+- action: find_and_tap
+  target: 결과 팝업 하단 검은색 둥근 확인 버튼
+  description: 결과 확인 — 아웃게임으로 복귀하며 보상이 지급되어야 한다
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 6
+- action: verify
+  target: 상단에 스테이지 번호와 행성 이름, 하단에 다음 또는 전투 버튼이 보이는 아웃게임 스테이지 선택 화면
+  description: 아웃게임 복귀 확인
+  timeout: 60
+  retry: 4
+  params: {}
+# ── 보유 재화 누적 합산 검증 ──────────────────────────────────
+- action: read_text
+  target: 화면 최상단 가운데 노란 원형 코인 아이콘 옆에 표시된 골드 수량 숫자
+  description: 전투 후 골드 — 결과 화면의 보상 수치만큼 정확히 누적 합산됐는지 검증
+  timeout: 30
+  retry: 3
+  params:
+    compare_with: gold_before
+    expect_delta_from: reward_gold
+    save_as: gold_after
+- action: read_text
+  target: 상단 골드 마일리지 바 왼쪽 끝에 표시된 누적 골드 숫자
+  description: 골드 마일리지도 보상 수치만큼 함께 누적됐는지 검증
+  timeout: 30
+  retry: 3
+  params:
+    compare_with: mileage_before
+    expect_delta_from: reward_gold
+- action: read_text
+  target: 화면 최상단 번개 아이콘 옆 "5/10" 형식 표시에서 슬래시 앞의 현재 에너지 숫자
+  description: 스테이지 입장으로 에너지가 소모됐는지 검증
+  timeout: 30
+  retry: 3
+  params:
+    compare_with: energy_before
+    expect_decrease: true
+preconditions:
+- 이지스 디펜스 디버그 빌드가 설치되어 있고 앱 내부 v2 치트 서버(37772)가 떠 있어야 한다
+- 튜토리얼이 완료되고 스테이지 입장 에너지가 1 이상 남은 계정이어야 한다
+- 아직 클리어하지 않은 스테이지가 남아 있어야 한다 (이미 3성 클리어한 스테이지는 재도전 보상이 없을 수 있음)
+expected_results:
+- 아웃게임 전투 버튼으로 정식 진입해, 치트 없이 이지스 소환만으로 최종(보스) 웨이브까지 도달한다
+- 결과 팝업에 판정·최고 웨이브·현재 웨이브·보상 골드가 표시된다
+- 확인 후 아웃게임 보유 골드가 결과 화면 보상 수치만큼 정확히 증가한다
+- 골드 마일리지도 같은 폭으로 함께 증가한다
+- 스테이지 입장으로 에너지가 감소한다

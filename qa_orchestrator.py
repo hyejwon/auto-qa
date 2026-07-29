@@ -6,7 +6,7 @@ import json
 import unicodedata
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 import time
 import logging
 
@@ -16,9 +16,10 @@ from langfuse_disabled import get_client
 from config import Config
 from adb_controller import ADBController, parse_ui_nodes
 from vision_agent import GeminiVisionAgent
-from test_manager import TestCaseManager, TestResult, ActionType, TestCase
+from test_manager import TestCaseManager, TestResult, ActionType, TestCase, TestStep
 from planner_node import PlannerNode
 from unity_api_client import UnityAPIClient
+import unity_catalog
 from element_cache import ElementCache, CommonTapCache, CachedElement
 from eval_agent import evaluate_result_dict
 from sr_debugger import SRDebuggerController
@@ -29,8 +30,8 @@ langfuse = get_client()
 logger = logging.getLogger(__name__)
 
 # 하단 네비게이션처럼 화면이 바뀌어도 항상 같은 자리에 있는 탭의 좌표 바로가기.
-# find_and_tap의 params.tab_shortcut에 이름을 넣으면 vision 호출 없이 바로 탭하고,
-# (expect_visible 등으로) 검증에 실패하면 자동으로 일반 vision 탐색으로 폴백한다.
+# find_and_tap의 params.tab_shortcut에 이름을 넣으면 vision 호출 없이 바로 탭한다.
+# 탭 후 검증 실패 시에는 중복 입력을 막기 위해 검증만 재시도한다.
 # 좌표는 실기기(1080x2316)에서 element_cache.db에 쌓인 값 기준 (2026-07-22 확인).
 FIXED_TAB_COORDS: dict[str, dict[str, dict[str, tuple[int, int]]]] = {
     "com.percent.aos.cooptd": {
@@ -83,7 +84,7 @@ class QAOrchestrator:
         self.vision_lite = GeminiVisionAgent(
             project=config.gemini.project,
             location=config.gemini.location,
-            model="gemini-2.5-flash"
+            model=config.gemini.vision_lite_model
         )
         self.test_manager = TestCaseManager(config.paths.testcases_dir)
         self.planner = PlannerNode(
@@ -164,6 +165,7 @@ class QAOrchestrator:
 
             self._package_apk_map = self._load_package_apk_map()
             self._current_package = testcase.package or ""
+            self._collect_device_catalog("run_start")
             self._current_screen_type = ""
             self._stop_event = stop_event  # _wait_for_screen_stable 에서 참조
 
@@ -191,6 +193,10 @@ class QAOrchestrator:
                 status="RUNNING",
                 start_time=datetime.now()
             )
+            # 한 실행 안에서만 쓰는 제어 플래그. 화면을 매 스텝마다 다시 Vision으로
+            # 확인하지 않고 앞 스텝의 실제 실행/통과 결과로 후속 분기를 결정한다.
+            # read_text 등이 저장하는 사용자 결과 context와 섞이지 않도록 별도로 둔다.
+            flow_flags: set[str] = set()
             try:
                 for idx, step in enumerate(testcase.steps):
                     if stop_event and stop_event.is_set():
@@ -204,6 +210,7 @@ class QAOrchestrator:
                     self._last_tap_performed = False
                     self._last_step_evidence = None
                     step_skipped = False
+                    skip_reason = ""
                     label = step.description or step.action
                     self._current_step_number = idx + 1
                     self._current_step_label = str(label)
@@ -214,21 +221,57 @@ class QAOrchestrator:
                     if target_info:
                         logger.info(f"│  {target_info.strip()}")
 
+                    params = step.params or {}
+                    run_if_flag = str(params.get("run_if_flag") or "").strip()
+                    skip_if_flag = str(params.get("skip_if_flag") or "").strip()
+                    flag_skip_reason = ""
+                    if run_if_flag and run_if_flag not in flow_flags:
+                        flag_skip_reason = f"선행 흐름 '{run_if_flag}' 미실행"
+                    elif skip_if_flag and skip_if_flag in flow_flags:
+                        flag_skip_reason = f"완료 흐름 '{skip_if_flag}' 충족"
+
+                    if flag_skip_reason:
+                        step_skipped = True
+                        skip_reason = f"실행 흐름 조건 — {flag_skip_reason}"
+                        logger.info(f"│  → {flag_skip_reason} — Vision 확인 없이 스텝 건너뜀")
+                        logger.info("└─ ⏭️ 건너뜀 (실행 흐름 조건)")
+                        result.steps_executed += 1
+                        result.steps_skipped += 1
+                        result.step_results.append({
+                            "step": idx + 1,
+                            "label": label,
+                            "action": getattr(step.action, "value", str(step.action)),
+                            "target": step.target or "",
+                            "passed": False,
+                            "skipped": True,
+                            "skip_reason": skip_reason,
+                            "vision_confidence": 1.0,
+                            "failure_reason": "",
+                            "pass_reason": "",
+                        })
+                        self._cleanup_step_files()
+                        continue
+
                     # skip_if_visible: 액션 종류와 무관하게(예: skip_tutorial, close_app,
                     # launch_app처럼 vision과 무관한 액션도) 지정된 대상이 이미 화면에 보이면
                     # 이 스텝 자체를 실행하지 않고 건너뛴다. "이미 끝난 상태"를 나타내는 화면이
                     # 보일 때 재부팅/치트 호출 등 불필요한 동작을 반복하지 않기 위함.
-                    skip_if_visible = (step.params or {}).get("skip_if_visible")
+                    skip_if_visible = params.get("skip_if_visible")
                     if skip_if_visible:
                         check_path = self._capture_runtime_screenshot(prefix="skip_check")
                         check_result = self.vision_lite.find_element(
-                            check_path, skip_if_visible, self.config.paths.debug_dir
+                            check_path, skip_if_visible, self.config.paths.debug_dir,
+                            state_context=self._sctx,
                         )
                         if check_result.success and check_result.bbox:
                             step_skipped = True
+                            skip_reason = (
+                                f"이미 완료 상태 노출 — '{skip_if_visible}'"
+                            )
                             logger.info(f"│  → skip_if_visible: '{skip_if_visible}' 이미 화면에 보임 — 스텝 건너뜀")
                             logger.info("└─ ⏭️ 건너뜀 (skip_if_visible 조건 충족)")
                             result.steps_executed += 1
+                            result.steps_skipped += 1
                             result.step_results.append({
                                 "step": idx + 1,
                                 "label": label,
@@ -236,6 +279,7 @@ class QAOrchestrator:
                                 "target": step.target or "",
                                 "passed": False,
                                 "skipped": True,
+                                "skip_reason": skip_reason,
                                 "vision_confidence": check_result.confidence,
                                 "failure_reason": "",
                                 "pass_reason": "",
@@ -307,6 +351,8 @@ class QAOrchestrator:
                                 if optional_target_missing:
                                     # 선택 스텝: 조건부 팝업처럼 안 나올 수도 있는 대상 — 실패해도 건너뛰고 계속
                                     step_skipped = True
+                                    skip_reason = "선택 스텝 대상 미노출 (정상)"
+                                    result.steps_skipped += 1
                                     logger.info("└─ ⏭️ 건너뜀 (선택 스텝 — 대상 미노출)")
                                 else:
                                     logger.error("└─ ❌ 실패")
@@ -325,10 +371,16 @@ class QAOrchestrator:
                         "target": step.target or "",
                         "passed": success,
                         "skipped": step_skipped,
+                        "skip_reason": skip_reason,
                         "vision_confidence": confidence,
                         "failure_reason": "" if (success or step_skipped) else self._last_failure_reason,
                         "pass_reason": self._last_pass_detail if success else "",
                     }
+                    if success:
+                        set_flag = str(params.get("set_flag_on_pass") or "").strip()
+                        if set_flag:
+                            flow_flags.add(set_flag)
+                            logger.info("│  → 실행 흐름 플래그 설정: %s", set_flag)
                     if self._last_step_evidence:
                         step_result.update(self._last_step_evidence)
                     result.step_results.append(step_result)
@@ -353,7 +405,8 @@ class QAOrchestrator:
                 logger.info("━" * 52)
                 icon = "✅ PASS" if result.status == "PASS" else "❌ FAIL"
                 logger.info(
-                    f"  결과: {icon}  |  {result.steps_passed}/{total} 통과"
+                    f"  결과: {icon}  |  {result.steps_passed} 통과"
+                    f" · {result.steps_skipped} 건너뜀 / {total}"
                     f"  |  {duration:.1f}초"
                 )
                 logger.info("━" * 52)
@@ -368,11 +421,23 @@ class QAOrchestrator:
                 except Exception as e:
                     logger.warning(f"Eval 실행 실패 (테스트 결과에는 영향 없음): {e}")
 
+                if getattr(result, "cheat_log", None):
+                    logger.info("─" * 52)
+                    logger.info("  이 실행에서 쓰인 치트/프로퍼티 %d건", len(result.cheat_log))
+                    for entry in result.cheat_log:
+                        logger.info(
+                            "   %2d) step %-3s %-14s %-38s %s%s",
+                            entry["seq"], entry["step"], entry["kind"],
+                            entry["target"], entry["detail"],
+                            "" if entry["ok"] else "  ← 실패",
+                        )
+                self._collect_device_catalog("run_end")
                 self.test_manager.save_result(result, self.config.paths.results_dir)
 
                 test_span.update(output={
                     "status": result.status,
                     "steps_passed": result.steps_passed,
+                    "steps_skipped": result.steps_skipped,
                     "steps_executed": result.steps_executed,
                     "duration": duration,
                 })
@@ -380,13 +445,46 @@ class QAOrchestrator:
             langfuse.flush()
             return result
 
+    def _collect_device_catalog(self, phase: str) -> None:
+        """현재 씬의 v2 치트/프로퍼티를 카탈로그에 누적 병합한다.
+
+        치트는 씬 단위로 등록되므로 한 번에 전부 모이지 않는다. 실행 시작(보통 로비)과
+        종료(테스트가 도달한 화면) 두 시점에서 찍으면, 테스트를 돌릴수록 그 게임의
+        카탈로그가 자동으로 채워진다 — 플래너가 자연어에서 바로 치트 스텝을 만들 때 쓰는
+        근거 데이터다. 실패해도 테스트 진행에는 영향을 주지 않는다.
+        """
+        if not self._current_package:
+            return
+        try:
+            snapshot = self.unity.catalog_snapshot_v2()
+            if not snapshot.get("cheats") and not snapshot.get("properties"):
+                return
+            counts = unity_catalog.merge_snapshot(self._current_package, snapshot)
+            if counts.get("new"):
+                logger.info(
+                    "[%s] 치트 카탈로그 갱신: 신규 %d개 (누적 치트 %d / 프로퍼티 %d)",
+                    phase, counts["new"], counts["cheats"], counts["properties"],
+                )
+        except Exception as exc:
+            logger.debug("치트 카탈로그 수집 건너뜀 (%s): %s", phase, exc)
+
     def _execute_step(self, step, result: TestResult) -> tuple[bool, float]:
         """개별 스텝 실행 — (success, vision_confidence) 반환"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        screenshot_path = self.config.paths.screenshots_dir / f"screenshot_{self._file_tag}_{timestamp}.png"
-        self.adb.screenshot(screenshot_path)
-        self._publish_live_screenshot(screenshot_path)
-        result.screenshots.append(str(screenshot_path))
+        self._refresh_state_context(step)
+        screenshot_path: Optional[Path] = None
+        if step.action in {
+            ActionType.READ_TEXT,
+            ActionType.READ_ITEMS,
+            ActionType.READ_SCREEN,
+        }:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            screenshot_path = (
+                self.config.paths.screenshots_dir
+                / f"screenshot_{self._file_tag}_{timestamp}.png"
+            )
+            self.adb.screenshot(screenshot_path)
+            self._publish_live_screenshot(screenshot_path)
+            result.screenshots.append(str(screenshot_path))
 
         try:
             if step.action == ActionType.FIND_AND_TAP:
@@ -407,14 +505,13 @@ class QAOrchestrator:
                 return self._scroll_action(step), 1.0
 
             elif step.action == ActionType.WAIT:
-                time.sleep(step.params.get("seconds", 2))
-                return True, 1.0
+                return self._execute_wait_step(step), 1.0
 
             elif step.action == ActionType.BACK:
                 return self._execute_back_step(step), 1.0
 
             elif step.action == ActionType.DISMISS_POPUPS:
-                return self._dismiss_popups(step, screenshot_path), 1.0
+                return self._dismiss_popups(step), 1.0
 
             elif step.action == ActionType.HOME:
                 return self.adb.press_home(), 1.0
@@ -444,23 +541,45 @@ class QAOrchestrator:
                 return False, 1.0
 
             elif step.action == ActionType.VERIFY:
+                # params.scene이 있으면 화면 판독 대신 앱 내부 v2 치트 목록으로 씬을 판정한다
+                # (Vision 호출 0회). "지금 로비인가 전투인가"류 확인은 이 경로가 정확하고 싸다.
+                if (step.params or {}).get("scene"):
+                    return self._verify_scene_step(step), 1.0
                 fresh_path = self._capture_runtime_screenshot(prefix="verify")
                 success, confidence = self._verify_screen(fresh_path, step.target, step)
                 return success, confidence
 
             elif step.action == ActionType.READ_TEXT:
+                assert screenshot_path is not None
                 return self._read_text_step(screenshot_path, step, result), 1.0
 
             elif step.action == ActionType.READ_ITEMS:
+                assert screenshot_path is not None
                 return self._read_items_step(screenshot_path, step, result), 1.0
 
             elif step.action == ActionType.READ_SCREEN:
+                assert screenshot_path is not None
                 return self._read_screen_step(screenshot_path, step, result), 1.0
 
             elif step.action in (ActionType.SKIP_TUTORIAL, ActionType.TUTORIAL_PASS):
                 params = step.params or {}
                 pkg = params.get("package") or self._current_package or step.target or ""
-                return self.unity.skip_tutorial(package=pkg), 1.0
+                skipped = self.unity.skip_tutorial(package=pkg)
+                self._log_cheat_usage(
+                    result, "skip_tutorial", pkg, "패키지별 튜토리얼 스킵 치트", skipped)
+                return skipped, 1.0
+
+            elif step.action == ActionType.REPEAT_UNTIL:
+                return self._repeat_until_step(step, result), 1.0
+
+            elif step.action == ActionType.CALL_CHEAT:
+                return self._call_cheat_step(step, result), 1.0
+
+            elif step.action == ActionType.SET_PROPERTY:
+                return self._set_property_step(step, result), 1.0
+
+            elif step.action == ActionType.CHECK_PROPERTY:
+                return self._check_property_step(step, result), 1.0
 
             elif step.action == ActionType.ENTER_SR_DEBUGGER:
                 params = step.params or {}
@@ -517,6 +636,186 @@ class QAOrchestrator:
             logger.error(f"Step execution failed: {e}")
             self._last_failure_reason = str(e)
             return False, 0.0
+
+    def _execute_wait_step(self, step) -> bool:
+        """고정 시간 또는 앱 상태 조건을 중단 가능하게 기다린다."""
+        params = step.params or {}
+        condition_keys = (
+            "until_scene",
+            "until_property",
+            "until_unity_button",
+            "until_unity_button_hidden",
+            "until_visible",
+            "until_hidden",
+        )
+        has_condition = any(params.get(key) for key in condition_keys)
+        if not has_condition:
+            seconds = self._to_float(params.get("seconds"), 2.0)
+            if self._sleep_interruptible(seconds):
+                self._last_pass_detail = f"{seconds:g}초 대기 완료"
+                return True
+            self._last_failure_reason = "wait: 중단 요청으로 종료"
+            return False
+
+        timeout_seconds = self._to_float(
+            params.get("timeout_seconds"), float(step.timeout)
+        )
+        poll_interval = max(
+            0.1,
+            self._to_float(params.get("poll_interval_seconds"), 1.0),
+        )
+        try:
+            consecutive_required = max(
+                1, min(5, int(params.get("consecutive_matches", 1)))
+            )
+        except (TypeError, ValueError):
+            consecutive_required = 1
+        deadline = time.monotonic() + timeout_seconds
+        last_detail = ""
+        consecutive_matches = 0
+
+        while True:
+            if self._stop_requested():
+                self._last_failure_reason = "wait: 중단 요청으로 종료"
+                return False
+
+            matched, last_detail = self._wait_conditions_met(params)
+            if matched:
+                consecutive_matches += 1
+                if consecutive_matches >= consecutive_required:
+                    self._last_pass_detail = f"조건 대기 완료: {last_detail}"
+                    logger.info("│  → %s", self._last_pass_detail)
+                    return True
+            else:
+                consecutive_matches = 0
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not self._sleep_interruptible(min(poll_interval, remaining)):
+                self._last_failure_reason = "wait: 중단 요청으로 종료"
+                return False
+
+        requested = ", ".join(
+            f"{key}={params.get(key)!r}"
+            for key in condition_keys
+            if params.get(key)
+        )
+        self._last_failure_reason = (
+            f"wait: {timeout_seconds:g}초 안에 조건을 만족하지 못함 "
+            f"({requested}; 마지막 상태: {last_detail or '확인 불가'})"
+        )
+        logger.error(self._last_failure_reason)
+        return False
+
+    def _wait_conditions_met(self, params: dict) -> tuple[bool, str]:
+        """지정된 모든 wait 조건을 한 번씩 확인한다."""
+        details: list[str] = []
+
+        until_scene = str(params.get("until_scene") or "").strip()
+        if until_scene:
+            expected = [
+                value.strip().lower()
+                for value in until_scene.split("|")
+                if value.strip()
+            ]
+            prefixes = [
+                value.lower() for value in self.unity.current_scene_prefixes_v2()
+            ]
+            scene_ok = bool(prefixes) and any(
+                value in prefixes for value in expected
+            )
+            details.append(f"scene={prefixes or 'unavailable'}")
+            if not scene_ok:
+                return False, "; ".join(details)
+
+        until_property = params.get("until_property")
+        if until_property:
+            if not isinstance(until_property, dict):
+                return False, "until_property 형식 오류"
+            prop_id = str(until_property.get("id") or "").strip()
+            has_expected = (
+                "equals" in until_property or "expect_value" in until_property
+            )
+            expected_value = until_property.get(
+                "equals", until_property.get("expect_value")
+            )
+            if not prop_id or not has_expected:
+                return False, "until_property에는 id와 equals가 필요"
+            item = self.unity.get_property_values_v2([prop_id]).get(prop_id)
+            if not item or item.get("Error"):
+                return False, f"{prop_id}=unavailable"
+            actual = item.get("Value")
+            if isinstance(actual, dict) and "value" in actual:
+                actual = actual["value"]
+            details.append(f"{prop_id}={actual!r}")
+            if not self._property_value_matches(expected_value, actual):
+                return False, "; ".join(details)
+
+        until_unity_button = params.get("until_unity_button")
+        if until_unity_button:
+            match = self.unity.find_exact_button(until_unity_button)
+            details.append(
+                f"unity_button={'found' if match is not None else 'not_found'}"
+            )
+            if match is None:
+                return False, "; ".join(details)
+
+        until_unity_button_hidden = params.get("until_unity_button_hidden")
+        if until_unity_button_hidden:
+            if not until_unity_button:
+                return (
+                    False,
+                    "until_unity_button_hidden에는 API 정상 응답 확인용 "
+                    "until_unity_button도 필요",
+                )
+            match = self.unity.find_exact_button(until_unity_button_hidden)
+            hidden = match is None
+            details.append(f"unity_button_hidden={hidden}")
+            if not hidden:
+                return False, "; ".join(details)
+
+        visible = self._to_target_list(params.get("until_visible"))
+        hidden = self._to_target_list(params.get("until_hidden"))
+        if visible or hidden:
+            probe = self._capture_runtime_screenshot(prefix="wait_condition")
+            detections = self.vision_lite.find_elements(
+                probe,
+                visible + hidden,
+                self.config.paths.debug_dir,
+            )
+            if len(detections) != len(visible) + len(hidden):
+                return False, "화면 조건 판독 결과 부족"
+
+            for target, detection in zip(visible, detections[:len(visible)]):
+                found = bool(detection.success and detection.bbox)
+                details.append(f"visible:{target}={found}")
+                if getattr(detection, "error", None) or not found:
+                    return False, "; ".join(details)
+
+            hidden_results = detections[len(visible):]
+            for target, detection in zip(hidden, hidden_results):
+                if getattr(detection, "error", None):
+                    return False, f"hidden:{target}=판독 오류"
+                found = bool(detection.success and detection.bbox)
+                details.append(f"hidden:{target}={not found}")
+                if found:
+                    return False, "; ".join(details)
+
+        return True, "; ".join(details)
+
+    def _stop_requested(self) -> bool:
+        stop_event = getattr(self, "_stop_event", None)
+        return bool(stop_event and stop_event.is_set())
+
+    def _sleep_interruptible(self, seconds: float) -> bool:
+        if seconds <= 0:
+            return not self._stop_requested()
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            return not stop_event.wait(seconds)
+        time.sleep(seconds)
+        return True
 
     def _load_package_apk_map(self) -> dict[str, str]:
         for base in [self.config.paths.project_root, self.config.paths.bundle_root]:
@@ -588,7 +887,7 @@ class QAOrchestrator:
 
         return False
 
-    def _dismiss_popups(self, step, initial_screenshot: Path) -> bool:
+    def _dismiss_popups(self, step) -> bool:
         """명시된 팝업만 반복해서 닫고 최종 화면이 안정되면 성공한다."""
         params = step.params or {}
         stop_targets = self._to_target_list(
@@ -625,6 +924,7 @@ class QAOrchestrator:
         timeout_seconds = self._to_float(params.get("timeout_seconds"), float(step.timeout))
         quiet_seconds = self._to_float(params.get("quiet_seconds"), 1.5)
         poll_interval = max(0.1, self._to_float(params.get("poll_interval_seconds"), 0.5))
+        complete_after_target = str(params.get("complete_after_target") or "").strip()
 
         deadline = time.monotonic() + timeout_seconds
         stable_since: Optional[float] = None
@@ -680,6 +980,21 @@ class QAOrchestrator:
                 screenshot_path = self._wait_for_screen_stable(
                     timeout=min(self.STABILITY_TIMEOUT_SEC, remaining)
                 )
+                if complete_after_target and rule["target"] == complete_after_target:
+                    self._last_failure_reason = ""
+                    self._last_pass_detail = (
+                        f"마지막 지정 팝업 '{complete_after_target}'까지 "
+                        f"총 {dismissed}개 처리 완료"
+                    )
+                    self._save_interrupt_debug(screenshot_path, {
+                        "is_interrupt": False,
+                        "kind": "dismiss_popups",
+                        "evidence_phase": "final_verification",
+                        "description": complete_after_target,
+                        "result": "PASS",
+                        "completion_mode": "last_expected_popup_dismissed",
+                    })
+                    return True
                 continue
 
             if stop_visible:
@@ -900,13 +1215,14 @@ class QAOrchestrator:
             logger.warning("인터럽트 디버그 저장 실패: %s", e)
 
     def _find_and_tap(self, step) -> bool | str:
-        """공통 캐시 → 게임 캐시 → Vision 순으로 좌표 탐색. 해상도별 관리."""
+        """정확 Unity → 명시적 안전 캐시 → Vision 순으로 좌표를 찾는다."""
         self._last_post_verify_screenshot = None
         target = step.target
         if not target:
             logger.error("find_and_tap action requires target")
             self._last_failure_reason = "target이 지정되지 않음"
             return False
+        params = step.params or {}
 
         # TO-DO 데이터 쌓이면 그때 db 연결 
         # # 1. 공통 캐시 조회 (게임 무관, 해상도별)
@@ -941,29 +1257,93 @@ class QAOrchestrator:
         if "@" in target and " " not in target.strip():
             return self._tap_account_email(step, target.strip())
 
+        # Profile에 실기기에서 확인한 Unity 이름이 있을 때만 쓰는 결정적 경로.
+        # 정확히 하나가 일치하지 않으면 아직 탭하지 않았으므로 Vision으로 폴백 가능하다.
+        unity_name = params.get("unity_name")
+        if unity_name and not params.get("then_tap"):
+            exact = self.unity.find_exact_button(unity_name)
+            if exact:
+                point = self.unity.unity_to_screen_coords(
+                    exact.button, self.adb.width, self.adb.height
+                )
+                if point:
+                    evidence_path = self._capture_runtime_screenshot(
+                        prefix="unity_exact"
+                    )
+                    coords = self._coords_with_debug_box(point["x"], point["y"])
+                    return self._tap_resolved_once(
+                        step,
+                        evidence_path,
+                        coords,
+                        source="UnityExact",
+                        confidence=1.0,
+                    )
+            logger.info(
+                "Unity exact MISS/AMBIGUOUS for '%s' (%r) → Vision fallback.",
+                target,
+                unity_name,
+            )
+
+        # 좌표 캐시는 Profile이 안정적인 화면 범위와 후조건을 명시한 경우에만 읽는다.
+        # 캐시로 이미 탭했다면 검증 실패 후 Vision으로 다시 누르지 않는다.
+        cache_scope = str(params.get("cache_scope") or "").strip()
+        cache_safe = bool(params.get("cache_safe"))
+        has_postcondition = bool(
+            params.get("expect_visible") or params.get("expect_hidden")
+        )
+        if (
+            cache_safe
+            and cache_scope
+            and has_postcondition
+            and not params.get("then_tap")
+            and self._current_package
+        ):
+            cached = self.cache.get(
+                self._current_package,
+                cache_scope,
+                target,
+                self._resolution,
+            )
+            if cached:
+                if (
+                    0 <= cached.x < self.adb.width
+                    and 0 <= cached.y < self.adb.height
+                ):
+                    evidence_path = self._capture_runtime_screenshot(
+                        prefix="scoped_cache"
+                    )
+                    coords = self._coords_with_debug_box(cached.x, cached.y)
+                    return self._tap_resolved_once(
+                        step,
+                        evidence_path,
+                        coords,
+                        source="ScopedCache",
+                        confidence=cached.confidence,
+                        invalidate_cache_scope=cache_scope,
+                    )
+                self.cache.invalidate_element(
+                    self._current_package,
+                    cache_scope,
+                    target,
+                    self._resolution,
+                )
+
         # 탭 바로가기: params.tab_shortcut이 FIXED_TAB_COORDS에 있으면 vision 없이 즉시 탭.
-        # 검증(expect_visible 등)에 실패하면 아래 일반 vision 탐색으로 자동 폴백한다.
-        params_for_shortcut = step.params or {}
-        tab_shortcut = params_for_shortcut.get("tab_shortcut")
+        # 한 번 탭한 뒤에는 상태 중복 변경을 막기 위해 검증만 재시도한다.
+        tab_shortcut = params.get("tab_shortcut")
         if tab_shortcut:
             fixed = self._resolve_tab_shortcut(tab_shortcut)
             if fixed:
-                self._wait_for_screen_stable()
-                self.adb.tap(fixed["x"], fixed["y"])
-                self._last_tap_performed = True
-                self._current_screen_type = ""
-                verified = self._verify_find_and_tap_outcome(step, tap_source="TabShortcut")
-                debug_screenshot = self._last_post_verify_screenshot or self._wait_for_screen_stable()
-                if verified:
-                    exp = params_for_shortcut.get("expect_visible")
-                    self._last_pass_detail = (
-                        f"'{target}' 탭 바로가기 ({fixed['x']},{fixed['y']})"
-                        + (f" → '{exp}' 노출 확인" if exp else "")
-                    )
-                    self._save_tap_debug(debug_screenshot, target, fixed, 1.0, True)
-                    return True
-                logger.warning("탭 바로가기 검증 실패 — vision으로 폴백: '%s'", tab_shortcut)
-                self._save_tap_debug(debug_screenshot, target, fixed, 1.0, False)
+                evidence_path = self._capture_runtime_screenshot(
+                    prefix="tab_shortcut"
+                )
+                return self._tap_resolved_once(
+                    step,
+                    evidence_path,
+                    fixed,
+                    source="TabShortcut",
+                    confidence=1.0,
+                )
 
         # 3. 캐시 미스 → Vision 탐지 → 캐시 저장
         # logger.info("Cache MISS for '%s' @ %s → Vision fallback.", target, self._resolution)
@@ -972,8 +1352,6 @@ class QAOrchestrator:
         time.sleep(1)
         latest_path = self._wait_for_screen_stable()
         coords = self._resolve_with_vision(latest_path, target)
-
-        params = step.params or {}
 
         # scroll_search 스텝은 첫 화면에서 미발견이 정상(스크롤해야 나옴) —
         # 인터럽트 분석을 먼저 돌리면 상점/목록 화면을 팝업으로 오판해 뒤로가기로
@@ -1013,8 +1391,6 @@ class QAOrchestrator:
             logger.info("tap_point=center — '%s' 확인 후 화면 정중앙 (%d, %d) 탭", target, tap_x, tap_y)
         self.adb.tap(coords["x"], coords["y"])
         self._last_tap_performed = True
-        self._cache_element(latest_path, target, coords["x"], coords["y"], "vision")
-        self._auto_register_common(target, coords["x"], coords["y"])
         self._current_screen_type = ""
 
         # then_tap: 첫 탭 후 이어서 탭할 대상 (예: 팝업 옵션 선택 → 확인 버튼) — 한 스텝으로 처리
@@ -1044,9 +1420,78 @@ class QAOrchestrator:
                 f"'{target}' 탭 ({coords['x']},{coords['y']})"
                 + (f" → '{exp}' 노출 확인" if exp else "")
             )
+            if cache_safe and cache_scope:
+                self._cache_element(
+                    latest_path,
+                    target,
+                    coords["x"],
+                    coords["y"],
+                    "vision",
+                    screen_key=cache_scope,
+                )
+            self._auto_register_common(target, coords["x"], coords["y"])
         self._save_tap_debug(
             latest_path, target, coords,
             getattr(self, "_last_vision_confidence", 0.0), verified,
+        )
+        return True if verified else self._TAP_OK_VERIFY_FAIL
+
+    @staticmethod
+    def _coords_with_debug_box(x: int, y: int, radius: int = 24) -> dict:
+        return {
+            "x": x,
+            "y": y,
+            "x1": x - radius,
+            "y1": y - radius,
+            "x2": x + radius,
+            "y2": y + radius,
+        }
+
+    def _tap_resolved_once(
+        self,
+        step,
+        screenshot_path: Path,
+        coords: dict,
+        *,
+        source: str,
+        confidence: float,
+        invalidate_cache_scope: str = "",
+    ) -> bool | str:
+        """결정적 좌표를 한 번만 탭하고 이후에는 후조건만 확인한다."""
+        target = step.target or ""
+        if not self.adb.tap(coords["x"], coords["y"]):
+            self._last_failure_reason = f"{source} 좌표 탭 실패: '{target}'"
+            self._save_tap_debug(
+                screenshot_path, target, coords, confidence, False
+            )
+            return False
+
+        self._last_tap_performed = True
+        self._current_screen_type = ""
+        verified = self._verify_find_and_tap_outcome(step, tap_source=source)
+        if not verified:
+            if invalidate_cache_scope and self._current_package:
+                self.cache.invalidate_element(
+                    self._current_package,
+                    invalidate_cache_scope,
+                    target,
+                    self._resolution,
+                )
+            self._last_failure_reason = (
+                f"탭 성공({source}), 후조건 검증 실패: "
+                f"{self._describe_postcondition(step.params or {})}"
+            )
+        else:
+            expected = self._to_target_list(
+                (step.params or {}).get("expect_visible")
+            )
+            self._last_pass_detail = (
+                f"'{target}' {source} 탭 ({coords['x']},{coords['y']})"
+                + (f" → '{', '.join(expected)}' 노출 확인" if expected else "")
+            )
+
+        self._save_tap_debug(
+            screenshot_path, target, coords, confidence, verified
         )
         return True if verified else self._TAP_OK_VERIFY_FAIL
 
@@ -1230,16 +1675,28 @@ class QAOrchestrator:
         r = 24  # 디버그 이미지에 그릴 가상 바운딩 박스 반경
         return {"x": x, "y": y, "x1": x - r, "y1": y - r, "x2": x + r, "y2": y + r}
 
-    def _cache_element(self, screenshot_path: Path, target: str, x: int, y: int, source: str) -> None:
+    def _cache_element(
+        self,
+        screenshot_path: Path,
+        target: str,
+        x: int,
+        y: int,
+        source: str,
+        *,
+        screen_key: str = "",
+    ) -> None:
         if not self._current_package:
             return
-        screen_type = self._get_screen_type(screenshot_path)
+        screen_type = screen_key or self._get_screen_type(screenshot_path)
         self.cache.set(self._current_package, screen_type, target, x, y, source,
                        resolution=self._resolution)
 
     def _resolve_with_vision(self, screenshot_path: Path, target: str) -> Optional[dict]:
+        # 정확 Unity/명시적 캐시가 모두 실패해 실제 Vision 폴백이 필요한 시점에만
+        # 상태 컨텍스트를 수집한다.
+        self._refresh_state_context()
         vision_result = self.vision.find_element(
-            screenshot_path, target, self.config.paths.debug_dir
+            screenshot_path, target, self.config.paths.debug_dir, state_context=self._sctx
         )
         if not vision_result.success or not vision_result.bbox:
             if vision_result.error:
@@ -1357,6 +1814,14 @@ class QAOrchestrator:
         self._last_post_verify_confidence = 0.0
         self._last_post_verify_screenshot = None
 
+        if tap_source != "Retry":
+            wait_seconds = self._to_float(params.get("wait_seconds"), 0.0)
+            if wait_seconds > 0:
+                logger.info("Post-tap wait: %.1fs", wait_seconds)
+                if not self._sleep_interruptible(wait_seconds):
+                    self._last_failure_reason = "탭 후 대기 중 중단 요청으로 종료"
+                    return False
+
         if not expect_visible and not expect_hidden:
             self._last_post_verify_confidence = 1.0
             logger.info(
@@ -1364,12 +1829,6 @@ class QAOrchestrator:
                 tap_source, target,
             )
             return True
-
-        if tap_source != "Retry":
-            wait_seconds = self._to_float(params.get("wait_seconds"), 0.0)
-            if wait_seconds > 0:
-                logger.info("Post-tap verification wait: %.1fs", wait_seconds)
-                time.sleep(wait_seconds)
 
         deadline = time.time() + step.timeout
         attempt = 0
@@ -1398,11 +1857,11 @@ class QAOrchestrator:
         return False
 
     def _wait_for_screen_stable(self, timeout: float | None = None, min_wait: float = 0.5) -> Path:
-        timeout = timeout or self.STABILITY_TIMEOUT_SEC
+        timeout = self.STABILITY_TIMEOUT_SEC if timeout is None else max(0.0, timeout)
         interval = self.STABILITY_POLL_INTERVAL_SEC
         threshold = self.STABILITY_THRESHOLD
 
-        time.sleep(min_wait)
+        self._sleep_interruptible(min_wait)
         prev_path = self._capture_runtime_screenshot(prefix="stable_check")
         deadline = time.time() + timeout
 
@@ -1410,7 +1869,8 @@ class QAOrchestrator:
             if getattr(self, '_stop_event', None) and self._stop_event.is_set():
                 logger.warning("Screen stable wait interrupted by stop event.")
                 return prev_path
-            time.sleep(interval)
+            if not self._sleep_interruptible(interval):
+                return prev_path
             curr_path = self._capture_runtime_screenshot(prefix="stable_check")
 
             ratio = self._image_change_ratio(prev_path, curr_path)
@@ -1482,7 +1942,7 @@ class QAOrchestrator:
             self._last_failure_reason = "verify target이 지정되지 않음"
             return False, 0.0
         vision_result = self.vision_lite.find_element(
-            screenshot_path, target, self.config.paths.debug_dir
+            screenshot_path, target, self.config.paths.debug_dir, state_context=self._sctx
         )
         if not vision_result.success or not vision_result.bbox:
             # scroll_search: 첫 화면에 없으면 스크롤하며 재탐색 (find_and_tap과 동일한 로직 재사용).
@@ -1519,6 +1979,7 @@ class QAOrchestrator:
         expect_increase = params.get("expect_increase")
         expect_decrease = params.get("expect_decrease")
         expect_delta = params.get("expect_delta")
+        expect_delta_from = params.get("expect_delta_from")
         delta_tolerance = params.get("delta_tolerance", 0)
 
         if not hasattr(result, "context"):
@@ -1528,6 +1989,28 @@ class QAOrchestrator:
         if save_as:
             result.context[save_as] = value
             detail += f" — '{save_as}'로 저장"
+
+        # expect_delta_from: 앞서 화면에서 읽어 저장한 값을 그대로 기대 증감량으로 쓴다.
+        # 예) 결과 화면의 보상 골드를 reward_gold로 저장 → 아웃게임 골드가 그만큼 늘었는지
+        # 검증. 기대값을 템플릿에 하드코딩할 수 없는(매번 달라지는) 재화 검증용.
+        # 부호는 delta_sign으로 준다: 기본 +1(증가), 소비 검증이면 -1.
+        if expect_delta is None and expect_delta_from:
+            source_raw = result.context.get(expect_delta_from)
+            if source_raw is None:
+                return False, f"expect_delta_from '{expect_delta_from}' 값이 없습니다."
+            source_num = self._to_number(source_raw)
+            if source_num is None:
+                return False, (
+                    f"expect_delta_from '{expect_delta_from}' 값을 숫자로 읽을 수 없습니다 "
+                    f"({source_raw!r})."
+                )
+            sign_raw = params.get("delta_sign", 1)
+            try:
+                sign = -1.0 if float(sign_raw) < 0 else 1.0
+            except (TypeError, ValueError):
+                sign = 1.0
+            expect_delta = abs(source_num) * sign
+            detail += f" (기대 증감 {expect_delta:+g} ← '{expect_delta_from}')"
 
         if not compare_with:
             return True, detail
@@ -1589,7 +2072,7 @@ class QAOrchestrator:
             return False
 
         params = step.params or {}
-        value = self.vision.read_text(screenshot_path, target)
+        value = self.vision.read_text(screenshot_path, target, state_context=self._sctx)
         if value is None:
             self._last_failure_reason = f"read_text: '{target}' 텍스트를 찾지 못함"
             logger.error(self._last_failure_reason)
@@ -1609,6 +2092,360 @@ class QAOrchestrator:
         # 증거 스크린샷 — 읽은 값/비교 결과를 라벨로 새겨 리포트 갤러리에 노출
         self._save_read_debug(
             screenshot_path, target, detail if ok else self._last_failure_reason, ok)
+        return ok
+
+    # Vision에게 화면만이 아니라 게임이 알려준 상태도 함께 준다.
+    # 스텝마다 1회만 조회해 그 스텝 안의 모든 Vision 호출에서 재사용한다.
+    _STATE_CONTEXT_ACTIONS = {
+        ActionType.VERIFY,
+        ActionType.READ_TEXT,
+        ActionType.READ_ITEMS,
+        ActionType.READ_SCREEN,
+    }
+
+    def _refresh_state_context(self, step=None) -> None:
+        """스텝 시작 시 게임 상태를 1회 조회해 캐시한다 (Vision 프롬프트 주입용)."""
+        if step is not None and step.action not in self._STATE_CONTEXT_ACTIONS:
+            return
+        if (
+            step is not None
+            and step.action == ActionType.VERIFY
+            and (step.params or {}).get("scene")
+        ):
+            return
+        try:
+            self._state_context = self.unity.state_context_text()
+        except Exception as exc:
+            logger.debug("state_context 갱신 실패: %s", exc)
+            self._state_context = ""
+
+    @property
+    def _sctx(self) -> str:
+        return getattr(self, "_state_context", "") or ""
+
+    def _log_cheat_usage(self, result: TestResult, kind: str, target: str,
+                         detail: str, ok: bool) -> None:
+        """이 실행에서 실제로 쓰인 치트/프로퍼티를 기록한다.
+
+        어떤 검증이 어떤 내부 상태 조작에 기대고 있는지 리포트에서 바로 보기 위한 것.
+        상태 주입(state_context)이 매 스텝 조회하는 프로퍼티는 여기 남기지 않는다 —
+        "쓰인 내역"만 남겨야 의미가 있다.
+        """
+        if not hasattr(result, "cheat_log") or result.cheat_log is None:
+            result.cheat_log = []
+        entry = {
+            "seq": len(result.cheat_log) + 1,
+            "step": result.steps_executed + 1,
+            "kind": kind,
+            "target": target,
+            "detail": detail,
+            "ok": ok,
+        }
+        result.cheat_log.append(entry)
+        logger.info("│  ⚙ [%s] %s — %s%s", kind, target, detail, "" if ok else "  (실패)")
+
+    def _repeat_until_step(self, step, result: TestResult) -> bool:
+        """조건이 만족될 때까지 하위 스텝 묶음을 반복 실행한다.
+
+        웨이브 디펜스처럼 "준비 → 배치 → 진행"을 N번 되풀이해야 하는 흐름을 스텝 수십 개로
+        펼쳐 쓰지 않기 위한 액션. 웨이브 수가 다른 스테이지에도 그대로 재사용된다.
+
+        params:
+          steps            : 반복할 스텝 목록 (일반 스텝과 같은 스키마)
+          until_visible    : 이 대상이 화면에 보이면 종료 (Vision)
+          until_hidden     : 이 대상이 화면에서 사라지면 종료 (Vision)
+          until_scene      : 이 씬 접두사가 되면 종료 (치트 목록 기반, Vision 호출 없음)
+          max_iterations   : 최대 반복 횟수 (기본 20) — 무한 루프 방지
+          timeout_seconds  : 전체 제한 시간 (기본 step.timeout)
+          check_every      : N회 반복마다 조건 확인 (기본 1). Vision 조건일 때 호출 절약용
+          strict           : true면 하위 스텝이 실패하는 즉시 중단 (기본 false)
+
+        기본값이 strict=false인 이유 — 반복 루프에서는 하위 스텝의 실패가 정상적인 경우가
+        많다. 예: 크레딧이 모자라 소환이 안 되거나, 전투 중이라 시작 버튼이 없는 회차.
+        """
+        params = step.params or {}
+        raw_steps = params.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            self._last_failure_reason = "repeat_until: params.steps(list)가 필요합니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        try:
+            body = [TestStep(**sub) for sub in raw_steps]
+        except (TypeError, ValueError) as exc:
+            self._last_failure_reason = f"repeat_until: 하위 스텝 파싱 실패 — {exc}"
+            logger.error(self._last_failure_reason)
+            return False
+
+        until_visible = str(params.get("until_visible") or "").strip()
+        until_hidden = str(params.get("until_hidden") or "").strip()
+        until_scene = str(params.get("until_scene") or "").strip()
+        if not (until_visible or until_hidden or until_scene):
+            self._last_failure_reason = (
+                "repeat_until: until_visible / until_hidden / until_scene 중 하나가 필요합니다."
+            )
+            logger.error(self._last_failure_reason)
+            return False
+
+        try:
+            max_iterations = max(1, min(200, int(params.get("max_iterations", 20))))
+        except (TypeError, ValueError):
+            max_iterations = 20
+        try:
+            check_every = max(1, int(params.get("check_every", 1)))
+        except (TypeError, ValueError):
+            check_every = 1
+        timeout_seconds = self._to_float(params.get("timeout_seconds"), float(step.timeout))
+        strict = bool(params.get("strict"))
+        deadline = time.monotonic() + timeout_seconds
+
+        def condition_met() -> bool:
+            if until_scene:
+                expected = [t.strip().lower() for t in until_scene.split("|") if t.strip()]
+                prefixes = [p.lower() for p in self.unity.current_scene_prefixes_v2()]
+                return any(name in prefixes for name in expected)
+            probe = self._capture_runtime_screenshot(prefix="repeat")
+            target = until_visible or until_hidden
+            found = self.vision_lite.find_element(
+                probe, target, self.config.paths.debug_dir, state_context=self._sctx
+            )
+            visible = bool(found.success and found.bbox)
+            return visible if until_visible else (not visible)
+
+        for iteration in range(max_iterations):
+            if iteration % check_every == 0 and condition_met():
+                self._last_pass_detail = (
+                    f"반복 {iteration}회 후 종료 조건 충족 "
+                    f"({until_visible or until_hidden or ('씬=' + until_scene)})"
+                )
+                logger.info("│  → %s", self._last_pass_detail)
+                return True
+
+            if time.monotonic() > deadline:
+                break
+
+            logger.info("│  ↻ repeat_until %d/%d", iteration + 1, max_iterations)
+            for sub in body:
+                if getattr(self, '_stop_event', None) and self._stop_event.is_set():
+                    self._last_failure_reason = "repeat_until: 중단 요청으로 종료"
+                    return False
+                ok, _ = self._execute_step(sub, result)
+                if strict and not ok:
+                    self._last_failure_reason = (
+                        f"repeat_until(strict): 하위 스텝 실패 — {sub.description or sub.target}"
+                    )
+                    logger.error(self._last_failure_reason)
+                    return False
+
+        # 마지막 반복 뒤 한 번 더 확인
+        if condition_met():
+            self._last_pass_detail = f"반복 {max_iterations}회 후 종료 조건 충족"
+            return True
+
+        self._last_failure_reason = (
+            f"repeat_until: {max_iterations}회 / {timeout_seconds:.0f}초 안에 종료 조건을 "
+            f"만족하지 못함 ({until_visible or until_hidden or ('씬=' + until_scene)})"
+        )
+        logger.error(self._last_failure_reason)
+        return False
+
+    def _verify_scene_step(self, step) -> bool:
+        """앱 내부 v2 치트 목록의 id 접두사로 현재 씬을 판정한다.
+
+        치트는 씬 단위로 등록되므로 목록에 잡히는 접두사가 곧 현재 씬이다
+        (이지스 디펜스: 전투 화면=`ingame`, 로비=`outgame`). 화면을 Vision으로 읽지 않아
+        스크린샷 해석 오차가 없고 호출 비용도 없다.
+
+        params.scene: 기대 씬 접두사. "ingame" 또는 "ingame|outgame"처럼 |로 여러 개 허용.
+        접두사 이름은 게임마다 다르므로 템플릿이 지정한다.
+        """
+        params = step.params or {}
+        expected = [
+            token.strip().lower()
+            for token in str(params.get("scene") or "").split("|")
+            if token.strip()
+        ]
+        if not expected:
+            self._last_failure_reason = "verify: params.scene이 비어 있습니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        prefixes = [p.lower() for p in self.unity.current_scene_prefixes_v2()]
+        if not prefixes:
+            self._last_failure_reason = (
+                "verify(scene): 앱 내부 v2 치트 목록을 읽지 못했습니다 "
+                "(로딩 중이거나 치트 서버 미동작)."
+            )
+            logger.error(self._last_failure_reason)
+            return False
+
+        matched = [name for name in expected if name in prefixes]
+        if matched:
+            self._last_pass_detail = (
+                f"씬 판정: 기대 '{'|'.join(expected)}' — 현재 등록 접두사 {prefixes} 에 "
+                f"'{matched[0]}' 존재"
+            )
+            logger.info("│  → %s", self._last_pass_detail)
+            return True
+
+        self._last_failure_reason = (
+            f"verify(scene): 기대 씬 '{'|'.join(expected)}'이 아님 — "
+            f"현재 등록 접두사 {prefixes}"
+        )
+        logger.error(self._last_failure_reason)
+        return False
+
+    # ── v2 치트/프로퍼티 스텝 ──────────────────────────────────────────
+    # Unity 앱 내부 v2 API(sr_api.md)를 스텝에서 직접 쓰기 위한 액션들.
+    # UI로는 만들 수 없는 상태(목표 웨이브, 몬스터 소환, 재화, 무적 등)를 세팅하거나,
+    # 화면에 안 보이는 내부 값을 근거로 판정할 때 쓴다.
+
+    @staticmethod
+    def _resolve_v2_id(step) -> str:
+        params = step.params or {}
+        return str(params.get("id") or step.target or "").strip()
+
+    def _call_cheat_step(self, step, result: TestResult = None) -> bool:
+        params = step.params or {}
+        cheat_id = self._resolve_v2_id(step)
+        if not cheat_id:
+            self._last_failure_reason = "call_cheat: params.id 또는 target에 치트 id가 필요합니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        args = params.get("args") or {}
+        if not isinstance(args, dict):
+            self._last_failure_reason = "call_cheat: params.args는 객체(dict)여야 합니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        # 치트는 씬 단위로 등록된다 — 현재 씬에 없는 치트를 "적용할 대상 없음"으로
+        # 넘기고 싶으면 params.not_found_ok를 켠다.
+        ok = self.unity.execute_cheat_v2(
+            cheat_id, args, not_found_ok=bool(params.get("not_found_ok"))
+        )
+        if result is not None:
+            self._log_cheat_usage(
+                result, "call_cheat", cheat_id,
+                f"args={args}" if args else "인자 없음", ok,
+            )
+        if ok:
+            self._last_pass_detail = (
+                f"치트 '{cheat_id}' 실행" + (f" args={args}" if args else "")
+            )
+            wait_seconds = self._to_float(params.get("wait_seconds"), 0.0)
+            if wait_seconds > 0:
+                logger.info("call_cheat 적용 대기: %.1fs", wait_seconds)
+                time.sleep(wait_seconds)
+        else:
+            self._last_failure_reason = f"call_cheat: 치트 '{cheat_id}' 실행 실패"
+        return ok
+
+    def _set_property_step(self, step, result: TestResult = None) -> bool:
+        params = step.params or {}
+        prop_id = self._resolve_v2_id(step)
+        if not prop_id:
+            self._last_failure_reason = "set_property: params.id 또는 target에 프로퍼티 id가 필요합니다."
+            logger.error(self._last_failure_reason)
+            return False
+        if "value" not in params:
+            self._last_failure_reason = "set_property: params.value가 필요합니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        applied = self.unity.set_property_v2(prop_id, params["value"])
+        if applied is None:
+            self._last_failure_reason = (
+                f"set_property: '{prop_id}'에 {params['value']!r} 쓰기 실패 "
+                "(쓰기 불가/타입·범위 오류이거나 현재 씬에 없는 프로퍼티)"
+            )
+            return False
+
+        shown = applied.get("Display")
+        if not isinstance(shown, str) or not shown.strip():
+            shown = applied.get("Value")
+        if result is not None:
+            self._log_cheat_usage(result, "set_property", prop_id, f"= {shown}", True)
+        self._last_pass_detail = f"'{prop_id}' = {shown} 적용"
+        wait_seconds = self._to_float(params.get("wait_seconds"), 0.0)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        return True
+
+    @staticmethod
+    def _property_value_matches(expected: Any, actual: Any) -> bool:
+        """expect_value 비교 — bool/숫자/문자열 표기 차이를 흡수한다."""
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            def to_bool(v: Any) -> Optional[bool]:
+                if isinstance(v, bool):
+                    return v
+                if isinstance(v, str):
+                    lowered = v.strip().lower()
+                    if lowered in {"true", "on", "1", "켜짐", "활성"}:
+                        return True
+                    if lowered in {"false", "off", "0", "꺼짐", "비활성"}:
+                        return False
+                return None
+            return to_bool(expected) is not None and to_bool(expected) == to_bool(actual)
+        if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+            return abs(float(expected) - float(actual)) < 1e-9
+        return str(expected).strip().lower() == str(actual).strip().lower()
+
+    def _check_property_step(self, step, result: TestResult) -> bool:
+        params = step.params or {}
+        prop_id = self._resolve_v2_id(step)
+        if not prop_id:
+            self._last_failure_reason = "check_property: params.id 또는 target에 프로퍼티 id가 필요합니다."
+            logger.error(self._last_failure_reason)
+            return False
+
+        values = self.unity.get_property_values_v2([prop_id])
+        item = values.get(prop_id)
+        if item is None:
+            self._last_failure_reason = (
+                f"check_property: '{prop_id}' 값을 읽지 못했습니다 "
+                "(현재 씬에 등록되지 않았거나 읽기 불가)"
+            )
+            logger.error(self._last_failure_reason)
+            return False
+
+        read_error = item.get("Error")
+        if read_error:
+            self._last_failure_reason = f"check_property: '{prop_id}' 읽기 오류 — {read_error}"
+            logger.error(self._last_failure_reason)
+            return False
+
+        raw = item.get("Value")
+        display = item.get("Display")
+        label = str(params.get("label") or prop_id)
+        logger.info("check_property: %s = %r (display=%r)", prop_id, raw, display)
+
+        # choiceable-float 같은 타입은 Value가 {"value": 1.0, "suffix": "x", ...} 형태로 온다
+        # (예: debug.time_scale) — 판정에는 안쪽 실제 값을 쓴다.
+        if isinstance(raw, dict) and "value" in raw:
+            raw = raw["value"]
+
+        if "expect_value" in params and not self._property_value_matches(params["expect_value"], raw):
+            self._last_failure_reason = (
+                f"check_property: '{label}' 기대값 {params['expect_value']!r} != 실제 {raw!r}"
+            )
+            logger.error(self._last_failure_reason)
+            return False
+
+        # save_as/compare_with/expect_delta 등 숫자 비교는 단위가 붙을 수 있는 Display 대신
+        # 원본 Value를 쓴다. 값이 없을 때만 Display로 대체한다.
+        if raw is None and isinstance(display, str) and display.strip():
+            assert_text = display
+        else:
+            assert_text = str(raw)
+
+        ok, detail = self._evaluate_value_assertion(label, assert_text, params, result)
+        self._log_cheat_usage(result, "check_property", prop_id, f"읽은 값 {raw!r}", ok)
+        if ok:
+            self._last_pass_detail = detail
+        else:
+            self._last_failure_reason = f"check_property: {detail}"
+            logger.error(self._last_failure_reason)
         return ok
 
     def _read_screen_step(self, screenshot_path: Path, step, result: TestResult) -> bool:
@@ -1637,7 +2474,8 @@ class QAOrchestrator:
             logger.error(self._last_failure_reason)
             return False
 
-        results = self.vision.read_screen_batch(screenshot_path, vision_items)
+        results = self.vision.read_screen_batch(
+            screenshot_path, vision_items, state_context=self._sctx)
         results_by_name = {r.get("name"): r for r in results if isinstance(r, dict)}
 
         # scroll_search: 항목 중 일부(예: 스크롤해야 보이는 카드)가 안 잡히면 스크롤하며
@@ -1663,7 +2501,8 @@ class QAOrchestrator:
                     logger.info("read_screen scroll_search: 화면 변화 없음(%.4f) — 리스트 끝, 중단 (%d회 스크롤)",
                                 ratio, i + 1)
                     break
-                new_results = self.vision.read_screen_batch(screenshot_path, vision_items)
+                new_results = self.vision.read_screen_batch(
+                    screenshot_path, vision_items, state_context=self._sctx)
                 for r in new_results:
                     if isinstance(r, dict) and r.get("name"):
                         results_by_name[r["name"]] = r
@@ -1816,8 +2655,20 @@ class QAOrchestrator:
             draw.text((5, 5), f"{action_label} {status}: {detail}", fill=color)
             img.save(img_path)
 
+            try:
+                evidence_captured_at = datetime.fromtimestamp(
+                    screenshot_path.stat().st_mtime
+                ).isoformat(timespec="milliseconds")
+            except OSError:
+                evidence_captured_at = ""
+
             record = {
                 "timestamp": ts,
+                "evidence_captured_at": evidence_captured_at,
+                "evidence_phase": "final_verification",
+                "step_number": getattr(self, "_current_step_number", None),
+                "step_label": getattr(self, "_current_step_label", ""),
+                "step_action": getattr(self, "_current_step_action", action_label),
                 "device": self._file_tag,
                 "target": f"[읽기] {target}",
                 "tap": None,
@@ -1833,6 +2684,12 @@ class QAOrchestrator:
             }
             with open(debug_dir / "find_and_tap_debug.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._last_step_evidence = {
+                "evidence_image": str(img_path),
+                "evidence_timestamp": ts,
+                "evidence_captured_at": evidence_captured_at,
+                "evidence_phase": "final_verification",
+            }
             logger.info("┌─ %s 증거 저장: %s", action_label, img_path.name)
         except Exception as e:
             logger.warning("%s 증거 저장 실패: %s", action_label, e)

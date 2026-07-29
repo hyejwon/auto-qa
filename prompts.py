@@ -4,7 +4,7 @@ vision_agent.py 에서 import 하여 사용한다. 프롬프트 수정은 이 �
 """
 
 FIND_ELEMENT_PROMPT = """이 게임 화면에서 '{target_description}'을(를) 찾아주세요.
-box_2d는 [ymin, xmin, ymax, xmax] 형식으로, 0~1000 범위로 정규화해서 반환하세요.
+{state_context}box_2d는 [ymin, xmin, ymax, xmax] 형식으로, 0~1000 범위로 정규화해서 반환하세요.
 
 **규칙:**
 1. 요소가 여러 개면 가장 중앙/명확한 것 선택
@@ -140,7 +140,7 @@ READ_ITEM_STATES_PROMPT = """이 화면에서 '{items_description}'에 해당하
 }}"""
 
 READ_SCREEN_BATCH_PROMPT = """이 게임 화면에서 아래 항목들을 한 번에 각각 확인해줘.
-
+{state_context}
 **확인할 항목 목록:**
 {items_block}
 
@@ -160,7 +160,7 @@ READ_SCREEN_BATCH_PROMPT = """이 게임 화면에서 아래 항목들을 한 �
 }}"""
 
 READ_TEXT_PROMPT = """이 게임 화면에서 '{region_description}'에 해당하는 텍스트 값을 읽어줘.
-
+{state_context}
 **규칙:**
 1. 해당 영역의 텍스트만 정확히 반환한다.
 2. 찾을 수 없으면 value를 null로 반환한다.

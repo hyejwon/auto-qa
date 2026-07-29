@@ -118,9 +118,11 @@ ACTION_CHOICES = [
     "find_and_tap", "verify", "read_text",
     "wait", "back", "home",
     "launch_app", "close_app", "skip_tutorial", "swipe",
+    "call_cheat", "set_property", "check_property", "repeat_until",
 ]
 
-TARGET_ACTIONS = {"find_and_tap", "verify", "read_text"}
+TARGET_ACTIONS = {"find_and_tap", "verify", "read_text",
+                  "call_cheat", "set_property", "check_property"}
 
 
 def _get_template_choices() -> list[str]:

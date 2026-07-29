@@ -22,6 +22,29 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+def _state_block(state_context: str) -> str:
+    """게임이 알려준 현재 상태를 프롬프트에 끼워 넣을 블록으로 감싼다.
+
+    Vision은 스크린샷만 보므로 씬·상태값·실제 존재하는 컴포넌트를 모른다. 이 정보를 함께
+    주면 "화면에 없는 것을 비슷하게 생긴 다른 요소로 잘못 잡는" 오판을 줄일 수 있다.
+    비어 있으면 프롬프트를 그대로 둔다(수집 실패해도 판정은 계속되어야 한다).
+    """
+    if not state_context.strip():
+        return ""
+    # ⚠️ "목록에 없으면 없는 것으로 판정하라"처럼 강한 지시를 넣었더니, 실제로 화면에 있는
+    # 요소까지 놓쳤다(2026-07-28 A/B 확인: `Btn Aegis`가 있는데도 found=False).
+    # 컴포넌트명은 내부 영문 오브젝트명이라 한국어 target 문구와 표기가 달라 그렇다.
+    # 그래서 상태는 참고 정보로만 주고, 판단 주체는 이미지로 유지한다.
+    return (
+        "\n[참고 — 게임이 보고한 현재 상태. 화면 해석을 돕는 보조 정보이며 판단은 이미지가 우선한다]\n"
+        f"{state_context.strip()}\n"
+        "컴포넌트 이름은 내부 오브젝트명이라 target 문구와 표기가 다를 수 있다. 목록에 없다는\n"
+        "이유만으로 화면에 분명히 보이는 요소를 놓치지 마라. 반대로 현재 씬과 무관한 요소를\n"
+        "요구받았다면 비슷하게 생긴 다른 요소를 억지로 고르지 마라.\n\n"
+    )
+
+
+
 class BoundingBox(BaseModel):
     """좌표 정보 (화면비 기준 0~1)"""
     x1: float
@@ -71,7 +94,8 @@ class GeminiVisionAgent:
         self,
         image_path: Path,
         target_description: str,
-        debug_dir: Optional[Path] = None
+        debug_dir: Optional[Path] = None,
+        state_context: str = "",
     ) -> VisionResult:
         """
         화면에서 특정 UI 요소 찾기
@@ -81,7 +105,10 @@ class GeminiVisionAgent:
             target_description: 찾을 요소 설명 (예: "스태미너 충전 아이콘")
             debug_dir: 디버그 이미지 저장 경로
         """
-        prompt = FIND_ELEMENT_PROMPT.format(target_description=target_description)
+        prompt = FIND_ELEMENT_PROMPT.format(
+            target_description=target_description,
+            state_context=_state_block(state_context),
+        )
         started = time.monotonic()
 
         try:
@@ -322,7 +349,8 @@ class GeminiVisionAgent:
             logger.error(f"read_item_states failed: {e}")
             return []
 
-    def read_screen_batch(self, image_path: Path, items: list) -> list:
+    def read_screen_batch(self, image_path: Path, items: list,
+                          state_context: str = "") -> list:
         """한 화면에 같이 보이는 여러 항목(재화 값 여러 개 + 조건부 존재 확인 등)을
         vision 호출 1번으로 모아서 확인 — 매번 따로 부르지 않고 라운드트립을 줄인다.
 
@@ -334,7 +362,10 @@ class GeminiVisionAgent:
             f"{i + 1}. name=\"{it['name']}\" — {it['description']}"
             for i, it in enumerate(items)
         )
-        prompt = READ_SCREEN_BATCH_PROMPT.format(items_block=items_block)
+        prompt = READ_SCREEN_BATCH_PROMPT.format(
+            items_block=items_block,
+            state_context=_state_block(state_context),
+        )
         try:
             response = self.client.models.generate_content(
                 model=self.model,
@@ -350,7 +381,8 @@ class GeminiVisionAgent:
             logger.error(f"read_screen_batch failed: {e}")
             return []
 
-    def read_text(self, image_path: Path, region_description: str) -> Optional[str]:
+    def read_text(self, image_path: Path, region_description: str,
+                  state_context: str = "") -> Optional[str]:
         """
         화면에서 특정 영역의 텍스트 값을 읽어서 반환
 
@@ -361,7 +393,10 @@ class GeminiVisionAgent:
         Returns:
             읽은 텍스트 문자열, 찾지 못하면 None
         """
-        prompt = READ_TEXT_PROMPT.format(region_description=region_description)
+        prompt = READ_TEXT_PROMPT.format(
+            region_description=region_description,
+            state_context=_state_block(state_context),
+        )
 
         try:
             response = self.client.models.generate_content(

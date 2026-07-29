@@ -1,0 +1,105 @@
+title: 계정관리 03 - 기존 Google 현재 데이터 선택 오입력 거부
+description: 기존 데이터가 있는 Google 계정 연동에서 현재 데이터를 선택하고 잘못된 확인 문구 입력 시 연동이 거부되는지 확인한다.
+package: com.percent.aos.cooptd
+required_tab: 전투
+parameters:
+- name: google_account_with_data
+  label: 기존 데이터가 있는 Google 계정
+  description: 이미 게임 데이터가 연결된 Google 계정 이메일
+  example: qa_google_01@111percent.net
+  default: qa_google_01@111percent.net
+- name: invalid_consent_text
+  label: 잘못된 확인 문구
+  description: 동의합니다와 일치하지 않아야 하는 문자열
+  example: 동의하지않습니다
+  default: 동의하지않습니다
+steps:
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 3
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 계정 연동 버튼
+  description: 계정 연동 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 계정 연동 팝업
+- action: find_and_tap
+  target: 계정 연동 팝업 내 Google 로그인 버튼
+  description: 기존 데이터가 있는 Google 계정 로그인을 시작한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: Google 계정 선택 화면 또는 약관 알림 팝업
+- action: find_and_tap
+  target: 약관 알림 팝업 내 동의합니다 영역
+  description: 최초 연동일 때만 약관에 동의한다.
+  timeout: 10
+  retry: 1
+  params:
+    optional: true
+    expect_visible: Google 계정 선택 화면
+- action: find_and_tap
+  target: '{{google_account_with_data}}'
+  description: 기존 데이터가 있는 Google 계정을 선택한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: 기존 데이터 / 현재 데이터 선택 팝업
+    wait_seconds: 3
+- action: find_and_tap
+  target: 현재 데이터 버튼
+  description: 현재 게스트 데이터를 Google 계정에 덮어쓰는 분기를 선택한다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 계정 소실 알림 팝업
+- action: verify
+  target: 계정 소실 알림 팝업의 '동의합니다' 입력 안내 문구
+  description: 데이터 소실 경고와 확인 문구 입력 요구를 확인한다.
+  timeout: 10
+  retry: 2
+- action: find_and_tap
+  target: 계정 소실 알림 팝업의 확인 문구 입력란
+  description: 확인 문구 입력란에 포커스를 둔다.
+  timeout: 10
+  retry: 2
+  params:
+    expect_visible: Android 키보드
+- action: input_text
+  target: 계정 소실 알림 팝업의 확인 문구 입력란
+  description: 동의합니다와 다른 문구를 입력한다.
+  timeout: 10
+  retry: 1
+  params:
+    text: '{{invalid_consent_text}}'
+- action: find_and_tap
+  target: 계정 소실 알림 팝업의 계정 연동 버튼
+  description: 잘못된 확인 문구로 계정 연동을 시도한다.
+  timeout: 10
+  retry: 2
+  params:
+    expect_visible: 입력 문구가 일치하지 않는다는 토스트 메시지
+- action: verify
+  target: 계정 소실 알림 팝업
+  description: 실패 후에도 계정 소실 알림 팝업이 유지되는지 확인한다.
+  timeout: 10
+  retry: 2
+preconditions:
+- Guest 로그인 상태여야 한다.
+- google_account_with_data에는 기존 게임 데이터가 연결되어 있어야 한다.
+expected_results:
+- 현재 데이터 선택 시 계정 소실 알림 팝업이 출력되어야 한다.
+- 잘못된 확인 문구 입력 시 불일치 토스트가 출력되고 연동에 실패해야 한다.
+- 실패 후 계정 소실 알림 팝업이 유지되어야 한다.

@@ -26,6 +26,7 @@ Auto QA는 Android 게임을 ADB로 제어하고 Gemini Vision으로 화면을 �
 - `{{name}}` 파라미터 치환과 label·description·example 표시
 - 앱 제어 스텝의 `{{package}}`는 앞에서 선택한 게임 패키지로 자동 적용
 - 자연어 시나리오를 기존 템플릿 기반 스텝으로 생성
+- 디펜스 인게임은 제한된 의미 DSL과 게임별 Profile로 기존 스텝을 결정론적으로 생성
 
 ### 실행과 리포트
 
@@ -49,8 +50,9 @@ FastAPI (api_server.py:8000)
   -> QAOrchestrator       : 스텝 실행, 후조건 검증, 증거 저장
   -> ADBController        : 앱/화면/입력/APK/녹화 제어
   -> GeminiVisionAgent    : UI 요소 탐지, 화면 검증, OCR
-  -> PlannerNode          : 자연어 -> 템플릿 기반 스텝
-  -> UnityAPIClient       : SR 치트 API (`skip_tutorial`)
+  -> PlannerNode          : 자연어 -> 기존 스텝 또는 Defense 의미 Plan
+  -> DefensePlanCompiler  : 의미 Plan + Game Profile -> 기존 스텝
+  -> UnityAPIClient       : Unity 치트/프로퍼티 API (`skip_tutorial`, `call_cheat`, `set_property`, `check_property`)
   -> SRDebuggerController : 숨겨진 제스처로 SR Debugger 진입
   -> CSVReporter          : 실행/판정 근거 CSV
   -> Android device via ADB
@@ -90,6 +92,15 @@ UNITY_API_URL=
 
 GOOGLE_TEST_ID=
 GOOGLE_TEST_PASSWORD=
+
+# 역할별 모델 라우팅 (생략 시 config.py 기본값)
+GEMINI_INTENT_MODEL=
+GEMINI_PLANNER_MODEL=
+GEMINI_VISION_MODEL=
+GEMINI_VISION_LITE_MODEL=
+
+# legacy Planner에 넣을 관련 템플릿 상한 (기본 5)
+PLANNER_TEMPLATE_LIMIT=5
 ```
 
 다중 디바이스 테스트 서버에서는 `ADB_DEVICE`와 `UNITY_API_URL`을 비워 두고 UI에서 디바이스를 선택하는 구성을 권장합니다.
@@ -167,8 +178,13 @@ npm run build
 `새로 만들기` 모드:
 
 1. 자연어로 시나리오를 작성합니다.
-2. `스텝 생성`을 누르면 검증된 템플릿을 참조한 스텝이 생성됩니다.
-3. 생성된 스텝을 실행 전에 반드시 검토합니다.
+2. Planner 방식에서 `기존 범용` 또는 `디펜스 인게임`을 선택합니다.
+3. `스텝 생성`을 누르면 기존 방식은 관련 템플릿을 참조하고, 디펜스 방식은 의미 Plan을 Game Profile로 확장합니다.
+4. 생성된 스텝을 실행 전에 반드시 검토합니다.
+
+`디펜스 인게임`은 현재 이지스 디펜스 Profile이 있는 패키지에만 사용합니다.
+지원하지 않는 요청이나 패키지는 임의의 기존 스텝으로 우회하지 않고 오류를 표시합니다.
+자세한 구조와 확장 방법은 `docs/defense-planner.md`를 참고합니다.
 
 공통:
 
@@ -243,7 +259,7 @@ expected_results:
 
 ## 7. 공식 Step 레퍼런스
 
-UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 16개입니다.
+UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 20개입니다.
 
 | Step | target | 주요 params | 기능 |
 |:---|:---|:---|:---|
@@ -251,7 +267,7 @@ UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 16개입�
 | `verify` | 필수 | - | 현재 화면의 요소 노출 검증 |
 | `read_text` | 필수 | `save_as`, 비교 조건 | OCR 값 저장·비교 |
 | `scroll` | - | `direction`, `times` | 선언적 스크롤 |
-| `wait` | - | `seconds` | 지정 시간 대기 |
+| `wait` | - | `seconds`, `until_*` | 지정 시간 또는 앱 상태 조건 대기 |
 | `back` | 선택 | `expect_visible`, `expect_hidden` | Android 뒤로가기와 복귀 검증 |
 | `dismiss_popups` | 선택 | `stop_when_visible`, `rules` | 개수가 변하는 허용 팝업 반복 처리 |
 | `home` | - | - | Android HOME 키 |
@@ -259,7 +275,11 @@ UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 16개입�
 | `close_app` | 패키지 | `package` | `am force-stop`으로 앱 종료 |
 | `install_app` | APK 파일명 | `apk` | `apks/` APK 설치 |
 | `uninstall_app` | 패키지 | `package` | 앱 삭제 |
-| `skip_tutorial` | 패키지 | `package` | 패키지별 Unity SR 치트 호출 |
+| `skip_tutorial` | 패키지 | `package` | 패키지별 Unity 치트로 튜토리얼 스킵 |
+| `call_cheat` | 치트 id | `id`, `args`, `wait_seconds`, `not_found_ok` | v2 치트 API 실행 |
+| `set_property` | 프로퍼티 id | `id`, `value` | v2 프로퍼티 쓰기 |
+| `repeat_until` | - | `steps`, `until_visible`, `until_scene`, `max_iterations` | 조건 만족까지 스텝 묶음 반복 |
+| `check_property` | 프로퍼티 id | `id`, `expect_value`, `save_as`, `compare_with`, `expect_*` | v2 프로퍼티 읽기/검증 |
 | `enter_sr_debugger` | 패키지 | `strategies` 등 | 숨겨진 제스처로 SR Debugger 진입 |
 | `swipe` | - | `x1`, `y1`, `x2`, `y2` | 좌표 기반 스와이프 |
 | `input_text` | - | `text` | ADB로 문자열 입력 |
@@ -293,8 +313,12 @@ UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 16개입�
 | `scroll_direction` | `down` 또는 `up` |
 | `then_tap` | 첫 탭 후 이어서 탭할 두 번째 target |
 | `tap_point` | `center`면 target 노출만 확인하고 실제 탭은 화면 중앙에 실행 |
+| `unity_name` | Profile에서 확인한 Unity component 이름. exact unique match일 때만 사용 |
+| `cache_scope` | 게임 상태별 안정적인 좌표 캐시 범위 |
+| `cache_safe` | 후조건과 `cache_scope`가 있을 때만 캐시 읽기 허용 |
 
 탭 후 판정이 필요한 핵심 스텝은 `expect_visible` 또는 `expect_hidden`을 정의합니다. 판매·결제·계정 삭제처럼 후속 화면이 느린 흐름은 `wait_seconds`와 `timeout`을 함께 조정합니다.
+정확 Unity 또는 캐시 좌표로 이미 탭했다면 후조건 실패 뒤 Vision으로 다시 누르지 않고 검증만 재시도합니다.
 
 ### 7.2 `verify`
 
@@ -306,6 +330,22 @@ UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 16개입�
 ```
 
 실행 시점의 새 스크린샷에서 target을 Vision으로 찾습니다.
+
+**`params.scene` — Vision 없이 씬 판정**
+
+```yaml
+- action: verify
+  target: 아웃게임 로비 화면        # 사람이 읽는 설명으로만 쓰임
+  params:
+    scene: outgame                 # "ingame|outgame" 처럼 |로 여러 개 허용
+```
+
+`params.scene`이 있으면 스크린샷을 판독하지 않고 앱 내부 v2 치트 목록의 id 접두사로 현재 씬을 판정합니다. 치트/프로퍼티는 씬 단위로 등록되므로 목록에 잡히는 접두사가 곧 현재 씬입니다(이지스 디펜스: 전투 화면 `ingame`, 로비 `outgame`).
+
+- Vision 호출 0회 — 빠르고 비용이 없으며 화면 해석 오차가 없습니다
+- 씬이 아직 안 올라왔으면(스플래시·로딩) 접두사가 비어 실패하므로 로딩 완료 확인도 겸합니다
+- 접두사 이름은 게임마다 다르므로 템플릿이 지정합니다. 카탈로그(`GET /api/unity/catalog`)에서 확인할 수 있습니다
+- 팝업이 떠 있는지까지는 알 수 없습니다 — 팝업 정리는 별도 스텝으로 처리하세요
 
 ### 7.3 `read_text`
 
@@ -329,6 +369,37 @@ UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 16개입�
 | `expect_changed` | `true`: 변경, `false`: 유지를 기대 |
 | `expect_increase` | 숫자 값 증가를 기대 |
 | `expect_decrease` | 숫자 값 감소를 기대 |
+| `expect_delta` | 정확한 증감량을 기대 (예: `-5`) |
+| `expect_delta_from` | 앞서 `save_as`로 저장한 값을 그대로 기대 증감량으로 사용 |
+| `delta_sign` | `expect_delta_from`의 부호. 기본 `1`(증가), 소비 검증이면 `-1` |
+| `delta_tolerance` | 증감량 비교 허용 오차 (기본 0) |
+
+`expect_delta_from`은 기대값을 템플릿에 하드코딩할 수 없는 재화 검증용입니다. 화면에서 읽은 값(보상 수량, 표기된 소모 비용 등)을 그대로 기대 증감량으로 써서, 매 실행마다 값이 달라져도 정확한 증감을 자동 판정합니다.
+
+```yaml
+# 결과 화면의 보상 수치를 읽어두고
+- action: read_text
+  target: 결과 팝업의 보상 골드 수량
+  params:
+    save_as: reward_gold
+
+# 아웃게임 골드가 "정확히 그만큼" 늘었는지 검증
+- action: read_text
+  target: 상단 골드 수량
+  params:
+    compare_with: gold_before
+    expect_delta_from: reward_gold
+
+# 소비 검증은 delta_sign: -1
+- action: read_text
+  target: 크레딧 수량
+  params:
+    compare_with: credit_before
+    expect_delta_from: aegis_cost
+    delta_sign: -1
+```
+
+`read_screen`의 각 item과 `check_property`에서도 동일하게 동작합니다.
 
 ### 7.4 `scroll`
 
@@ -352,6 +423,30 @@ UI와 신규 템플릿에서 사용하는 공식 step 이름은 아래 16개입�
 ```
 
 `seconds`는 대기 시간(초)입니다. UI에서 0.5초 단위로 편집할 수 있습니다.
+
+고정 시간 대신 앱 상태를 기다릴 수도 있습니다.
+
+```yaml
+- action: wait
+  timeout: 120
+  params:
+    until_scene: ingame
+    poll_interval_seconds: 1
+```
+
+| params | 설명 |
+|:---|:---|
+| `until_scene` | Unity 치트 id 접두사 기반 씬. `ingame\|outgame`처럼 복수 허용 |
+| `until_property` | `{id: 프로퍼티ID, equals: 기대값}` |
+| `until_unity_button` | 정확히 하나 존재해야 하는 Unity component 이름 또는 이름 목록 |
+| `until_unity_button_hidden` | 사라져야 하는 Unity 이름. API 정상 확인용 `until_unity_button`과 함께 사용 |
+| `until_visible` | Vision으로 보여야 하는 target 또는 목록 |
+| `until_hidden` | Vision으로 사라져야 하는 target 또는 목록 |
+| `poll_interval_seconds` | 조건 재확인 간격, 최소 0.1초 |
+| `consecutive_matches` | 연속 충족 횟수, 기본 1·상한 5. 씬 전환의 순간값 방지용 |
+
+여러 조건을 같이 쓰면 모두 만족해야 하며 전체 제한 시간은 `timeout`입니다.
+조건 대기와 고정 대기는 실행 중단 요청에 즉시 반응합니다.
 
 ### 7.6 `back`
 
@@ -437,11 +532,95 @@ UI에서 템플릿을 불러올 때 비어 있거나 `{{package}}`인 target은 
   retry: 2
 ```
 
-`unity_api_client.py`의 `GAME_CHEAT_MAP`에 패키지별 `category`/`name`이 모두 등록된 게임만 실행합니다. 명시적 `UNITY_API_URL`이 없으면 ADB가 디바이스의 37772 포트를 고유한 로컬 포트로 포워딩합니다.
+치트는 `unity_api_client.py`의 `GAME_CHEAT_MAP`에 패키지별로 등록합니다. 빌드에 따라 두 가지 형태를 지원합니다.
 
-`/api/sr/options`는 Android 앱 내부 SR 서버 엔드포인트이며 Auto QA FastAPI 엔드포인트가 아닙니다. Windows PowerShell에서 수동 확인할 때는 `curl` alias 대신 `curl.exe`를 사용합니다.
+| 빌드 | 매핑 | 호출 엔드포인트 |
+| --- | --- | --- |
+| v2 치트 빌드 | `{"id": "<치트 id>", "args": {...}}` | `POST /api/v2/cheats/execute` |
+| 레거시 SR 빌드 | `{"category": "...", "name": "..."}` | `POST/GET /api/sr/call` |
 
-### 7.12 `enter_sr_debugger`
+레거시 호출이 실패하거나 매핑이 없으면 `GET /api/v2/cheats` 목록에서 튜토리얼 스킵 치트를 자동으로 찾아 실행합니다(`find_cheat_id_v2`). 명시적 `UNITY_API_URL`이 없으면 ADB가 디바이스의 37772 포트를 고유한 로컬 포트로 포워딩합니다.
+
+예시 — 이지스 디펜스(`com.supermagic.aos.aegisdefense`)는 `/api/sr/call`이 404라서 v2 치트 `ingame.tutorial.skip`("인게임/스테이지 > 인게임 튜토리얼 스킵")을 사용합니다.
+
+```yaml
+- action: skip_tutorial
+  target: com.supermagic.aos.aegisdefense
+  timeout: 20
+  retry: 2
+```
+
+v2 치트/프로퍼티 API 상세는 `sr_api.md`를 참고합니다. `/api/sr/options`는 Android 앱 내부 SR 서버 엔드포인트이며 Auto QA FastAPI 엔드포인트가 아닙니다. Windows PowerShell에서 수동 확인할 때는 `curl` alias 대신 `curl.exe`를 사용합니다.
+
+### 7.12 `call_cheat` / `set_property` / `check_property`
+
+`skip_tutorial`처럼 패키지별로 미리 등록된 치트만이 아니라, v2 치트/프로퍼티를 스텝에서 직접 호출합니다. UI로는 만들 수 없는 사전 상태(목표 웨이브, 몬스터 소환, 재화 지급, 무적 등)를 세팅하거나 화면에 안 보이는 내부 값으로 판정할 때 씁니다.
+
+```yaml
+- action: call_cheat
+  target: ingame.stage.go_to_wave      # params.id로 써도 됩니다
+  params:
+    args:
+      targetWave: 8
+    wait_seconds: 3
+
+- action: set_property
+  target: ingame.player.invincible_state
+  params:
+    value: true
+
+- action: check_property
+  target: ingame.player.invincible_state
+  params:
+    label: 플레이어 무적          # 리포트 표시 이름 (생략 시 프로퍼티 id)
+    expect_value: true
+```
+
+- `call_cheat`의 `not_found_ok: true`는 현재 씬에 그 치트가 없을 때(`not_found`)도 통과 처리합니다.
+- `check_property`는 `read_text`와 동일하게 `save_as` / `compare_with` / `expect_delta` / `expect_increase` / `expect_changed`를 지원해 리포트 재화 비교 표에 기록됩니다. `choiceable-float`처럼 `Value`가 객체로 오는 타입(`debug.time_scale`)은 안쪽 `value`로 판정합니다.
+- 쓰기 불가 프로퍼티에 `set_property`를 하면 `read_only`로 실패합니다.
+
+⚠️ **치트와 프로퍼티는 씬 단위로 등록됩니다.** `ingame.*`는 전투 화면, `outgame.*`는 로비에서만 목록에 잡히므로 해당 씬에 진입한 뒤 호출해야 합니다(2026-07-27 이지스 디펜스 실기기 확인). 예: 로비에서 `ingame.wave.skip`을 부르면 `not_found`입니다.
+
+⚠️ 실패해야 정상인 스텝(잘못된 인자 거부 등)은 표현할 수 없습니다 — `optional: true`는 "건너뜀"으로 처리되어 서버 다운과 구분되지 않습니다.
+
+### 7.13 `repeat_until`
+
+조건이 만족될 때까지 하위 스텝 묶음을 반복합니다. 웨이브 디펜스처럼 "준비 → 배치 → 진행"을 N번 되풀이해야 하는 흐름을 스텝 수십 개로 펼쳐 쓰지 않기 위한 액션이며, 웨이브 수가 다른 스테이지에도 그대로 재사용됩니다.
+
+```yaml
+- action: repeat_until
+  description: 준비 단계마다 이지스를 소환하고 웨이브를 진행 — 보스 웨이브까지 반복
+  timeout: 900
+  params:
+    until_visible: 하단 버튼이 빨간색이고 초대형 비행체 발견 문구가 보이는 보스 웨이브 준비 화면
+    max_iterations: 25
+    timeout_seconds: 780
+    steps:
+      - action: find_and_tap
+        target: 화면 하단 가운데 이지스 소환 버튼
+        params: { wait_seconds: 1 }
+      - action: find_and_tap
+        target: 화면 최하단 웨이브 시작 버튼
+        params: { wait_seconds: 9 }
+```
+
+| params | 설명 |
+|:---|:---|
+| `steps` | 반복할 스텝 목록 (일반 스텝과 같은 스키마) |
+| `until_visible` | 이 대상이 보이면 종료 (Vision) |
+| `until_hidden` | 이 대상이 사라지면 종료 (Vision) |
+| `until_scene` | 이 씬 접두사가 되면 종료 (치트 목록 기반, Vision 호출 없음) |
+| `max_iterations` | 최대 반복 횟수 (기본 20, 상한 200) |
+| `timeout_seconds` | 전체 제한 시간 (기본 `step.timeout`) |
+| `check_every` | N회마다 조건 확인 (기본 1). Vision 조건일 때 호출 절약용 |
+| `strict` | `true`면 하위 스텝 실패 즉시 중단 (기본 `false`) |
+
+`strict` 기본값이 `false`인 이유는 반복 루프에서 하위 스텝 실패가 정상인 경우가 많기 때문입니다 — 크레딧이 모자라 소환이 안 되거나, 전투 중이라 시작 버튼이 없는 회차가 그렇습니다. 하위 스텝 결과는 리포트에 개별 행으로 남지 않고 `repeat_until` 한 줄로 요약됩니다.
+
+`until_*` 조건 중 하나는 반드시 있어야 하며, 조건은 **매 반복 시작 전에** 먼저 확인합니다(이미 도달한 상태면 0회 반복으로 통과).
+
+### 7.14 `enter_sr_debugger`
 
 ```yaml
 - action: enter_sr_debugger
@@ -461,7 +640,7 @@ UI에서 템플릿을 불러올 때 비어 있거나 `{{package}}`인 target은 
 
 `strategies`를 비우면 기본 숨겨진 제스처 후보를 순서대로 시도합니다. `coordinate_space` 값은 `unity_pixels`, `unity_ratio`, 화면 ADB 좌표계를 지원합니다.
 
-### 7.13 `swipe`
+### 7.15 `swipe`
 
 ```yaml
 - action: swipe
@@ -474,7 +653,7 @@ UI에서 템플릿을 불러올 때 비어 있거나 `{{package}}`인 target은 
 
 현재 실행 엔진은 `x1`, `y1`, `x2`, `y2`를 사용합니다. 목록 스크롤은 좌표 대신 `scroll`을 권장합니다.
 
-### 7.14 `input_text`
+### 7.16 `input_text`
 
 ```yaml
 - action: input_text
@@ -507,8 +686,8 @@ UI에서 템플릿을 불러올 때 비어 있거나 `{{package}}`인 target은 
 
 1. 테스트 시작 전 화면을 깨우고 잠금 상태를 확인합니다.
 2. 잠금 화면을 해제하지 못하면 테스트 화면으로 오판하지 않고 환경 오류로 중단합니다.
-3. 스텝 시작 스크린샷을 저장하고 action을 실행합니다.
-4. `find_and_tap`은 화면 안정화 후 Vision으로 target을 찾아 탭합니다.
+3. OCR이 필요한 `read_text`, `read_items`, `read_screen`만 스텝 시작 스크린샷을 저장합니다.
+4. `find_and_tap`은 exact Unity, 명시적 안전 캐시, 고정 shortcut, Vision 순서로 target을 찾습니다.
 5. 탭 후 `expect_visible`/`expect_hidden`이 있으면 실행 화면을 새로 캡처해 최대 3회 검증합니다.
 6. 탭은 성공했지만 후조건이 실패한 경우 같은 target을 다시 누르지 않고 검증만 재시도합니다.
 7. `optional: true`인 스텝의 target이 없으면 SKIPPED로 계속 진행합니다.
@@ -624,6 +803,9 @@ npm run build
 | `adb_controller.py` | ADB 디바이스 제어, APK, 스크린샷, 잠금, 녹화 |
 | `vision_agent.py` | Gemini Vision UI 탐지·OCR·화면 분석 |
 | `planner_node.py` | 자연어 시나리오에서 step 생성 |
+| `defense_dsl.py` | 디펜스 게임 공통 의미 액션과 구조화 출력 스키마 |
+| `defense_compiler.py` | Game Profile 로드와 의미 Plan의 기존 Step 확장 |
+| `planner_context.py` | legacy Planner에 넣을 관련 템플릿 선택 |
 | `unity_api_client.py` | Unity SR API, 패키지별 `GAME_CHEAT_MAP` |
 | `sr_debugger.py` | SR Debugger 제스처 진입 |
 | `csv_reporter.py` | 감사 가능한 스텝·증거 CSV 생성 |
@@ -631,6 +813,7 @@ npm run build
 | `frontend/src/components/wizard/` | 게임 선택, 실행/편집, 리포트 UI |
 | `frontend/src/lib/template.ts` | 편집한 step의 YAML 직렬화 |
 | `templates/` | 재사용 YAML 템플릿 |
+| `game_profiles/` | 패키지별 디펜스 상태·recipe·안전 캐시 범위 |
 
 ## 14. 커밋하지 않는 로컬 산출물
 

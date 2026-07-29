@@ -1,0 +1,42 @@
+title: 계정관리 01 - 게스트 계정 연동 팝업 플랫폼 버튼 검증
+description: 게스트 로그인 상태에서 설정의 계정 연동 팝업을 열고 Google/Apple 로그인 버튼 노출을 확인한다.
+package: com.percent.aos.cooptd
+required_tab: 전투
+steps:
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 게스트 계정의 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 3
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+    wait_seconds: 2
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 계정 연동 버튼
+  description: 게스트 계정의 계정 연동 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 계정 연동 팝업
+- action: verify
+  target: 계정 연동 팝업 내 Google 로그인 버튼
+  description: Google 플랫폼 로그인 버튼 노출을 확인한다.
+  timeout: 10
+  retry: 2
+- action: verify
+  target: 계정 연동 팝업 내 Apple 로그인 버튼
+  description: Apple 플랫폼 로그인 버튼 노출을 확인한다.
+  timeout: 10
+  retry: 2
+preconditions:
+- Guest 로그인이 완료되어 전투 탭을 열 수 있는 상태여야 한다.
+expected_results:
+- 계정 연동 팝업이 정상적으로 출력되어야 한다.
+- Google 로그인 버튼과 Apple 로그인 버튼이 모두 노출되어야 한다.

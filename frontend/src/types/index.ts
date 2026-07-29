@@ -40,6 +40,18 @@ export interface Step {
   }
 }
 
+export type PlannerMode = 'legacy' | 'defense'
+
+export interface SemanticPlan {
+  title: string
+  description?: string
+  package: string
+  supported: boolean
+  unsupported_reason?: string
+  steps: Array<Record<string, unknown>>
+  expected_results?: string[]
+}
+
 export interface TemplateParam {
   name: string
   label?: string
@@ -65,6 +77,7 @@ export interface StepResult {
   label: string
   passed: boolean
   skipped?: boolean
+  skip_reason?: string
   action?: string
   target?: string
   failure_reason?: string
@@ -73,7 +86,7 @@ export interface StepResult {
   evidence_image?: string
   evidence_timestamp?: string
   evidence_captured_at?: string
-  evidence_phase?: 'pre_tap' | 'post_verification'
+  evidence_phase?: 'pre_tap' | 'post_verification' | 'final_verification'
 }
 
 export interface EvalOutput {
@@ -107,6 +120,9 @@ export interface TestResult {
   start_time?: string | null
   end_time?: string | null
   steps_passed: number
+  steps_skipped?: number
+  steps_failed?: number
+  steps_completed?: number
   steps_executed: number
   error_message?: string
   screenshots?: string[]
@@ -133,6 +149,8 @@ export interface TapDebug {
   target: string | null
   confidence: number | null
   verified: boolean
+  outcome?: 'PASS' | 'FAIL' | 'SKIP'
+  skip_reason?: string
   failure_reason: string
   pass_reason?: string
   image: string
@@ -189,10 +207,14 @@ export const ACTION_CHOICES = [
   'install_app',
   'uninstall_app',
   'skip_tutorial',
+  'call_cheat',
+  'set_property',
+  'check_property',
+  'repeat_until',
   'enter_sr_debugger',
   'swipe',
   'input_text',
 ]
 
 // target(대상 UI 요소/텍스트)을 입력받는 액션
-export const TARGET_ACTIONS = new Set(['find_and_tap', 'verify', 'read_text', 'read_items', 'input_text', 'skip_tutorial'])
+export const TARGET_ACTIONS = new Set(['find_and_tap', 'verify', 'read_text', 'read_items', 'input_text', 'skip_tutorial', 'call_cheat', 'set_property', 'check_property'])

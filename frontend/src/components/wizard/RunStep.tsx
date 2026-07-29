@@ -6,7 +6,7 @@ import { stepsToYaml } from '../../lib/template'
 import { extractParams, substituteSteps } from '../../lib/params'
 import StepEditor, { newId } from './StepEditor'
 import ScreenPreview from '../ScreenPreview'
-import type { AdaptiveRun, Step, TemplateParam, TestResult } from '../../types'
+import type { AdaptiveRun, PlannerMode, Step, TemplateParam, TestResult } from '../../types'
 
 interface Props {
   device: string
@@ -126,6 +126,7 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete, r
   const [paramDefinitions, setParamDefinitions] = useState<Record<string, TemplateParam>>({})
   const [apks, setApks] = useState<string[]>([])
   const [scenario, setScenario] = useState('')
+  const [plannerMode, setPlannerMode] = useState<PlannerMode>('legacy')
   const [generating, setGenerating] = useState(false)
   const [draggedSegmentId, setDraggedSegmentId] = useState('')
   const [segmentDropHint, setSegmentDropHint] = useState<{ id: string; edge: 'before' | 'after' } | null>(null)
@@ -379,9 +380,13 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete, r
   const handleGenerate = async () => {
     if (!scenario.trim()) { setStatus('⚠️ 시나리오를 자연어로 입력하세요.'); return }
     setGenerating(true)
-    setStatus('🤖 검증된 템플릿을 참조해 스텝 생성 중... (수십 초)')
+    setStatus(
+      plannerMode === 'defense'
+        ? '🤖 의미 액션을 해석하고 게임 Profile로 실행 스텝 생성 중...'
+        : '🤖 관련 검증 템플릿을 참조해 스텝 생성 중... (수십 초)',
+    )
     try {
-      const res = await planApi.generate(scenario.trim(), selectedPackage)
+      const res = await planApi.generate(scenario.trim(), selectedPackage, plannerMode)
       const generated = (res.plan?.steps ?? []) as Step[]
       const ids = generated.map(() => newId())
       const label = res.title || '생성된 테스트'
@@ -394,9 +399,17 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete, r
       setParamDefinitions(Object.fromEntries(
         extractParams(generated).map((name) => [name, fallbackParamDefinition(name)])
       ))
-      setStatus(`✅ 스텝 ${res.steps_count}개 생성 — 검토·수정 후 실행하거나 저장하세요.`)
+      const semanticCount = res.semantic_plan?.steps?.length
+      setStatus(
+        semanticCount
+          ? `✅ 의미 ${semanticCount}단계 → 실행 스텝 ${res.steps_count}개 생성 — 검토 후 실행하세요.`
+          : `✅ 스텝 ${res.steps_count}개 생성 — 검토·수정 후 실행하거나 저장하세요.`,
+      )
     } catch (e) {
-      setStatus(`❌ 생성 실패: ${e instanceof Error ? e.message : String(e)}`)
+      const detail = isAxiosError(e)
+        ? (e.response?.data as { detail?: string } | undefined)?.detail ?? e.message
+        : e instanceof Error ? e.message : String(e)
+      setStatus(`❌ 생성 실패: ${detail}`)
     } finally {
       setGenerating(false)
     }
@@ -588,8 +601,18 @@ export default function RunStep({ device, selectedPackage, onBack, onComplete, r
         {mode === 'create' && (
           <div className="flex-none rounded-lg border border-fuchsia-800/60 bg-fuchsia-950/20 p-2.5 space-y-2">
             <p className="text-xs text-fuchsia-300 flex items-center gap-1.5">
-              <Sparkles size={13} /> 자연어로 시나리오를 쓰면 검증된 템플릿을 조합해 스텝을 생성합니다
+              <Sparkles size={13} /> 자연어 시나리오를 선택한 방식으로 실행 스텝으로 변환합니다
             </p>
+            <div className="flex items-center gap-2">
+              <label htmlFor="planner-mode" className="text-[11px] text-gray-400">생성 방식</label>
+              <select id="planner-mode" value={plannerMode}
+                onChange={(e) => setPlannerMode(e.target.value as PlannerMode)}
+                disabled={running || generating}
+                className="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-200 focus:border-fuchsia-500 focus:outline-none disabled:opacity-50">
+                <option value="legacy">기존 범용 Planner</option>
+                <option value="defense">디펜스 인게임 DSL (게임 Profile)</option>
+              </select>
+            </div>
             <textarea value={scenario} onChange={(e) => setScenario(e.target.value)}
               disabled={running || generating} rows={3}
               placeholder={'예: 앱 실행 후 구글 재로그인하고, 상점에서 마신석 50 상품을 구매한 뒤 다이아가 감소했는지 검증'}

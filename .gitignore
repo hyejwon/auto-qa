@@ -30,3 +30,7 @@ dist/auto-qa.exe
 google-cloud-sdk/
 google-cloud-cli-*.tar.gz
 apptester_cache.json
+unity_catalog.json
+tmp/
+/image.png
+/image (*).png

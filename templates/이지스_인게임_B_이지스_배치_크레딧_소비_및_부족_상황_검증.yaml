@@ -1,0 +1,245 @@
+title: 이지스 인게임 B 이지스 배치 크레딧 소비 및 부족 상황 검증
+description: >
+  인게임에서 이지스를 직접 배치하며 크레딧이 정확히 소비되는지, 크레딧이 모자라면 소환이
+  차단되는지 검증한다.
+  실기기 확인 사실(2026-07-27):
+  - 준비 화면 시작 크레딧은 45, 첫 소환 비용은 5다. 소환 1회당 정확히 표기 비용만큼 차감된다
+    (45 → 40 → 35).
+  - ⚠️ 소환 비용은 고정이 아니라 소환할수록 올라간다. 45 크레딧으로는 5기까지만 배치되고,
+    그 시점에 다음 소환 비용은 15로 올라가 있었다.
+  - ⚠️ 크레딧이 다음 소환 비용보다 적으면 소환 버튼의 비용 숫자가 **빨간색**으로 바뀌고
+    탭해도 이지스가 늘지 않는다(크레딧도 그대로).
+  - 크레딧이 0이어도 전투 시작 버튼 자체는 계속 활성이다 — 전투 진행이 막히지는 않는다.
+  이 템플릿은 위 규칙을 그대로 따라간다: 비용/크레딧을 매번 읽어 차감을 검증하고, 크레딧을
+  소진시킨 뒤 소환 차단을 확인한다.
+package: com.supermagic.aos.aegisdefense
+steps:
+- action: close_app
+  target: com.supermagic.aos.aegisdefense
+  description: 이전 실행 상태를 완전히 끊기 위해 앱 종료
+  timeout: 15
+  retry: 2
+  params:
+    package: com.supermagic.aos.aegisdefense
+- action: launch_app
+  target: com.supermagic.aos.aegisdefense
+  description: 이지스 디펜스 실행
+  timeout: 30
+  retry: 2
+  params:
+    package: com.supermagic.aos.aegisdefense
+- action: wait
+  description: AEGIS 스플래시 로딩 대기 (실기기 60~80초)
+  timeout: 90
+  retry: 1
+  params:
+    seconds: 60
+# ⚠️ 패치 데이터가 있으면 스플래시 도중 "추가 데이터 다운로드" 팝업이 떠서 로딩이 멈춘다
+# ([종료하기][다운로드], 2026-07-27 실기기 확인). 뜬 경우에만 다운로드를 눌러 통과시키고,
+# 그 뒤 추가 로딩 시간을 준다 — 안 떴으면 플래그가 없어 대기 스텝도 건너뛴다.
+- action: find_and_tap
+  target: 추가 데이터 다운로드 제목이 붙은 팝업 하단 오른쪽 검은색 다운로드 버튼
+  description: 추가 데이터 다운로드 팝업이 뜨면 다운로드 진행
+  timeout: 20
+  retry: 1
+  params:
+    optional: true
+    set_flag_on_pass: patch_download
+    wait_seconds: 5
+- action: wait
+  description: (다운로드를 진행했을 때만) 패치 적용 후 재로딩 대기
+  timeout: 120
+  retry: 1
+  params:
+    run_if_flag: patch_download
+    seconds: 75
+- action: find_and_tap
+  target: 이어하기 제목이 붙은 팝업 하단 왼쪽 회색 취소 버튼
+  description: 이어하기 팝업이 뜨면 취소
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 3
+# ⚠️ 타깃을 "가운데 아래 검은 둥근 버튼"처럼 두루뭉술하게 쓰면 아웃게임의 "전투" 버튼을
+# 눌러 스테이지에 들어가 버린다(2026-07-27 실기기에서 실제로 발생). 반드시 팝업 상자 안에
+# 있고 글자가 "확인"인 버튼으로 한정한다.
+- action: find_and_tap
+  target: 화면 가운데 떠 있는 회색 팝업 상자 안에서 "확인"이라고 적힌 검은색 둥근 버튼 (팝업이 없거나 버튼 글자가 "전투"·"다음"이면 대상 아님)
+  description: 결과·안내 팝업이 남아 있으면 닫기
+  timeout: 15
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 3
+# 씬 판정은 Vision이 아니라 앱 내부 치트 목록 접두사로 한다 — 호출 0회, 오탐 없음.
+# 로딩 중이면 씬 치트가 아예 없어 실패하므로 로딩 완료 확인도 겸한다.
+- action: verify
+  target: 아웃게임 스테이지 선택 화면 (씬 판정으로 확인)
+  description: 아웃게임 진입 확인
+  timeout: 60
+  retry: 5
+  params:
+    scene: outgame
+# 이 템플릿의 검증 대상은 진입 UI가 아니라 크레딧 소비 규칙이므로,
+# 공용 치트로 1-1 웨이브 1 준비 상태에 결정적으로 진입한다.
+- action: call_cheat
+  target: common.stage.start
+  description: 1-1 스테이지를 웨이브 1부터 시작 — 시작 크레딧 45 상태 확보
+  timeout: 20
+  retry: 2
+  params:
+    args:
+      chapterId: 1
+      stageInChapter: 1
+    wait_seconds: 8
+- action: verify
+  target: 상단에 Wave 1 진행 표시가 있고 하단에 이지스 소환 버튼과 검은색 둥근 전투 시작 버튼이 보이는 인게임 준비 화면
+  description: 인게임 준비 화면 진입 확인
+  timeout: 40
+  retry: 4
+  params: {}
+# ── 1회차 소환: 표기 비용만큼 정확히 차감되는지 ──────────────────
+- action: read_screen
+  description: 소환 전 크레딧과 표기 비용 기록
+  timeout: 60
+  retry: 3
+  params:
+    items:
+    - name: 크레딧
+      description: 화면 하단 오른쪽 ⓒ 아이콘 옆에 표시된 보유 크레딧 숫자
+      save_as: credit_0
+    - name: 소환 비용
+      description: 화면 하단 가운데 이지스 소환 버튼 안에 ⓒ 아이콘과 함께 적힌 소환 비용 숫자
+      save_as: cost_0
+- action: find_and_tap
+  target: 화면 하단 가운데 이지스 소환 버튼
+  description: 이지스 소환 1회차
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: verify
+  target: 중앙 행성 주위 궤도 슬롯 중 한 칸에 색이 채워진 원형 이지스 아이콘과 티어 숫자 배지가 표시된 상태
+  description: 이지스가 궤도에 배치됐는지 확인
+  timeout: 20
+  retry: 3
+  params: {}
+- action: read_text
+  target: 화면 하단 오른쪽 ⓒ 아이콘 옆에 표시된 보유 크레딧 숫자
+  description: 1회차 소환 후 크레딧 — 버튼에 표기된 비용(cost_0)만큼 정확히 차감됐는지 검증
+  timeout: 30
+  retry: 3
+  params:
+    compare_with: credit_0
+    expect_delta_from: cost_0
+    delta_sign: -1
+    save_as: credit_1
+# ── 반복 소환으로 크레딧 소진 ──────────────────────────────────
+- action: find_and_tap
+  target: 화면 하단 가운데 이지스 소환 버튼
+  description: 이지스 소환 2회차
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: find_and_tap
+  target: 화면 하단 가운데 이지스 소환 버튼
+  description: 이지스 소환 3회차
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: find_and_tap
+  target: 화면 하단 가운데 이지스 소환 버튼
+  description: 이지스 소환 4회차
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: find_and_tap
+  target: 화면 하단 가운데 이지스 소환 버튼
+  description: 이지스 소환 5회차 — 실기기 기준 여기서 크레딧이 0이 된다
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 2
+- action: read_screen
+  description: 소진 시점의 크레딧과 소환 비용 확인 — 비용은 첫 소환보다 올라가 있어야 한다
+  timeout: 60
+  retry: 3
+  params:
+    items:
+    - name: 크레딧
+      description: 화면 하단 오른쪽 ⓒ 아이콘 옆에 표시된 보유 크레딧 숫자
+      save_as: credit_drained
+      compare_with: credit_1
+      expect_decrease: true
+    - name: 소환 비용
+      description: 화면 하단 가운데 이지스 소환 버튼 안에 ⓒ 아이콘과 함께 적힌 소환 비용 숫자
+      save_as: cost_drained
+      compare_with: cost_0
+      expect_increase: true
+# ── 크레딧 부족 상태의 UI 시그널과 소환 차단 ─────────────────────
+- action: verify
+  target: 화면 하단 가운데 이지스 소환 버튼의 비용 숫자가 빨간색으로 표시된 상태 (보유 크레딧보다 소환 비용이 높음)
+  description: 크레딧 부족이 버튼에 빨간색으로 표시되는지 확인
+  timeout: 30
+  retry: 3
+  params: {}
+- action: find_and_tap
+  target: 화면 하단 가운데 이지스 소환 버튼
+  description: 크레딧이 부족한 상태에서 소환 시도 — 차단되어야 한다
+  timeout: 20
+  retry: 1
+  params:
+    optional: true
+    wait_seconds: 2
+- action: read_text
+  target: 화면 하단 오른쪽 ⓒ 아이콘 옆에 표시된 보유 크레딧 숫자
+  description: 차단 검증 1 — 소환이 안 됐으므로 크레딧이 그대로여야 한다
+  timeout: 30
+  retry: 3
+  params:
+    compare_with: credit_drained
+    expect_changed: false
+# ⚠️ 배치된 이지스를 read_items로 세어 비교하면 안 된다. 궤도가 회전해 아이콘의 위치와
+# 각도가 계속 바뀌기 때문에, 같은 5기를 전후로 다른 이름으로 인식해 "신규 보유"가 잡힌다
+# (2026-07-28 실기기: 개수는 5개로 같은데 '사각형 점 아이콘', '로켓 아이콘'이 신규로 잡혀 실패).
+# read_items는 상점처럼 고정된 아이템 그리드용이다. 여기서는 배치 상태를 verify로 확인하고,
+# 소환이 실제로 차단됐다는 근거는 바로 위 스텝의 "크레딧 불변"이 담당한다.
+- action: verify
+  target: 중앙 행성 주위 궤도 슬롯에 색이 채워진 원형 이지스 아이콘이 다섯 기 배치되어 있고 그보다 더 늘어나지 않은 상태
+  description: 차단 검증 2 — 궤도의 이지스가 소환 시도 전과 같은 규모로 유지되는지 확인
+  timeout: 30
+  retry: 3
+  params: {}
+# ── 크레딧이 0이어도 전투 진행은 가능해야 한다 ───────────────────
+- action: verify
+  target: 크레딧이 0인 상태에서도 화면 최하단 전투 시작 버튼이 검은색으로 밝게 활성화되어 있는 상태
+  description: 크레딧 소진이 전투 진행 자체를 막지는 않는지 확인
+  timeout: 30
+  retry: 3
+  params: {}
+- action: find_and_tap
+  target: 화면 최하단 검은색 둥근 전투 시작 버튼
+  description: 크레딧 0 상태에서 전투 시작
+  timeout: 20
+  retry: 2
+  params:
+    wait_seconds: 5
+- action: verify
+  target: 하단에 이지스 아이콘과 처치 수가 적힌 킬 스코어 목록이 표시되고 붉은 삼각형 적 유닛이 등장한 전투 진행 화면
+  description: 크레딧 0이어도 전투가 정상 진행되는지 확인
+  timeout: 40
+  retry: 3
+  params: {}
+preconditions:
+- 이지스 디펜스 디버그 빌드가 설치되어 있고 앱 내부 v2 치트 서버(37772)가 떠 있어야 한다
+- 튜토리얼이 완료된 계정이어야 한다
+expected_results:
+- 이지스 소환 시 버튼에 표기된 비용만큼 크레딧이 정확히 차감된다
+- 소환을 반복할수록 다음 소환 비용이 올라간다
+- 크레딧이 다음 소환 비용보다 적으면 비용 숫자가 빨간색으로 표시된다
+- 크레딧 부족 상태에서 소환을 시도해도 이지스가 늘지 않고 크레딧도 변하지 않는다
+- 크레딧이 0이어도 전투 시작과 전투 진행은 정상 동작한다

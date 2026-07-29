@@ -1,0 +1,166 @@
+title: 계정관리 02 - 기존 Google 데이터 선택 및 게스트 PID 보존
+description: 게스트 계정에서 기존 데이터가 있는 Google 계정을 연동해 기존을 선택하고, Google PID 변경 및 기존 게스트 PID 보존을 확인한다.
+package: com.percent.aos.cooptd
+required_tab: 전투
+parameters:
+- name: google_account_with_data
+  label: 기존 데이터가 있는 Google 계정
+  description: 이미 게임 데이터가 연결된 Google 계정 이메일
+  example: qa_google_01@111percent.net
+  default: qa_google_01@111percent.net
+steps:
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 3
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+    wait_seconds: 2
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: read_text
+  target: 설정 팝업 상단 Version 아래 UID/PID 값(복사 버튼 왼쪽 영문·숫자 문자열)
+  description: 연동 전 게스트 PID를 저장한다.
+  timeout: 15
+  retry: 2
+  params:
+    save_as: guest_pid_before
+- action: find_and_tap
+  target: 설정 팝업 하단 우측의 계정 연동 버튼
+  description: 계정 연동 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 계정 연동 팝업
+- action: find_and_tap
+  target: 계정 연동 팝업 내 Google 로그인 버튼
+  description: 기존 데이터가 있는 Google 계정 로그인을 시작한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: Google 계정 선택 화면 또는 약관 알림 팝업
+    wait_seconds: 2
+- action: find_and_tap
+  target: 약관 알림 팝업 내 동의합니다 영역
+  description: 최초 연동일 때만 약관에 동의한다.
+  timeout: 10
+  retry: 1
+  params:
+    optional: true
+    expect_visible: Google 계정 선택 화면
+- action: verify
+  target: '{{google_account_with_data}}'
+  description: 기존 데이터가 있는 Google 계정이 목록에 있는지 확인한다.
+  timeout: 15
+  retry: 2
+- action: find_and_tap
+  target: '{{google_account_with_data}}'
+  description: 기존 데이터가 있는 Google 계정을 선택한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: 기존 데이터 / 현재 데이터 선택 팝업
+    wait_seconds: 3
+- action: find_and_tap
+  target: 기존 데이터 버튼
+  description: Google 계정에 저장된 기존 데이터를 선택한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: 우측 상단 햄버거 메뉴(☰) 버튼
+    wait_seconds: 5
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 연동 후 PID 확인을 위해 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+    wait_seconds: 2
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 다시 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: read_text
+  target: 설정 팝업 상단 Version 아래 UID/PID 값(복사 버튼 왼쪽 영문·숫자 문자열)
+  description: 기존 Google 데이터 PID로 변경됐는지 확인한다.
+  timeout: 15
+  retry: 2
+  params:
+    compare_with: guest_pid_before
+    expect_changed: true
+- action: find_and_tap
+  target: 초록색 '연결됨' 버튼 (설정 팝업 하단 우측)
+  description: 계정 관리 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 로그아웃 버튼
+- action: find_and_tap
+  target: 로그아웃 버튼
+  description: Google 계정 로그아웃 알림을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 로그아웃 알림 팝업
+- action: find_and_tap
+  target: 로그아웃 알림 팝업의 로그아웃 버튼
+  description: 로그아웃하고 타이틀 화면으로 돌아간다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: Guest login 버튼
+    wait_seconds: 5
+- action: find_and_tap
+  target: Guest login 버튼
+  description: 기존 게스트 데이터로 다시 로그인한다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 게스트 로그인 데이터 유실 안내 팝업
+- action: find_and_tap
+  target: 게스트 로그인 데이터 유실 안내 팝업의 예 버튼
+  description: 게스트 로그인을 진행한다.
+  timeout: 20
+  retry: 2
+  params:
+    expect_visible: 우측 상단 햄버거 메뉴(☰) 버튼
+    wait_seconds: 8
+- action: find_and_tap
+  target: 우측 상단 햄버거 메뉴(☰) 버튼
+  description: 복귀한 게스트 PID 확인을 위해 햄버거 메뉴를 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 톱니바퀴 모양 설정 버튼
+- action: find_and_tap
+  target: 톱니바퀴 모양 설정 버튼
+  description: 설정 팝업을 연다.
+  timeout: 15
+  retry: 2
+  params:
+    expect_visible: 설정 팝업
+- action: read_text
+  target: 설정 팝업 상단 Version 아래 UID/PID 값(복사 버튼 왼쪽 영문·숫자 문자열)
+  description: 기존 게스트 PID가 그대로 유지되는지 확인한다.
+  timeout: 15
+  retry: 2
+  params:
+    compare_with: guest_pid_before
+    expect_changed: false
+preconditions:
+- Guest 로그인 상태여야 한다.
+- google_account_with_data에는 기존 게임 데이터가 연결되어 있어야 한다.
+expected_results:
+- 기존 데이터 선택 팝업이 출력되어야 한다.
+- 기존 선택 후 PID가 게스트 PID에서 Google 계정의 기존 PID로 변경되어야 한다.
+- 로그아웃 후 Guest 재로그인 시 원래 게스트 PID가 유지되어야 한다.

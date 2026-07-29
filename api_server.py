@@ -11,7 +11,7 @@ import threading
 import yaml
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -36,13 +36,22 @@ from pydantic import BaseModel
 
 from config import Config
 from adb_controller import ADBController, is_keyguard_locked
-from planner_node import PlannerNode
+from planner_node import PlannerNode, PlannerResponseFormatError
+from planner_context import build_template_library_text
+from defense_compiler import (
+    DefenseCompileError,
+    DefensePlanCompiler,
+    DefenseProfileError,
+    load_defense_profile,
+)
 from qa_orchestrator import QAOrchestrator
 from test_manager import TestCase
 from unity_api_client import UnityAPIClient
+import unity_catalog
 # 어댑티브 QA는 현재 실행 안정성이 낮아 일시 비활성화한다.
 # from adaptive_qa_agent import AdaptiveQARunner, AdaptiveRunRequest
 from csv_reporter import build_test_result_csv
+from report_logic import normalize_result_for_report, normalize_shared_report
 from sr_debugger import SRDebuggerController, SRDebuggerEnterRequest
 from eval_platform import (
     EvalCaseCreate,
@@ -249,20 +258,21 @@ def _test_result_summary(result) -> dict:
         if evidence_image:
             step["evidence_image"] = f"/debug/taps/{Path(evidence_image).name}"
         step_results.append(step)
-    return {
+    return normalize_result_for_report({
         "test_id": result.test_id,
         "status": result.status,
         "title": result.title,
         "start_time": result.start_time.isoformat() if result.start_time else None,
         "end_time": result.end_time.isoformat() if result.end_time else None,
         "steps_passed": result.steps_passed,
+        "steps_skipped": getattr(result, "steps_skipped", 0),
         "steps_executed": result.steps_executed,
         "error_message": result.error_message,
         "screenshots": result.screenshots or [],
         "step_results": step_results,
         "economy_summary": result.economy_summary or [],
         "eval_output": result.eval_output,
-    }
+    })
 
 
 # ─────────────────────────────────────────────
@@ -283,6 +293,7 @@ class PackageApkMapEntry(BaseModel):
 class GeneratePlanRequest(BaseModel):
     scenario: str
     package: str = ""
+    planner_mode: Literal["legacy", "defense"] = "legacy"
 
 class SaveTemplateRequest(BaseModel):
     name: str
@@ -1409,26 +1420,81 @@ GAME_UI_NOTES: dict[str, str] = {
         "탭 이동 스텝의 target은 '하단 네비게이션 N번째 탭 (아이콘 설명)' 형식을 쓰세요. "
         "우측 상단 햄버거 메뉴(설정/계정연동/계정삭제/로그아웃 등으로 이어짐)는 '전투' 탭에서만 "
         "보인다 — 계정/설정 관련 시나리오는 required_tab을 '전투'로 채우세요. "
-        "계정 삭제와 로그아웃 둘 다 설정 팝업에 바로 버튼이 있는 게 아니라, 먼저 초록색 "
-        "'연결됨' 버튼(설정 팝업 하단 우측, 계정 연동 상태 표시)을 눌러야 '계정삭제'/'로그아웃' "
-        "옵션이 나온다 (2026-07-23 확인) — '계정연동'이라는 문구 자체는 없다."
+        "Guest 상태에서는 설정 팝업 하단 우측에 갈색 '계정 연동' 버튼이 보이고, "
+        "Google/Apple 연동 상태에서는 같은 위치에 초록색 '연결됨' 버튼이 보인다. "
+        "각 버튼을 눌러야 계정 연동/관리 팝업의 '계정 삭제'와 '로그아웃' 옵션이 나온다. "
+        "Google/Apple 계정 선택 후 '기존 데이터 / 현재 데이터' 선택 팝업은 해당 플랫폼 계정에 "
+        "기존 게임 데이터가 있을 때만 표시된다. 기존 데이터가 없는 신규 플랫폼 계정은 "
+        "선택 팝업 없이 현재 Guest 데이터로 즉시 연동 완료된다."
     ),
 }
 
 
-def _template_library_text(package: str = "") -> str:
-    """templates/ 폴더의 검증된 템플릿 + 게임별 UI 참고 정보를 플래너 참조용 텍스트로 직렬화"""
-    parts = []
-    note = GAME_UI_NOTES.get(package)
-    if note:
-        parts.append(f"### 게임 UI 참고 정보 (반드시 준수)\n{note}")
-    for f in sorted(cfg.paths.templates_dir.glob("*.yaml")):
-        try:
-            body = f.read_text(encoding="utf-8").strip()
-        except Exception:
-            continue
-        parts.append(f"### {f.stem}\n```yaml\n{body}\n```")
-    return "\n\n".join(parts)
+def _template_library_text(package: str = "", scenario: str = "") -> str:
+    """현재 요청에 필요한 소수의 검증 템플릿만 플래너 컨텍스트로 제공한다."""
+    try:
+        limit = max(1, min(10, int(os.getenv("PLANNER_TEMPLATE_LIMIT", "5"))))
+    except ValueError:
+        limit = 5
+    return build_template_library_text(
+        cfg.paths.templates_dir,
+        package=package,
+        scenario=scenario,
+        limit=limit,
+        game_note=GAME_UI_NOTES.get(package, ""),
+    )
+
+
+def _device_catalog_text(package: str = "") -> str:
+    """패키지별로 누적된 v2 치트/프로퍼티 카탈로그를 플래너 참조용 텍스트로 직렬화.
+
+    카탈로그는 테스트를 돌릴 때마다(run_test 시작/종료 시점) 자동으로 누적된다 —
+    씬마다 등록되는 치트가 달라서 한 번에 다 모이지 않기 때문이다.
+    """
+    if not package:
+        return ""
+    try:
+        return unity_catalog.to_planner_text(package)
+    except Exception as e:
+        logger.warning("device catalog 직렬화 실패: %s", e)
+        return ""
+
+
+@app.post("/api/unity/catalog/refresh")
+def unity_catalog_refresh(req: TutorialPassRequest):
+    """현재 디바이스 화면(씬) 기준으로 치트/프로퍼티를 조회해 카탈로그에 누적 병합.
+
+    씬마다 등록 목록이 다르므로 로비/전투 등 화면을 바꿔가며 여러 번 호출하면
+    그 게임의 카탈로그가 완성된다.
+    """
+    package = req.package.strip()
+    if not package:
+        raise HTTPException(status_code=400, detail="package가 필요합니다.")
+    try:
+        adb = ADBController()
+        client = UnityAPIClient(adb_controller=adb)
+        snapshot = client.catalog_snapshot_v2()
+        counts = unity_catalog.merge_snapshot(package, snapshot)
+        return {
+            "success": True,
+            "package": package,
+            "scene_cheats": len(snapshot.get("cheats") or []),
+            "scene_properties": len(snapshot.get("properties") or []),
+            **counts,
+            "summary": unity_catalog.summary(package),
+        }
+    except Exception as e:
+        logger.exception("unity_catalog_refresh failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/unity/catalog")
+def unity_catalog_get(package: str = ""):
+    """누적된 카탈로그 요약 + 플래너에 들어가는 텍스트 미리보기."""
+    return {
+        "summary": unity_catalog.summary(package),
+        "planner_text": _device_catalog_text(package),
+    }
 
 
 @app.post("/api/plan/generate")
@@ -1436,36 +1502,80 @@ def generate_plan(req: GeneratePlanRequest):
     if not req.scenario.strip():
         raise HTTPException(status_code=400, detail="시나리오를 입력해주세요.")
     try:
+        profile = (
+            load_defense_profile(req.package.strip())
+            if req.planner_mode == "defense"
+            else None
+        )
         planner = PlannerNode(
             project=cfg.gemini.project,
             location=cfg.gemini.location,
-            model=cfg.gemini.planner_model,
+            model=(
+                cfg.gemini.intent_model
+                if req.planner_mode == "defense"
+                else cfg.gemini.planner_model
+            ),
         )
-        plan = planner.create_test_plan(
-            req.scenario.strip(), req.package.strip(),
-            template_library=_template_library_text(req.package.strip()),
-        )
-        steps = [s.model_dump() for s in plan.steps]
-        if plan.required_tab:
+        semantic_plan = None
+        if req.planner_mode == "defense":
+            assert profile is not None
+            semantic_plan = planner.create_defense_plan(
+                req.scenario.strip(),
+                req.package.strip(),
+                profile,
+            )
+            compiled = DefensePlanCompiler(profile).compile(semantic_plan)
+            title = compiled.title
+            description = compiled.description
+            package = compiled.package
+            required_tab = compiled.required_tab
+            expected_results = compiled.expected_results
+            steps = compiled.steps
+        else:
+            plan = planner.create_test_plan(
+                req.scenario.strip(), req.package.strip(),
+                template_library=_template_library_text(
+                    req.package.strip(), req.scenario.strip()
+                ),
+                device_catalog=_device_catalog_text(req.package.strip()),
+            )
+            title = plan.title
+            description = plan.description
+            package = plan.package
+            required_tab = plan.required_tab
+            expected_results = plan.expected_results
+            steps = [s.model_dump(mode="json") for s in plan.steps]
+
+        if required_tab:
             # 계정/설정처럼 특정 탭(전투 등)에서 시작해야 하는 시나리오는 플래너가
             # required_tab만 채우면 여기서 자동 이동 스텝을 맨 앞에 끼워 넣는다 —
             # 저장된 템플릿(get_template)과 동일한 로직 재사용 (2026-07-23).
-            steps = _inject_required_tab_step(steps, plan.required_tab)
+            steps = _inject_required_tab_step(steps, required_tab)
         yaml_data = {
-            "title": plan.title,
-            "description": plan.description,
-            "package": plan.package,
-            "required_tab": plan.required_tab,
+            "title": title,
+            "description": description,
+            "package": package,
+            "required_tab": required_tab,
             "steps": steps,
-            "expected_results": plan.expected_results,
+            "expected_results": expected_results,
         }
         yaml_str = yaml.dump(yaml_data, allow_unicode=True, sort_keys=False)
-        return {
-            "title": plan.title,
-            "steps_count": len(plan.steps),
+        response = {
+            "title": title,
+            "steps_count": len(steps),
             "yaml": yaml_str,
             "plan": yaml_data,  # 프론트 스텝 편집기에 바로 로드할 구조화 플랜
+            "planner_mode": req.planner_mode,
         }
+        if semantic_plan is not None:
+            response["semantic_plan"] = semantic_plan.model_dump(mode="json")
+        return response
+    except (DefenseProfileError, DefenseCompileError) as e:
+        logger.warning("generate_plan unsupported defense request: %s", e)
+        raise HTTPException(status_code=422, detail=str(e))
+    except PlannerResponseFormatError as e:
+        logger.warning("generate_plan invalid AI response: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
         logger.exception("generate_plan failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1552,13 +1662,13 @@ def create_result_csv(req: ReportExportRequest):
 @app.post("/api/reports/share")
 def create_shared_report(req: SharedReportRequest):
     report_id = uuid4().hex
-    snapshot = {
+    snapshot = normalize_shared_report({
         "report_id": report_id,
         "created_at": datetime.now().isoformat(),
         "result": req.result,
         "taps": req.taps,
         "adaptive": req.adaptive,
-    }
+    })
     report_path = _shared_reports_dir / f"{report_id}.json"
     temp_path = _shared_reports_dir / f".{report_id}.tmp"
 
@@ -1589,7 +1699,8 @@ def get_shared_report(report_id: str):
         raise HTTPException(status_code=404, detail="공유 리포트를 찾을 수 없습니다.")
 
     try:
-        return json.loads(report_path.read_text(encoding="utf-8"))
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        return normalize_shared_report(snapshot)
     except Exception as e:
         logger.exception("get_shared_report failed: %s", report_id)
         raise HTTPException(status_code=500, detail=str(e))

@@ -243,6 +243,31 @@ class ElementCache:
         if deleted:
             logger.info("Cache invalidated [%s / %s] — %d entries removed", package, screen_type, deleted)
 
+    def invalidate_element(
+        self,
+        package: str,
+        screen_type: str,
+        element: str,
+        resolution: str = "",
+    ) -> None:
+        """검증에 실패한 단일 좌표만 제거한다."""
+        with _connect(self.db_path) as conn:
+            deleted = conn.execute(
+                """
+                DELETE FROM element_cache_v2
+                WHERE package_name=? AND screen_type=? AND element_name=? AND resolution=?
+                """,
+                (package, screen_type, element, resolution),
+            ).rowcount
+        if deleted:
+            logger.info(
+                "Cache element invalidated [%s / %s / %s @ %s]",
+                package,
+                screen_type,
+                element,
+                resolution,
+            )
+
     def dump(self, package: Optional[str] = None) -> list[dict]:
         """디버그용: 캐시 전체 또는 패키지별 조회."""
         with _connect(self.db_path) as conn:

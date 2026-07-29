@@ -27,26 +27,28 @@ steps:
   retry: 2
   params:
     skip_if_visible: 하단 네비게이션 전투 탭
+    set_flag_on_pass: tutorial_skip_1
 - action: close_app
   target: com.percent.aos.cooptd
   description: (튜토리얼 스킵을 진행했을 때만) 재부팅을 위한 앱 종료 1차 — 전투 탭이 이미 보이면 건너뜀
   timeout: 10
   retry: 2
   params:
-    skip_if_visible: 하단 네비게이션 전투 탭
+    run_if_flag: tutorial_skip_1
 - action: launch_app
   target: com.percent.aos.cooptd
   description: (튜토리얼 스킵을 진행했을 때만) 앱 재실행 1차 — 전투 탭이 이미 보이면 건너뜀
   timeout: 20
   retry: 2
   params:
-    skip_if_visible: 하단 네비게이션 전투 탭
+    run_if_flag: tutorial_skip_1
 - action: find_and_tap
   target: 건너뛰기 버튼
   description: (나올 경우) 튜토리얼 건너뛰기 버튼 클릭 1차 — 이미 스킵된 계정이면 이 버튼/팝업 자체가 안 뜬다
   timeout: 10
   retry: 2
   params:
+    run_if_flag: tutorial_skip_1
     optional: true
     expect_visible: 정말로 건너뛰시겠습니까 팝업
 - action: find_and_tap
@@ -55,6 +57,7 @@ steps:
   timeout: 10
   retry: 2
   params:
+    run_if_flag: tutorial_skip_1
     optional: true
     expect_hidden: 정말로 건너뛰시겠습니까 팝업
     wait_seconds: 1
@@ -63,27 +66,35 @@ steps:
 # 플레이 화면)에서 멈춘다 — 팝업이 아니라 스킵 API가 아직 못 넘은 다음 튜토리얼 관문이라
 # dismiss_popups로는 처리 불가(2026-07-23 실기기에서 0개 처리 후 타임아웃 확인). 이 경우
 # skip_tutorial API를 한 번 더 호출하고 재부팅하면 전투 탭까지 정상적으로 넘어간다.
-# ⚠️ 컨텐츠 해금 팝업은 VIP 상점 → 루키의 도전 → 이벤트 팝업 1 → 이벤트 팝업 2 순으로
-# 최대 4개까지 연속으로 뜨는데, 팝업 사이에 다음 팝업이 렌더링되기까지 약간의 지연이 있다.
-# quiet_seconds: 0이면 그 전환 순간에 잠깐 보이는 배경 화면(햄버거 메뉴 버튼)만으로도
-# "안정됨"으로 오판해 다음 팝업이 뜨기 전에 완료 처리해버려 마지막 팝업(들)을 놓친다
-# (2026-07-23 실기기 확인 — 이벤트 팝업 1까지만 닫고 멈춤). quiet_seconds를 늘려서
-# 햄버거 메뉴가 최소 그 시간만큼 계속 보여야 진짜로 끝난 것으로 인정하도록 했다.
+# ⚠️ 컨텐츠 해금 팝업은 VIP 광고 → 루키의 도전 → 마물 육성 입문 가이드 →
+# 여름바다 바캉스 순으로 연속 노출될 수 있다. 팝업 뒤의 전투 탭과 햄버거 버튼도
+# Vision에 잡히므로 이 둘을 skip 조건으로 사용하면 팝업이 남은 채 완료되는 문제가 있다.
+# 각 팝업을 우선 판정하고, 팝업/딤 오버레이가 없는 전투 로비가 4초 이상 유지될 때만
+# 종료한다. 팝업 간 렌더링 지연과 Vision 응답 시간을 고려해 충분한 제한시간을 둔다.
 - action: dismiss_popups
-  description: (1차 스킵 후) VIP 상점의 좌측 하단 뒤로가기 버튼을 누르고 반복되는 컨텐츠 해금 안내 닫기 — 전투 탭이 이미 보이면 건너뜀. 완전 신규 계정이면 컨텐츠 해금 팝업 자체가 없어 실패하지만 optional 처리해 2차 스킵으로 넘어간다
-  timeout: 45
+  description: (1차 스킵 후) VIP 광고와 루키의 도전·마물 육성 입문 가이드·여름바다 바캉스 해금 안내를 순서와 노출 여부에 맞춰 닫기. 완전 신규 계정의 웨이브 0 화면이면 optional 처리해 2차 스킵으로 넘어간다
+  timeout: 120
   retry: 1
   params:
+    run_if_flag: tutorial_skip_1
     optional: true
-    skip_if_visible: 하단 네비게이션 전투 탭
-    stop_when_visible: 우측 상단 햄버거 메뉴 버튼
-    max_count: 4
-    timeout_seconds: 40
-    initial_wait_seconds: 1
-    quiet_seconds: 1.5
+    set_flag_on_pass: tutorial_ready
+    complete_after_target: 여름바다 바캉스 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+    stop_when_visible: 팝업과 딤 오버레이가 없고 화면 중앙 SOLO 플레이 버튼과 우측 상단 햄버거 메뉴 버튼이 밝게 보이는 전투 로비
+    max_count: 6
+    timeout_seconds: 110
+    initial_wait_seconds: 2
+    quiet_seconds: 4
+    poll_interval_seconds: 0.75
     rules:
-    - target: VIP 상점 좌측 하단 뒤로가기 버튼
+    - target: VIP 상점 화면 좌측 하단의 흰색 왼쪽 화살표 뒤로가기 버튼
       action: tap
+    - target: 루키의 도전 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+      action: tap_center
+    - target: 마물 육성 입문 가이드 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+      action: tap_center
+    - target: 여름바다 바캉스 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+      action: tap_center
     - target: 새로운 컨텐츠가 해금되었어요 팝업
       action: tap_center
 - action: skip_tutorial
@@ -92,27 +103,30 @@ steps:
   timeout: 20
   retry: 2
   params:
-    skip_if_visible: 하단 네비게이션 전투 탭
+    run_if_flag: tutorial_skip_1
+    skip_if_flag: tutorial_ready
+    set_flag_on_pass: tutorial_skip_2
 - action: close_app
   target: com.percent.aos.cooptd
   description: (2차 스킵을 진행했을 때만) 재부팅을 위한 앱 종료 2차
   timeout: 10
   retry: 2
   params:
-    skip_if_visible: 하단 네비게이션 전투 탭
+    run_if_flag: tutorial_skip_2
 - action: launch_app
   target: com.percent.aos.cooptd
   description: (2차 스킵을 진행했을 때만) 앱 재실행 2차
   timeout: 20
   retry: 2
   params:
-    skip_if_visible: 하단 네비게이션 전투 탭
+    run_if_flag: tutorial_skip_2
 - action: find_and_tap
   target: 건너뛰기 버튼
   description: (나올 경우) 튜토리얼 건너뛰기 버튼 클릭 2차 — 재부팅 후 컷신이 다시 뜨는 경우 대비
   timeout: 10
   retry: 2
   params:
+    run_if_flag: tutorial_skip_2
     optional: true
     expect_visible: 정말로 건너뛰시겠습니까 팝업
 - action: find_and_tap
@@ -121,23 +135,34 @@ steps:
   timeout: 10
   retry: 2
   params:
+    run_if_flag: tutorial_skip_2
     optional: true
     expect_hidden: 정말로 건너뛰시겠습니까 팝업
     wait_seconds: 1
 - action: dismiss_popups
-  description: (튜토리얼 스킵을 진행했을 때만) VIP 상점의 좌측 하단 뒤로가기 버튼을 누르고 반복되는 컨텐츠 해금 안내 닫기 최종 — 전투 탭이 이미 보이면 건너뜀
-  timeout: 120
+  description: VIP 광고와 루키의 도전·마물 육성 입문 가이드·여름바다 바캉스 해금 안내가 남아 있으면 모두 닫고 깨끗한 전투 로비인지 최종 확인
+  timeout: 150
   retry: 1
   params:
-    skip_if_visible: 하단 네비게이션 전투 탭
-    stop_when_visible: 우측 상단 햄버거 메뉴 버튼
-    max_count: 4
-    timeout_seconds: 120
-    initial_wait_seconds: 1
-    quiet_seconds: 1.5
+    run_if_flag: tutorial_skip_1
+    skip_if_flag: tutorial_ready
+    set_flag_on_pass: tutorial_ready
+    complete_after_target: 여름바다 바캉스 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+    stop_when_visible: 팝업과 딤 오버레이가 없고 화면 중앙 SOLO 플레이 버튼과 우측 상단 햄버거 메뉴 버튼이 밝게 보이는 전투 로비
+    max_count: 6
+    timeout_seconds: 140
+    initial_wait_seconds: 2
+    quiet_seconds: 4
+    poll_interval_seconds: 0.75
     rules:
-    - target: VIP 상점 좌측 하단 뒤로가기 버튼
+    - target: VIP 상점 화면 좌측 하단의 흰색 왼쪽 화살표 뒤로가기 버튼
       action: tap
+    - target: 루키의 도전 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+      action: tap_center
+    - target: 마물 육성 입문 가이드 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+      action: tap_center
+    - target: 여름바다 바캉스 문구와 계속하려면 화면을 눌러주세요 문구가 함께 보이는 새로운 컨텐츠 해금 안내
+      action: tap_center
     - target: 새로운 컨텐츠가 해금되었어요 팝업
       action: tap_center
 preconditions: []
